@@ -2,7 +2,7 @@
 id: adr-20261114-agent-sessions-continue-and-approvals-are-refused
 kind: adr
 title: 実行は自分の agent session を続け、承認の要求は明示的に拒否して turn を続ける
-status: proposed
+status: accepted
 created: '2026-11-14'
 decision_makers:
 - user
@@ -14,6 +14,7 @@ relations:
 source_paths: []
 summary: 同じ単位の同じ実行が再び走るときは、その実行の前の session に差分だけの続きのメッセージを送る。agent の承認の要求は 3 つの agent
   で同じく明示的に拒否し、turn は続け、拒否の回数を単位の記録に残す。
+updated: '2026-11-14'
 ---
 
 # 実行は自分の agent session を続け、承認の要求は明示的に拒否して turn を続ける
@@ -71,3 +72,8 @@ agent の承認の要求の扱いは 3 つの driver で違っていた。
 - engine のテストで、差し戻しが作る役の session を差分だけのメッセージで続けること、回答が質問した実行の session を続けること、評価役の 2 回目が評価役自身の session を続けること、2 つの実行が同じ token を受け取らないこと、続けられない session が全文の新しい session 1 回に置き換わること、token が engine の再起動を越えて残ること、最終的な停止で session を閉じ続けられる停止では保つこと、前の turn の検査の行が事実を成立させないこと、続けた turn を取消が中断すること、を確かめる。
 - transport のテストで、3 つの driver それぞれについて、agent が受け取る答えが明示的な拒否であること、turn がその後普通に終わること、turn の記録に拒否が残ることを確かめる。Codex の `thread/start` と `thread/resume` に承認の指定が無いこと、どの環境変数でも ACP が許可を選ばないことも確かめる。
 - skill-lint の `producer_environment`(C16)が、承認の指定を置くことを拒否する。
+
+
+{% transition from="proposed" to="accepted" date="2026-11-14" %}
+ユーザーが 2026-11-14 に承認した。session の継続は、提示した規則 1〜5 への返答「評価役： 続ける」。承認の要求は「1. 拒否を明示的に返し、turn は続ける」で 3 agent を揃える」。
+{% /transition %}
