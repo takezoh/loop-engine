@@ -1,0 +1,84 @@
+{
+ "unit_id": "{unit_id}",
+ "repository": "{repository}",
+ "unit": {
+  "goal": "`median` in stats.py returns the wrong value for lists of even length. Make it return the mean of the two middle values for even length, and raise ValueError for an empty list.",
+  "criteria": [
+   {
+    "id": "c1",
+    "text": "For a list of even length, median returns the mean of the two middle values."
+   },
+   {
+    "id": "c2",
+    "text": "For an empty list, median raises ValueError."
+   },
+   {
+    "id": "c3",
+    "text": "The tests include a case that fails on the original code and passes on the change."
+   }
+  ],
+  "scope": [
+   "stats.py",
+   "tests"
+  ],
+  "limits": {
+   "rounds": 1
+  },
+  "base": "{base}"
+ },
+ "facts": [
+  {
+   "id": "change",
+   "required": false,
+   "by": "given"
+  },
+  {
+   "id": "quality",
+   "required": true,
+   "by": "verdict",
+   "subject": "change",
+   "block_at": "major"
+  }
+ ],
+ "executions": [
+  {
+   "id": "review-claude",
+   "agent": "claude",
+   "model": "sonnet",
+   "effort": null,
+   "instructions": "Review the uncommitted changes in the current directory against the goal and the acceptance criteria.",
+   "reads": [],
+   "establishes": [
+    "quality"
+   ],
+   "writes": false,
+   "independent_of": []
+  },
+  {
+   "id": "review-pi",
+   "agent": "pi",
+   "model": null,
+   "effort": null,
+   "instructions": "Review the uncommitted changes in the current directory against the goal and the acceptance criteria.",
+   "reads": [],
+   "establishes": [
+    "quality"
+   ],
+   "writes": false,
+   "independent_of": []
+  },
+  {
+   "id": "review-codex",
+   "agent": "codex",
+   "model": null,
+   "effort": null,
+   "instructions": "Review the uncommitted changes in the current directory against the goal and the acceptance criteria.",
+   "reads": [],
+   "establishes": [
+    "quality"
+   ],
+   "writes": false,
+   "independent_of": []
+  }
+ ]
+}

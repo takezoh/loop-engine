@@ -1,0 +1,20 @@
+{
+ "checks": {
+  "unit": {
+   "argv": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+   ],
+   "test_paths": [
+    "tests"
+   ]
+  }
+ },
+ "ignore": [
+  "__pycache__"
+ ]
+}

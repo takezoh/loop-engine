@@ -1,0 +1,217 @@
+"""Requests the engine accepts and refuses, the request files, the client and the CLI."""
+import io
+import json
+import os
+import sys
+import threading
+import time
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+
+from engine_support import SRC, EngineCase, approve, changes, produced, git, write
+
+from loop_engine import cli, client, store
+from loop_engine.agents import TurnOutcome
+
+
+def finishing(request, commands, cancelled):
+    return produced(request, commands) if request.role == "producer" else approve(request)
+
+
+class AdmissionTest(EngineCase):
+    def refused(self, engine, contract=None, **contract_changes):
+        response = engine.handle({"request": "start", "contract": contract or self.contract(**contract_changes)})
+        self.assertFalse(response["ok"], response)
+        self.assertEqual([], store.list_units(self.root))
+        self.assertEqual([], self.agents.requests)
+        return response["error"]
+
+    def test_start_is_refused_before_anything_is_created(self):
+        engine = self.engine(finishing)
+        self.assertIn("installed catalog", self.refused(engine, self.with_agent(self.contract(), producer="gamma")))
+        self.assertIn("top directory", self.refused(engine, repository=os.path.join(self.repo, ".dev-skills")))
+        self.assertIn("cannot be read", self.refused(engine, repository=os.path.join(self.repo, "missing")))
+        self.assertIn("checks.json", self.refused(engine, self.with_check(self.contract(), "lint")))
+        self.assertIn("keys must be exactly", self.refused(engine, command=["sh", "-c", "touch /tmp/x"]))
+
+    def test_checks_come_from_the_committed_file_not_the_working_copy(self):
+        write(self.repo, ".dev-skills/checks.json", json.dumps(
+            {"checks": {"unit": {"argv": ["sh", "-c", "exit 0"]}, "lint": {"argv": ["x"]}}}))
+        engine = self.engine(finishing)
+        self.assertIn("lint", self.refused(engine, self.with_check(self.contract(), "lint")))
+        engine.handle({"request": "start", "contract": self.contract()})
+        self.run_to_stop(engine)
+        with open(os.path.join(store.unit_dir(self.root, "u1"), "checks.json"), encoding="utf-8") as handle:
+            self.assertEqual(self.checks, json.load(handle)["checks"])
+
+    def test_engine_refuses_the_repository_its_own_code_runs_from(self):
+        engine = self.engine(finishing, own_code=(os.path.join(self.repo, "packages"),))
+        self.assertIn("own code", self.refused(engine))
+
+    def test_same_contract_is_idempotent_and_a_different_one_conflicts(self):
+        engine = self.engine(finishing)
+        engine.handle({"request": "start", "contract": self.contract()})
+        self.run_to_stop(engine)
+        again = engine.handle({"request": "start", "contract": self.contract()})
+        self.assertEqual("done", again["result"]["stop_reason"])
+        self.assertEqual(2, len(self.agents.requests))
+        different = self.contract()
+        different["unit"]["goal"] = "something else"
+        other = engine.handle({"request": "start", "contract": different})
+        self.assertIn("different unit", other["error"])
+
+    def test_unknown_and_malformed_requests_are_refused(self):
+        engine = self.engine(finishing)
+        for payload in (None, [], {"request": "exec", "argv": ["sh"]}, {"request": "start"},
+                        {"request": "start", "contract": self.contract(), "env": {"X": "1"}},
+                        {"request": "cancel", "unit_id": "../u1"}, {"request": "cancel", "unit_id": "nope"},
+                        {"request": "answer", "unit_id": "u1", "question_id": "q", "answer": "a", "path": "/x"}):
+            self.assertFalse(engine.handle(payload)["ok"], payload)
+        self.assertEqual([], self.agents.requests)
+
+
+class ServeTest(EngineCase):
+    def serving(self, script, idle_seconds=60.0):
+        engine = self.engine(script, idle_seconds=idle_seconds)
+        served = []
+        thread = threading.Thread(target=lambda: served.append(engine.serve(client.lock_path(self.root))), daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 30)
+        self.addCleanup(engine._halting.set)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:  # an entry starts a real engine while the state home is free
+            probe = store.ProcessLock(client.lock_path(self.root))
+            if not probe.acquire():
+                break
+            probe.release()
+            time.sleep(0.01)
+        return engine, thread, served
+
+    def environ(self):
+        return {**os.environ, "DEV_SKILLS_HOME": self.home, "DEV_SKILLS_WORKTREES": os.path.join(self.home, "worktrees")}
+
+    def test_request_files_are_answered_and_removed_and_a_second_engine_yields(self):
+        engine, _thread, _served = self.serving(finishing)
+        response = client.request(self.root, {"request": "start", "contract": self.contract()}, environ=self.environ())
+        self.assertTrue(response["ok"], response)
+        status = client.wait(self.root, "u1", timeout=30)
+        self.assertEqual("done", status["stop_reason"])
+        self.assertEqual([], os.listdir(os.path.join(self.root, "inbox")))
+        self.assertIn(b"+made by the producer", client.result(self.root, "u1", "patch.diff"))
+        with self.assertRaises(ValueError):
+            client.result(self.root, "u1", "../../contract.json")
+        second = self.engine(finishing)
+        self.assertFalse(second.serve(client.lock_path(self.root)))
+
+    def test_garbage_in_the_inbox_is_refused_not_interpreted(self):
+        self.serving(finishing)
+        os.makedirs(os.path.join(self.root, "inbox"), exist_ok=True)
+        for name, text in (("0" * 32 + ".json", "{not json"), ("../escape.json", "{}"), ("short.json", "{}")):
+            try:
+                with open(os.path.join(self.root, "inbox", name), "w") as handle:
+                    handle.write(text)
+            except OSError:
+                continue
+        self.assertEqual({"ok": True, "result": {"engine": "running"}},
+                         client.request(self.root, {"request": "ping"}, environ=self.environ()))
+        self.assertEqual({"ok": False, "error": "malformed request"},
+                         store.read_json(store.response_path(self.root, "0" * 32)))
+        self.assertEqual([], store.list_units(self.root))
+
+    def test_engine_exits_when_idle_and_releases_the_state_home(self):
+        engine, thread, served = self.serving(finishing, idle_seconds=0.3)
+        thread.join(30)
+        self.assertEqual([True], served)
+        probe = store.ProcessLock(client.lock_path(self.root))
+        self.assertTrue(probe.acquire())
+        probe.release()
+
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(argv), environ=self.environ())
+        return code, out.getvalue(), err.getvalue()
+
+    def contract_file(self, **changes_):
+        path = os.path.join(self.home, f"contract-{len(changes_)}.json")
+        os.makedirs(self.home, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(self.contract(**changes_), handle)
+        return path
+
+    def test_cli_run_exits_with_a_code_per_stop_reason(self):
+        def script(request, commands, cancelled):
+            if request.unit_id == "ask" and request.round == 1:
+                return TurnOutcome(True, '{"question": "which?", "id": "q-1"}', None)
+            if request.unit_id == "lost":
+                return TurnOutcome(True, "no record", None)
+            if request.unit_id == "vague" and request.role == "reviewer":
+                return TurnOutcome(True, "LGTM", {"version": 1, "dropped": 0, "entries": []})
+            if request.unit_id == "refused" and request.role == "reviewer":
+                return changes(request, "the same problem every time")
+            return finishing(request, commands, cancelled)
+        self.serving(script)
+        code, out, _err = self.cli("run", self.contract_file())
+        self.assertEqual((0, "done"), (code, json.loads(out)["stop_reason"]))
+        self.assertEqual(13, self.cli("run", self.contract_file(unit_id="lost"))[0])
+        self.assertEqual(17, self.cli("run", self.contract_file(unit_id="vague"))[0])
+        self.assertEqual(12, self.cli("run", self.contract_file(unit_id="refused"))[0])
+        self.assertEqual(10, self.cli("run", self.contract_file(unit_id="ask"))[0])
+        answer = os.path.join(self.home, "answer.txt")
+        with open(answer, "w") as handle:
+            handle.write("the first")
+        self.assertEqual(0, self.cli("answer", "ask", "q-1", answer)[0])
+        self.assertEqual(0, self.cli("wait", "ask")[0])
+        bad = os.path.join(self.home, "bad.json")
+        with open(bad, "w") as handle:
+            json.dump(self.with_check(self.contract(unit_id="bad"), "nope"), handle)
+        code, _out, err = self.cli("run", bad)
+        self.assertEqual(2, code)
+        self.assertIn("rejected", err)
+        self.assertEqual(2, self.cli("status", "never-started")[0])
+        self.assertEqual(2, self.cli("run", os.path.join(self.home, "missing.json"))[0])
+
+    def test_worktrees_live_where_agents_can_write_not_under_the_state_home(self):
+        self.assertEqual("/cache/dev-skills/worktrees", store.worktrees_root({"XDG_CACHE_HOME": "/cache"}))
+        self.assertEqual("/elsewhere/wt", store.worktrees_root({"DEV_SKILLS_WORKTREES": "/elsewhere/wt",
+                                                                "DEV_SKILLS_HOME": "/state"}))
+        default = store.worktrees_root({"DEV_SKILLS_HOME": "/state"})
+        self.assertFalse(default.startswith("/state"))
+        self.assertTrue(default.endswith(os.path.join(".cache", "dev-skills", "worktrees")))
+
+    def test_engine_command_is_fixed_and_isolated(self):
+        command = client.engine_command()
+        self.assertEqual([sys.executable, "-I", os.path.join(SRC, "loop_engine", "__main__.py"), "serve"], command)
+
+
+class EngineProcessTest(EngineCase):
+    """The real engine process, started the way an entry starts it."""
+
+    def test_entry_starts_the_engine_which_answers_and_refuses_from_its_own_installation(self):
+        environ = {**os.environ, "DEV_SKILLS_HOME": self.home, "PYTHONPATH": self.repo,
+                   "DEV_SKILLS_WORKTREES": os.path.join(self.home, "worktrees")}
+        write(self.repo, "loop_engine/__init__.py", "raise SystemExit('imported from the working directory')\n")
+        before = list(client._started)
+
+        def stop_engines():
+            for process in client._started:
+                if process not in before:
+                    process.terminate()
+                    process.wait(30)
+        self.addCleanup(stop_engines)
+        self.assertEqual({"ok": True, "result": {"engine": "running"}},
+                         client.request(self.root, {"request": "ping"}, environ=environ))
+        self.assertEqual(1, len(client._started) - len(before))
+        self.assertIsNone(client.ensure_engine(self.root, environ))
+        unknown = client.request(self.root, {"request": "start", "contract": self.with_agent(
+            self.contract(), producer="gamma")}, environ=environ)
+        self.assertIn("installed catalog", unknown["error"])
+        known = client.request(self.root, {"request": "start", "contract": self.with_agent(self.contract(
+            repository=os.path.dirname(os.path.dirname(SRC))), producer="codex", reviewer="claude")},
+            environ=environ)
+        self.assertIn("own code", known["error"])
+        self.assertEqual([], store.list_units(self.root))
+
+
+if __name__ == "__main__":
+    unittest.main()

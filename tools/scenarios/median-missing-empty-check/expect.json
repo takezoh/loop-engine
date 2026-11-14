@@ -1,0 +1,7 @@
+{
+ "stop_reason": "rejected",
+ "unmet": [
+  "c2"
+ ],
+ "max_turns": 5
+}
