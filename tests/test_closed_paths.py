@@ -246,6 +246,17 @@ class LinkedConfigurationTest(EngineCase):
         self.assertEqual("unsafe_agent_config", self.run_to_stop(engine)["stop_reason"])
         self.assertEqual(["producer"], calls)
 
+    def test_a_link_into_a_large_tree_among_the_changes_is_compared_by_its_text(self):
+        from loop_engine import worktree
+        limit, worktree.MAX_CONFIG_ENTRIES = worktree.MAX_CONFIG_ENTRIES, 3
+        self.addCleanup(setattr, worktree, "MAX_CONFIG_ENTRIES", limit)
+        base, candidate = os.path.join(self.home, "b"), os.path.join(self.home, "c")
+        write(base, "a.txt", "same\n")
+        write(candidate, "a.txt", "same\n")
+        os.symlink("/usr/lib", os.path.join(candidate, "big"))
+        self.assertEqual(["big"], worktree.changed_paths(base, candidate, []))
+        self.assertEqual(worktree.tree_digest(candidate, []), worktree.tree_digest(candidate, []))
+
     def test_an_untouched_configuration_link_does_not_stop_the_unit(self):
         def script(request, commands, cancelled):
             return produced(request, commands) if request.role == "producer" else approve(request)

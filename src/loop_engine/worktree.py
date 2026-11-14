@@ -132,6 +132,20 @@ def _agent_config_digest(root):
     return digest.hexdigest()
 
 
+def _tree_entry(path):
+    """A file of a tree for comparison: a link by its text, a file by its content. Links are not followed."""
+    if os.path.islink(path):
+        return f"link:{os.readlink(path)}"
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 16), b""):
+                digest.update(block)
+    except OSError:
+        return "unreadable"
+    return f"file:{digest.hexdigest()}"
+
+
 def _files(root, ignore):
     found = {}
     for folder, directories, files in os.walk(root, followlinks=False):
@@ -144,7 +158,7 @@ def _files(root, ignore):
             path = os.path.join(folder, name)
             if name != ".git" and name not in ignore and (os.path.islink(path) or os.path.isfile(path)):
                 relative = os.path.relpath(path, root)
-                found[relative] = _entry(root, relative) or "empty"
+                found[relative] = _tree_entry(path)
     return found
 
 
