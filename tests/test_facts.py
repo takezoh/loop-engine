@@ -269,6 +269,20 @@ class DecisionTest(unittest.TestCase):
                                                  "assess": [review([MAJOR], met=False)]})
         self.assertEqual(("stagnation", "report unchanged"), (stop["reason"], stop["detail"]))
 
+    def test_a_report_under_judgment_is_quoted_like_a_file(self):
+        def assess(quote):
+            return lambda turn: json.dumps({"criteria": [{"id": "c1", "met": False, "evidence": []}], "findings": [
+                {"severity": "major", "criterion": "c1", "quote": quote, "description": "the log does not show it"}]})
+        sim, stop = self.run_sim(investigate(), {"pursue": [lambda t: "cause: A, shown by the log", lambda t: "cause: B, see trace 12"],
+                                                 "assess": [assess("shown by the log"), OK]})
+        self.assertEqual(("done", ["pursue", "assess", "pursue", "assess"]), (stop["reason"], sim.state["log"]))
+        sim, stop = self.run_sim(investigate(), {"pursue": [lambda t: "cause: A, shown by the log"],
+                                                 "assess": [assess("a sentence the report does not contain")]})
+        self.assertEqual("invalid_result", stop["reason"])
+        sim, stop = self.run_sim(implementation(("review-a",)), {
+            "survey": [survey], "implement": [implement()], "review-a": [assess("changed add")]})
+        self.assertEqual("invalid_result", stop["reason"])  # files are quoted from the tree, not from the author's report
+
     def test_state_survives_restart_and_a_tree_changed_outside_a_turn_voids_what_judged_it(self):
         scripts = {"survey": [survey], "implement": [implement()], "review-a": [OK], "review-b": [OK]}
         sim, stop = self.run_sim(implementation(), scripts, reload=True)

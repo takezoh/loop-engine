@@ -331,17 +331,23 @@ def examined(record, paths):
     return len(seen) / len(paths)
 
 
-def _cited(citation, read):
-    """The quoted text is in the present file. Agents miscount lines, so the line is only a hint."""
-    text = read(citation.get("path", ""))
+def _cited(citation, read, report=None):
+    """The quoted text is in the present file, or in the report under judgment when no path is named.
+
+    Agents miscount lines, so the line is only a hint.
+    """
+    text = read(citation["path"]) if isinstance(citation.get("path"), str) and citation["path"] else report
     quote = " ".join(str(citation.get("quote", "")).split())
     if text is None or len(quote) < 8:
         return False
     return quote in " ".join(text.split())
 
 
-def judge_verdict(unit, fact, text, record, read, subject_paths):
-    """('invalid', reason) or ('ok'|'refuted', findings, notes). The reviewer never states approval."""
+def judge_verdict(unit, fact, text, record, read, subject_paths, report=None):
+    """('invalid', reason) or ('ok'|'refuted', findings, notes). The reviewer never states approval.
+
+    `report` is the text under judgment when the subject is a report and not files.
+    """
     value = tail_json(text)
     if value is None or set(value) != {"criteria", "findings"}:
         return ("invalid", "reply must end with the criteria/findings object")
@@ -353,8 +359,8 @@ def judge_verdict(unit, fact, text, record, read, subject_paths):
         return ("invalid", "findings need a severity")
     commands = {e["command"] for e in record.get("entries", []) if e["kind"] == "command" and e["command"]}
     for finding in findings:
-        if not _cited(finding, read):
-            return ("invalid", f"finding does not quote the present file: {finding.get('path')}:{finding.get('line')}")
+        if not _cited(finding, read, report):
+            return ("invalid", f"finding does not quote the present file or report: {finding.get('path')}:{finding.get('line')}")
     for judgment in criteria:
         evidence = judgment.get("evidence") or []
         if judgment.get("met") is True:
@@ -366,7 +372,7 @@ def judge_verdict(unit, fact, text, record, read, subject_paths):
                     if len(told) < 3 or not any(told in " ".join(c.split()) for c in commands):
                         return ("invalid", f"evidence for {judgment['id']}: the command {told!r} is not among the "
                                            "commands you ran in this turn")
-                elif not _cited(item, read):
+                elif not _cited(item, read, report):
                     return ("invalid", f"evidence for {judgment['id']}: the quote is not at "
                                        f"{item.get('path')}:{item.get('line')} of the present file")
         elif judgment.get("met") is False:
@@ -518,7 +524,9 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
             _record(contract, state, fid, not failed, [state["tree"], failed], findings)
         elif fact["by"] == "verdict":
             key, now = f"{fid}/{execution_id}", sha(basis(contract, state, fid))
-            result = judge_verdict(contract["unit"], fact, outcome.get("text"), record, read, state["changed"])
+            subject = state["facts"].get(fact["subject"]) or {}
+            report = subject.get("text") if "tree" not in subject else None  # files are quoted from the tree
+            result = judge_verdict(contract["unit"], fact, outcome.get("text"), record, read, state["changed"], report)
             if result[0] == "invalid":
                 count = state["invalid"].get(key, 0) + 1
                 state["invalid"][key] = count
