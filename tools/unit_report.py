@@ -3,8 +3,9 @@
     unit_report.py [--home DIR] [--json] [unit_id ...]
 
 Reads only the engine's records (contract, events, state, result). For each unit it
-shows how it stopped, how many turns each execution took, how long they ran, what each
-turn's execution record contains and which facts held. Use it to compare runs before
+shows how it stopped, how many turns each execution took, how long they ran, which turns
+continued the execution's session, what each turn's execution record contains, how many of
+the agent's requests for approval were refused, and which facts held. Use it to compare runs before
 and after a change to the engine, a Profile, the Knowledge or a prompt.
 """
 import argparse
@@ -64,16 +65,22 @@ def load_unit(root, unit_id):
             turns.append({"turn": event["turn"], "execution": event["execution"], "completed": event.get("completed"),
                           "detail": event.get("detail"), "not_counted": event.get("not_counted"),
                           "seconds": _seconds(open_turn.get("at"), event.get("at")),
+                          "session": open_turn.get("session"), "refused": record.get("refused") or 0,
                           "actions": kinds, "text_chars": len(record.get("text") or "")})
     by_execution = {}
+    refused = {}
     for turn in turns:
         by_execution[turn["execution"]] = by_execution.get(turn["execution"], 0) + 1
+        if turn["refused"]:
+            refused[turn["execution"]] = refused.get(turn["execution"], 0) + turn["refused"]
     agents = {ex["id"]: {"agent": ex["agent"], "model": ex["model"], "effort": ex["effort"]}
               for ex in contract["executions"]}
     findings = (stop.get("stop") or {}).get("findings") or []
     return {
         "unit_id": unit_id, "state": status.get("state"), "stop_reason": status.get("stop_reason"),
         "rounds": stop.get("rounds", status.get("round")), "turns": turns, "turns_by_execution": by_execution,
+        "refused_by_execution": refused,
+        "sessions_replaced": sum(1 for event in events if event.get("type") == "session_not_continuable"),
         "seconds": _seconds(events[0].get("at"), events[-1].get("at")) if events else None,
         "agents": agents, "facts": {name: fact["holds"] for name, fact in (stop.get("facts") or {}).items()},
         "notes": len(stop.get("notes") or []),
@@ -95,6 +102,9 @@ def summarize(units):
         "turns_repeated": repeats,  # turns beyond the first of each execution: send-backs and results asked for again
         "incomplete_turns": sum(1 for unit in units for turn in unit["turns"] if not turn["completed"]),
         "results_not_counted": sum(1 for unit in units for turn in unit["turns"] if turn["not_counted"]),
+        "turns_continued": sum(1 for unit in units for turn in unit["turns"] if turn["session"] == "continued"),
+        "sessions_replaced": sum(unit["sessions_replaced"] for unit in units),
+        "refused_requests": sum(sum(unit["refused_by_execution"].values()) for unit in units),
         "seconds_total": round(sum(unit["seconds"] or 0 for unit in units), 1),
     }
 
@@ -110,8 +120,12 @@ def render(units, summary):
             state = "ok" if turn["completed"] else f"incomplete ({turn['detail']})"
             if turn["not_counted"]:
                 state = f"not counted ({turn['not_counted']})"
+            if turn["refused"]:
+                state += f", {turn['refused']} requests refused"
             lines.append(f"  {turn['turn']:>2} {turn['execution']:<16} {who.get('agent', '?')}/{who.get('model') or 'default'} "
-                         f"{turn['seconds']} s  {state}  [{acts or 'no record'}]")
+                         f"{turn['session'] or '?'} session {turn['seconds']} s  {state}  [{acts or 'no record'}]")
+        for execution, count in sorted(unit["refused_by_execution"].items()):
+            lines.append(f"  {execution}: requests refused {count} times")
         held = [name for name, holds in unit["facts"].items() if holds]
         missing = [name for name, holds in unit["facts"].items() if not holds]
         lines.append(f"  facts held: {', '.join(held) or '-'}" + (f" | not held: {', '.join(missing)}" if missing else ""))
@@ -120,7 +134,9 @@ def render(units, summary):
             lines.append(f"  finding [{finding.get('severity')}] {finding.get('criterion') or ''} {where} {finding.get('description') or ''}".rstrip())
     lines.append(f"total: {summary['units']} units, stops {summary['stops']}, {summary['turns_total']} turns "
                  f"({summary['turns_repeated']} repeated, {summary['incomplete_turns']} incomplete, "
-                 f"{summary['results_not_counted']} results not counted), {summary['seconds_total']} s")
+                 f"{summary['results_not_counted']} results not counted, {summary['turns_continued']} continued a session, "
+                 f"{summary['sessions_replaced']} sessions replaced), {summary['refused_requests']} requests refused, "
+                 f"{summary['seconds_total']} s")
     return "\n".join(lines)
 
 

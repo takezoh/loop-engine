@@ -8,7 +8,7 @@ engine、定型文、判定の規則を変えたときに、変更の前後を�
 runtime/python loop-engine/tools/unit_report.py [--home DIR] [--json] [unit_id ...]
 ```
 
-engine の記録だけを読む。単位ごとに、止まり方、差し戻しの回数、実行ごとの turn 数と時間、各 turn の実行記録の内訳、成立した事実、残った指摘を示す。合計には、やり直しになった turn、未完了の turn、数えられなかった結果(理由つき)の件数が出る。
+engine の記録だけを読む。単位ごとに、止まり方、差し戻しの回数、実行ごとの turn 数と時間、各 turn が新しい session か続けた session か、各 turn の実行記録の内訳、拒否された承認の要求の回数、成立した事実、残った指摘を示す。合計には、やり直しになった turn、未完了の turn、数えられなかった結果(理由つき)、session を続けた turn、続けられずに置き換えた session、拒否された要求の件数が出る。
 
 読み方の目安:
 

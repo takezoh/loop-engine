@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if SRC not in sys.path:
@@ -96,24 +97,46 @@ def produced(request, commands, name="out.txt", text="made by the producer\n"):
 
 
 class ScriptedAgents:
-    """An `AgentTurns` whose turns are functions of (request, check commands, cancelled event)."""
+    """An `AgentTurns` whose turns are functions of (request, check commands, cancelled event).
 
-    def __init__(self, root, script):
+    It keeps sessions as a provider does: a new turn opens one, a continued turn
+    runs in it, and a session the provider no longer has (`durable`, shared
+    with the next engine's agents to model a restart, minus `lost`) cannot be
+    continued, so no turn runs.
+    """
+
+    def __init__(self, root, script, durable=None):
         self.root, self.script, self.requests, self.closed = root, script, [], False
         self.nth = {}  # how many turns each execution has had, the present one included
+        self.durable = durable if durable is not None else set()
+        self.lost, self.ended, self.opened = set(), [], []
 
     def known(self, agent):
         return agent in ("alpha", "beta")
 
     def run(self, request, cancelled):
         self.requests.append(request)
+        if request.session is not None and (request.session not in self.durable or request.session in self.lost):
+            return TurnOutcome(False, None, None, "session-not-continuable: scripted", session_lost=True)
         self.nth[request.role] = self.nth.get(request.role, 0) + 1
         unit = store.UnitStore(self.root, request.unit_id)
         runner = shlex.join([sys.executable, "-I", RUNNER, unit.path("checks.json")])
         commands = {}
         for name in facts.check_names(unit.contract())[0]:
             commands[name] = facts.expected_command(runner, name, "candidate")
-        return self.script(request, commands, cancelled)
+        outcome = self.script(request, commands, cancelled)
+        if request.session is None and (outcome.detail or "").startswith("agent-start-failed"):
+            return outcome  # no session bound
+        session = request.session
+        if session is None:
+            session = f"{request.agent}-session-{os.urandom(4).hex()}"
+            self.durable.add(session)
+            self.opened.append((request.role, session))
+        return replace(outcome, session=session)
+
+    def end_session(self, agent, session):
+        self.ended.append((agent, session))
+        self.durable.discard(session)
 
     def close(self):
         self.closed = True
@@ -184,8 +207,8 @@ class EngineCase(unittest.TestCase):
         next(fact for fact in contract["facts"] if fact["by"] == "checks")["checks"][0]["name"] = name
         return contract
 
-    def engine(self, script, **options):
-        self.agents = ScriptedAgents(self.root, script)
+    def engine(self, script, durable=None, **options):
+        self.agents = ScriptedAgents(self.root, script, durable)
         engine = Engine(self.root, git=Git(os.environ), agents=self.agents,
                         templates=composition.load_templates(), runner=(sys.executable, RUNNER),
                         worktrees=os.path.join(self.home, "worktrees"),

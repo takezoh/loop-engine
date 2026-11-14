@@ -90,23 +90,46 @@ class Unit:
         number = len(state["log"]) + 1
         if not self._safe(started):
             return self._unsafe(state, execution["id"], "before")
-        prompt = prompts.compose(
-            self.templates, self.contract, execution, action["feedback"],
-            check_commands=self._check_commands(execution), changed=state["changed"],
-            base=started["base_tree"], reports=prompts.inputs(self.contract, state, execution),
-        )
+        reports = prompts.inputs(self.contract, state, execution)
+        checks = self._check_commands(execution)
+
+        def first_message():
+            return prompts.compose(self.templates, self.contract, execution, action["feedback"],
+                                   check_commands=checks, changed=state["changed"], base=started["base_tree"],
+                                   reports=reports)
+
+        session = facts.session_of(state, execution["id"])
+        prompt = first_message() if session is None else prompts.follow_up(
+            self.templates, self.contract, execution, action["feedback"], check_commands=checks,
+            changed=state["changed"], reports=reports, sent=facts.delivered(state, execution["id"]))
         # What git would record, so caches a reviewer's own test run leaves behind do not count as a change.
         before = None if execution["writes"] else self._candidate(started)
-        self._append({"type": "turn_started", "execution": execution["id"], "turn": number})
-        self._status(state="running", execution=execution["id"], turn=number, round=state["rounds"])
-        outcome = self.agents.run(TurnRequest(
-            unit_id=self.store.unit_id, role=execution["id"], round=number, agent=execution["agent"],
-            model=execution["model"], effort=execution["effort"], cwd=worktree, prompt=prompt,
-        ), self.interrupt)
+        self._append({"type": "turn_started", "execution": execution["id"], "turn": number,
+                      "session": "new" if session is None else "continued"})
+        self._status(state="running", execution=execution["id"], turn=number, round=state["rounds"],
+                     refused=state["refused"])
+        outcome = self.agents.run(self._request(execution, number, worktree, prompt, session), self.interrupt)
+        if session is not None and outcome.session_lost and not self.interrupt.is_set():
+            # The session cannot be continued: this turn runs once more, in a new session with the full message.
+            self._append({"type": "session_not_continuable", "execution": execution["id"], "turn": number,
+                          "detail": outcome.detail})
+            state = facts.remember_session(state, execution["id"], None, {})
+            session = None
+            if not self._safe(started):
+                return self._unsafe(state, execution["id"], "before")
+            self._append({"type": "turn_started", "execution": execution["id"], "turn": number, "session": "new"})
+            outcome = self.agents.run(self._request(execution, number, worktree, first_message(), None),
+                                      self.interrupt)
         turn = outcome.to_wire()
         self.store.write_result(os.path.join("turns", f"{number:02d}-{execution['id']}.json"), turn)
         if self.interrupt.is_set():
-            return state  # cancelled or halting: the interrupted turn proves nothing
+            # cancelled or halting: the interrupted turn proves nothing; a session this unit does not
+            # keep is closed, the kept one stays for the next turn of the execution
+            if outcome.session is not None and outcome.session != session:
+                self.agents.end_session(execution["agent"], outcome.session)
+            return state if self.halting() else facts.count_refused(state, execution["id"], outcome.refused)
+        state = facts.count_refused(state, execution["id"], outcome.refused)
+        state = facts.remember_session(state, execution["id"], outcome.session, prompts.digests(reports))
         if not self._safe(started):
             return self._unsafe(state, execution["id"], "after")
         tree = tree_digest(worktree, self.ignore) if execution["writes"] else state["tree"]
@@ -124,9 +147,15 @@ class Unit:
         refused = [item["description"] for item in state["feedback"].get(execution["id"], [])
                    if str(item.get("description", "")).startswith(facts.NOT_ACCEPTED)]
         self._append({"type": "turn_finished", "execution": execution["id"], "turn": number,
-                      "completed": completed, "detail": detail,
+                      "completed": completed, "detail": detail, "refused_requests": outcome.refused,
                       "not_counted": refused[0][len(facts.NOT_ACCEPTED):] if refused else None})
         return state
+
+    def _request(self, execution, number, worktree, prompt, session):
+        return TurnRequest(
+            unit_id=self.store.unit_id, role=execution["id"], round=number, agent=execution["agent"],
+            model=execution["model"], effort=execution["effort"], cwd=worktree, prompt=prompt, session=session,
+        )
 
     def _candidate(self, started):
         return hashlib.sha256(self.git.patch(started["worktree"], started["base"], started["git_dir"])).hexdigest()
@@ -154,12 +183,27 @@ class Unit:
                 **facts.summary(self.contract, state)}
         self.store.write_result("stop.json", stop)
         self._append({"type": "stopped", "stop_reason": reason})
+        if reason not in CONTINUABLE:
+            self._end_sessions(state)
         removed = reason not in CONTINUABLE and started is not None and self._discard(started)
         asked = action.get("question") if reason == "waiting_for_answer" else None
         self._status(state="stopped", stop_reason=reason, round=state["rounds"], worktree=stop["worktree"],
-                     worktree_removed=bool(removed),
+                     worktree_removed=bool(removed), refused=state["refused"],
                      question={"id": asked["id"], "text": asked["question"]} if asked else None)
         return reason
+
+    def _end_sessions(self, state):
+        """Close every session the unit kept; the unit has stopped for good and continues none of them."""
+        state, ended = facts.forget_sessions(state)
+        agents = {ex["id"]: ex["agent"] for ex in self.contract["executions"]}
+        for execution, token in ended:
+            try:
+                self.agents.end_session(agents[execution], token)
+            except Exception:
+                pass  # the engine's shutdown still ends every process it started
+        if ended:
+            self._save(state)
+            self._append({"type": "sessions_closed", "executions": [execution for execution, _ in ended]})
 
     def _discard(self, started):
         """Remove the unit's two worktrees once it ended for good; its changes are kept in patch.diff.

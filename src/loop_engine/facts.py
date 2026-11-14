@@ -230,7 +230,7 @@ def deps(contract, fid):
 def new_state(tree, changed=()):
     return {"tree": tree, "changed": sorted(changed), "facts": {}, "votes": {},
             "invalid": {}, "feedback": {}, "last_findings": {}, "reported": {}, "rounds": 0, "stop": None,
-            "notes": [], "log": []}
+            "notes": [], "log": [], "sessions": {}, "refused": {}}
 
 
 def content(contract, state, fid):
@@ -539,6 +539,51 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
     return state
 
 
+# ---- agent sessions --------------------------------------------------------------------------
+#
+# Each execution keeps the session its first turn ran in, and every later turn of the same
+# execution continues it. A session belongs to one execution: no other execution is ever
+# given its token. Sessions end when the unit stops for good.
+
+def session_of(state, execution_id):
+    """The session the execution's next turn continues, or None to start a new one."""
+    entry = state["sessions"].get(execution_id)
+    return entry["token"] if entry else None
+
+
+def delivered(state, execution_id):
+    """What the execution's session has been sent: report id -> digest of the text it was given."""
+    entry = state["sessions"].get(execution_id)
+    return dict(entry["reports"]) if entry else {}
+
+
+def remember_session(state, execution_id, token, reports):
+    """Keep the session a turn ran in and what it has now been given; None forgets it."""
+    state = json.loads(json.dumps(state))
+    if token is None:
+        state["sessions"].pop(execution_id, None)
+    else:
+        state["sessions"][execution_id] = {"token": token, "reports": dict(reports)}
+    return state
+
+
+def forget_sessions(state):
+    """(state without sessions, [(execution, token)] to close): the unit stopped for good."""
+    state = json.loads(json.dumps(state))
+    ended = sorted((eid, entry["token"]) for eid, entry in state["sessions"].items())
+    state["sessions"] = {}
+    return state, ended
+
+
+def count_refused(state, execution_id, count):
+    """Add the requests of a turn that the agent's transport refused to the execution's count."""
+    if not count:
+        return state
+    state = json.loads(json.dumps(state))
+    state["refused"][execution_id] = state["refused"].get(execution_id, 0) + count
+    return state
+
+
 # ---- requests from outside the unit --------------------------------------------------------
 
 def answer(state, question_id, text):
@@ -573,4 +618,5 @@ def summary(contract, state):
     """How each fact stands, for the result: what holds, how it was judged, and what was noted."""
     return {"facts": {f["id"]: {"by": f["by"], "required": f["required"], "holds": held(contract, state, f["id"])}
                       for f in contract["facts"]},
-            "notes": state["notes"], "turns": state["log"], "rounds": state["rounds"]}
+            "notes": state["notes"], "turns": state["log"], "rounds": state["rounds"],
+            "refused": dict(state["refused"])}

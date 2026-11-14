@@ -1,4 +1,10 @@
-"""Pure: compose the text of one turn from the contract, the execution and the protocol templates."""
+"""Pure: compose the text of one turn from the contract, the execution and the protocol templates.
+
+The first turn of a session gets the role's full message. A later turn of the
+same session gets the role's follow-up: what is new since the session's
+previous turn, and how to answer.
+"""
+import hashlib
 
 
 def _bullets(items, empty="(none)"):
@@ -41,6 +47,34 @@ def _finding(item):
                                       str(item.get("description", ""))) if part)
 
 
+def digests(reports):
+    """Report id -> digest of its text: what a session was given."""
+    return {fid: hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] for fid, text in reports.items()}
+
+
+def changed_reports(reports, sent):
+    """The reports whose text the session has not been given."""
+    now = digests(reports)
+    return {fid: text for fid, text in reports.items() if sent.get(fid) != now[fid]}
+
+
+def follow_up(templates, contract, execution, feedback, *, check_commands, changed, reports, sent):
+    """The message that continues an execution's session: feedback, what changed, and how to answer.
+
+    `sent` is what the session was already given (`digests`); only reports it has not seen go in.
+    """
+    return templates[kind(contract, execution) + "-follow-up"].format(
+        feedback=_bullets(map(_finding, feedback)),
+        checks="\n".join(check_commands) if check_commands else "(no checks are configured for this turn)",
+        changed=_bullets(changed),
+        reports=_reports(changed_reports(reports, sent)),
+    )
+
+
+def _reports(reports):
+    return "\n\n".join(f"### {fid}\n\n{text.strip()}" for fid, text in reports.items()) or "(none)"
+
+
 def compose(templates, contract, execution, feedback, *, check_commands, changed, base, reports):
     """`templates` maps writer | reviewer | reporter -> text with named fields."""
     unit = contract["unit"]
@@ -53,5 +87,5 @@ def compose(templates, contract, execution, feedback, *, check_commands, changed
         checks="\n".join(check_commands) if check_commands else "(no checks are configured for this turn)",
         changed=_bullets(changed),
         base=base,
-        reports="\n\n".join(f"### {fid}\n\n{text.strip()}" for fid, text in reports.items()) or "(none)",
+        reports=_reports(reports),
     )

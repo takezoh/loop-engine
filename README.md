@@ -3,17 +3,18 @@
 委任された 1 単位の作業を、契約にある事実がすべて成立するまで host 上で進める engine。作る・機械検査する・独立に評価する、を agent に行わせ、engine 自身は判断の規則と記録だけを持つ。
 
 - engine が起動するのは git と、対応表にある agent の command だけである。project の command は実行しない。
-- sandbox を持たず、agent に sandbox や承認の指定を渡さない。project code は agent が自分の sandbox の中で実行する。
+- sandbox を持たず、agent に sandbox や承認の指定を渡さない。project code は agent が自分の sandbox の中で実行する。agent の承認の要求は明示的に拒否し、turn は続ける。
+- 同じ実行が再び走るときは、その実行の agent session を続け、新しいことだけを送る。
 - Profile、skill、判断知識を知らない。受け取るのは契約(成立させる事実と、それを成立させられる実行)だけである。
 
-決定の理由は [docs/adr/](docs/adr/) の 4 件、現在の構造は [docs/architecture.md](docs/architecture.md) にある。
+決定の理由は [docs/adr/](docs/adr/)、現在の構造は [docs/architecture.md](docs/architecture.md) にある。
 
 ## 配置
 
 | path | 内容 |
 |---|---|
 | `src/loop_engine/` | engine 本体。`facts.py` と `prompts.py` は値だけを扱う |
-| `src/loop_engine/protocol/` | agent に渡す定型文(書く役、評価役、報告役) |
+| `src/loop_engine/protocol/` | agent に渡す定型文(書く役、評価役、報告役の、session の最初のメッセージと続きのメッセージ) |
 | `tests/` | 実際の git repository と engine process を使うテスト。agent は台本で動く偽物 |
 | `tools/` | 記録の集計と、実際の agent を使う scenario の実行 |
 | `docs/` | 決定(ADR)と構造。dev-docs の独立した docs root |

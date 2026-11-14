@@ -42,6 +42,8 @@ class UnitReportTest(EngineCase):
         self.assertEqual(({"done": 1, "rounds_exhausted": 1}, 6, 2),
                          (summary["stops"], summary["turns_total"], summary["turns_repeated"]))
         self.assertEqual(0, summary["results_not_counted"])
+        self.assertEqual(["new", "new", "continued", "continued"], [turn["session"] for turn in done["turns"]])
+        self.assertEqual(2, summary["turns_continued"])  # u1's second producer and reviewer turns
 
         def vague(request, commands, cancelled):
             from loop_engine.agents import TurnOutcome
@@ -55,6 +57,17 @@ class UnitReportTest(EngineCase):
         self.assertEqual("reply must end with the criteria/findings object", unclear["turns"][1]["not_counted"])
         self.assertEqual(2, unit_report.summarize([unclear])["results_not_counted"])
         self.assertIn("not counted (reply must end", unit_report.render([unclear], unit_report.summarize([unclear])))
+        def refusing(request, commands, cancelled):
+            from loop_engine.agents import TurnOutcome
+            made = produced(request, commands) if request.role == "producer" else approve(request)
+            return TurnOutcome(made.completed, made.text, made.actions, refused=3 if request.role == "producer" else 0)
+        engine = self.engine(refusing)
+        engine.handle({"request": "start", "contract": self.contract(unit_id="u4")})
+        self.run_to_stop(engine, "u4")
+        asked = unit_report.load_unit(self.root, "u4")
+        self.assertEqual({"producer": 3}, asked["refused_by_execution"])
+        self.assertEqual(3, unit_report.summarize([asked])["refused_requests"])
+        self.assertIn("producer: requests refused 3 times", unit_report.render([asked], unit_report.summarize([asked])))
         text = unit_report.render(units, summary)
         self.assertIn("u1: done | rounds 1 | 4 turns", text)
         self.assertIn("finding [major] c1 out.txt", text)
