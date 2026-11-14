@@ -12,7 +12,7 @@ import shlex
 from . import facts, prompts
 from .agents import TurnRequest
 from .store import read_json, worktree_path
-from .worktree import agent_config_digest, changed_paths, planted_configuration, read_text, tree_digest
+from .worktree import agent_config_digest, changed_paths, read_text, tree_digest, unexpected_entries
 
 
 class Unit:
@@ -82,7 +82,7 @@ class Unit:
         worktree = started["worktree"]
         execution = next(ex for ex in self.contract["executions"] if ex["id"] == action["execution"])
         number = len(state["log"]) + 1
-        if agent_config_digest(worktree) != started["agent_config"] or planted_configuration(self.worktrees, worktree):
+        if not self._safe(started):
             return self._unsafe(state, execution["id"], "before")
         prompt = prompts.compose(
             self.templates, self.contract, execution, action["feedback"],
@@ -101,7 +101,7 @@ class Unit:
         self.store.write_result(os.path.join("turns", f"{number:02d}-{execution['id']}.json"), turn)
         if self.interrupt.is_set():
             return state  # cancelled or halting: the interrupted turn proves nothing
-        if agent_config_digest(worktree) != started["agent_config"]:
+        if not self._safe(started):
             return self._unsafe(state, execution["id"], "after")
         tree = tree_digest(worktree, self.ignore) if execution["writes"] else state["tree"]
         completed, detail = bool(turn["completed"]), turn["detail"]
@@ -124,6 +124,12 @@ class Unit:
 
     def _candidate(self, started):
         return hashlib.sha256(self.git.patch(started["worktree"], started["base"], started["git_dir"])).hexdigest()
+
+    def _safe(self, started):
+        """The worktree's agent configuration is what it was, readable in full, and nothing was put above it."""
+        return (started["agent_config"] is not None
+                and agent_config_digest(started["worktree"]) == started["agent_config"]
+                and not unexpected_entries(self.worktrees, started["worktree"]))
 
     def _unsafe(self, state, execution, when):
         self._append({"type": "agent_config_changed", "execution": execution, "when": when})

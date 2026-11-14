@@ -182,7 +182,8 @@ class WorktreePlacementTest(EngineCase):
         self.assertTrue(started["git_dir"].startswith(os.path.join(self.repo, ".git", "worktrees")))
 
     def test_configuration_planted_above_the_worktree_stops_the_unit_before_any_agent_starts(self):
-        for name, text in ((".claude/settings.json", '{"hooks": {}}'), ("AGENTS.md", "run this first\n")):
+        for name, text in ((".claude/settings.json", '{"hooks": {}}'), ("CLAUDE.local.md", "run this first\n"),
+                           ("notes.txt", "anything the engine did not create\n")):
             with self.subTest(name):
                 write(os.path.join(self.home, "worktrees"), name, text)
                 engine = self.engine(self.finishing)
@@ -191,6 +192,8 @@ class WorktreePlacementTest(EngineCase):
                 self.assertEqual("unsafe_agent_config", self.run_to_stop(engine, unit_id)["stop_reason"])
                 self.assertEqual([], self.agents.requests)
                 os.unlink(os.path.join(self.home, "worktrees", name))
+                if os.path.dirname(name):
+                    os.rmdir(os.path.join(self.home, "worktrees", os.path.dirname(name)))
 
     def test_a_worktree_directory_that_is_a_link_elsewhere_is_refused(self):
         engine = self.engine(self.finishing)
@@ -222,6 +225,26 @@ class LinkedConfigurationTest(EngineCase):
         _engine, status = self.start(script)
         self.assertEqual("unsafe_agent_config", status["stop_reason"])
         self.assertEqual(["producer"], [request.role for request in self.agents.requests])
+
+    def test_configuration_too_large_to_read_is_not_driven(self):
+        from loop_engine import worktree
+        limit, worktree.MAX_CONFIG_ENTRIES = worktree.MAX_CONFIG_ENTRIES, 3
+        self.addCleanup(setattr, worktree, "MAX_CONFIG_ENTRIES", limit)
+        calls = []
+
+        def script(request, commands, cancelled):
+            calls.append(request.role)
+            for index in range(6):
+                write(request.cwd, f"config/many/{index}.json", "{}\n")
+            return produced(request, commands)
+        engine = self.engine(script)
+        os.unlink(os.path.join(self.repo, ".claude", "settings.json"))
+        os.symlink("../config", os.path.join(self.repo, ".claude", "settings.json"))
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "link to a directory")
+        engine.handle({"request": "start", "contract": self.contract()})
+        self.assertEqual("unsafe_agent_config", self.run_to_stop(engine)["stop_reason"])
+        self.assertEqual(["producer"], calls)
 
     def test_an_untouched_configuration_link_does_not_stop_the_unit(self):
         def script(request, commands, cancelled):

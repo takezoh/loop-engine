@@ -6,63 +6,110 @@ them; it only detects that they differ from the moment the worktree was made.
 """
 import hashlib
 import os
+import re
 import stat
 
 from .check_runner import tree_digest  # the engine and the check program digest a tree the same way
 
 AGENT_CONFIG_DIRS = (".claude", ".codex", ".pi", ".agents")
 AGENT_CONFIG_FILES = (".mcp.json",)
-AGENT_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "AGENTS.override.md")
 MAX_LINK_DEPTH = 4
+MAX_CONFIG_ENTRIES = 2000
+MAX_CONFIG_BYTES = 16 * 1024 * 1024
 
 
-def _target(path, depth):
+class TooLarge(Exception):
+    """The agent configuration is more than the engine will read; the unit is not safe to drive."""
+
+
+class _Budget:
+    """Counts what one digest reads, so a link into a huge tree cannot keep the engine busy."""
+
+    def __init__(self):
+        self.entries, self.bytes = 0, 0
+
+    def entry(self):
+        self.entries += 1
+        if self.entries > MAX_CONFIG_ENTRIES:
+            raise TooLarge()
+
+    def read(self, path, digest):
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 16), b""):
+                self.bytes += len(block)
+                if self.bytes > MAX_CONFIG_BYTES:
+                    raise TooLarge()
+                digest.update(block)
+
+
+def _target(path, depth, budget):
     """What a link resolves to: the content of a file, or of every file under a directory.
 
     A link's text can stay the same while what it points at changes, and that target can lie
     anywhere an agent may write. The digest therefore covers the target, not only the link.
     """
     resolved = os.path.realpath(path)
-    if depth >= MAX_LINK_DEPTH or not os.path.exists(resolved):
+    if not os.path.exists(resolved):
         return "unresolved"
+    if depth >= MAX_LINK_DEPTH:
+        raise TooLarge()
     digest = hashlib.sha256()
     if os.path.isfile(resolved):
         try:
-            with open(resolved, "rb") as handle:
-                for block in iter(lambda: handle.read(1 << 16), b""):
-                    digest.update(block)
+            budget.read(resolved, digest)
         except OSError:
             return "unreadable"
         return f"file:{digest.hexdigest()}"
     for directory, directories, files in os.walk(resolved, followlinks=False):
         directories.sort()
         for name in sorted([*files, *[d for d in directories if os.path.islink(os.path.join(directory, d))]]):
+            budget.entry()
             inner = os.path.join(directory, name)
-            content = _target(inner, depth + 1)
+            if os.path.islink(inner):
+                content = f"link:{os.readlink(inner)}:{_target(inner, depth + 1, budget)}"
+            elif os.path.isfile(inner):
+                inner_digest = hashlib.sha256()
+                try:
+                    budget.read(inner, inner_digest)
+                    content = f"file:{inner_digest.hexdigest()}"
+                except OSError:
+                    content = "unreadable"
+            else:
+                content = "special"
             digest.update(f"{os.path.relpath(inner, resolved)}\0{content}\0".encode("utf-8", "surrogateescape"))
     return f"dir:{digest.hexdigest()}"
 
 
-def _entry(root, relative):
+def _entry(root, relative, budget=None):
+    budget = budget or _Budget()
     path = os.path.join(root, relative)
     try:
         info = os.lstat(path)
     except OSError:
         return None
     if stat.S_ISLNK(info.st_mode):
-        return f"link:{os.readlink(path)}:{_target(path, 0)}"
+        return f"link:{os.readlink(path)}:{_target(path, 0, budget)}"
     if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
         # Agents and their sandboxes leave empty placeholder files; they define nothing.
         return None
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 16), b""):
-            digest.update(block)
+    budget.read(path, digest)
     return f"file:{digest.hexdigest()}"
 
 
 def agent_config_digest(root):
-    """A digest of every non-empty file and link under the agent configuration paths."""
+    """A digest of every non-empty file and link under the agent configuration paths.
+
+    None when the configuration is more than the engine will read: the caller must not drive the unit.
+    """
+    try:
+        return _agent_config_digest(root)
+    except TooLarge:
+        return None
+
+
+def _agent_config_digest(root):
+    budget = _Budget()
     relatives = [name for name in AGENT_CONFIG_FILES]
     for top in AGENT_CONFIG_DIRS:
         base = os.path.join(root, top)
@@ -74,9 +121,12 @@ def agent_config_digest(root):
                 if os.path.islink(os.path.join(directory, name)):
                     files.append(name)
             relatives.extend(os.path.relpath(os.path.join(directory, name), root) for name in files)
+            if len(relatives) > MAX_CONFIG_ENTRIES:
+                raise TooLarge()
     digest = hashlib.sha256()
     for relative in sorted(relatives):
-        entry = _entry(root, relative)
+        budget.entry()
+        entry = _entry(root, relative, budget)
         if entry is not None:
             digest.update(f"{relative}\0{entry}\0".encode("utf-8", "surrogateescape"))
     return digest.hexdigest()
@@ -119,23 +169,30 @@ def read_text(worktree, relative):
         return None
 
 
-def planted_configuration(worktrees, worktree):
-    """Agent configuration or instruction files in the directories above a worktree.
+NAMESPACE_RE = re.compile(r"^[0-9a-f]{64}$")
+UNIT_DIRECTORY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}-[0-9a-f]{16}(\.base)?$")
 
-    The worktree directory is writable by every agent on the machine. Some agents read
-    configuration and instructions from parent directories, so anything of that kind between
-    the worktree and the worktree root was put there by something other than the engine.
+
+def unexpected_entries(worktrees, worktree):
+    """Anything in the directories above a worktree that the engine did not create.
+
+    The worktree root is writable by every agent on the machine, and agents read configuration
+    and instructions from parent directories. The engine creates only namespace directories in
+    the root and unit directories in a namespace, so anything else was put there by something
+    else and the unit is not driven.
     """
+    root = os.path.realpath(worktrees)
+    namespace = os.path.dirname(os.path.realpath(worktree))
     found = []
-    top = os.path.realpath(worktrees)
-    directory = os.path.dirname(os.path.realpath(worktree))
-    while os.path.commonpath([top, directory]) == top:
-        for name in (*AGENT_CONFIG_DIRS, *AGENT_CONFIG_FILES, *AGENT_INSTRUCTION_FILES):
+    for directory, pattern in ((root, NAMESPACE_RE), (namespace, UNIT_DIRECTORY_RE)):
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            return [directory]
+        for name in names:
             path = os.path.join(directory, name)
-            if os.path.islink(path) or os.path.isdir(path) or (os.path.isfile(path) and os.path.getsize(path) > 0):
+            if not pattern.match(name) or os.path.islink(path) or not os.path.isdir(path):
                 found.append(path)
-        if directory == top:
-            break
-        directory = os.path.dirname(directory)
+    if os.path.dirname(namespace) != root:
+        found.append(namespace)
     return found
-
