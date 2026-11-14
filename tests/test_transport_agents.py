@@ -37,7 +37,6 @@ class Driver:
     """A protocol driver that records each turn and ends it as the test scripted."""
 
     transport = "scripted"
-    enforces_writable_roots = False
     traits = DriverTraits(shared_host=True, startup_timeout=5.0, startup_grace=0.0, unload_timeout=1.0)
 
     def __init__(self):
@@ -113,7 +112,6 @@ class TransportAgentsTest(unittest.TestCase):
         turn = self.driver.turns[0]
         self.assertEqual((self.cwd, "do the work", "model-a", "high", "codex"), (
             turn.cwd, turn.request.prompt, turn.request.model, turn.request.effort, turn.request.provider))
-        self.assertIsNone(turn.request.writable_roots)
         self.assertEqual(self.origin, self.requested[0][1])
         self.assertEqual("codex", self.requested[0][0].key)
 
