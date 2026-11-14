@@ -6,12 +6,13 @@ happened. Re-running it after any interruption continues from the saved state.
 """
 import hashlib
 import os
+import secrets
 import shlex
 
 from . import facts, prompts
 from .agents import TurnRequest
 from .store import read_json, worktree_path
-from .worktree import agent_config_digest, changed_paths, read_text, tree_digest
+from .worktree import agent_config_digest, changed_paths, planted_configuration, read_text, tree_digest
 
 
 class Unit:
@@ -52,15 +53,21 @@ class Unit:
         The two differ only when the contract names an earlier base: the unit then judges an existing change.
         """
         repository, base = self.contract["repository"], self.admission["base"]
-        path = worktree_path(self.worktrees, self.git.common_dir(repository), self.store.unit_id)
-        for target, commit in ((path, self.admission["head"]), (path + ".base", base)):
-            if not os.path.isdir(target):
-                self.git.add_worktree(repository, target, commit)
+        # The worktree root is writable by every agent, so the directory gets a name nobody can
+        # prepare in advance, and it must be exactly where the engine put it: no link on the way.
+        name = f"{self.store.unit_id}-{secrets.token_hex(8)}"
+        path = worktree_path(self.worktrees, self.git.common_dir(repository), name)
+        expected = os.path.join(os.path.realpath(self.worktrees), os.path.basename(os.path.dirname(path)), name)
+        git_dir = self.git.add_worktree(repository, path, self.admission["head"])
+        self.git.add_worktree(repository, path + ".base", base)
+        if os.path.realpath(path) != expected or os.path.realpath(path + ".base") != expected + ".base":
+            raise RuntimeError("the unit worktree is not where the engine created it")
+        path = expected
         self.store.write_json("checks.json", {"cwd": path, "base": path + ".base", "ignore": self.ignore,
                                               "checks": self.admission["checks"]})
         self._save(facts.new_state(tree_digest(path, self.ignore), changed_paths(path + ".base", path, self.ignore)))
         self._append({"type": "unit_started", "base": base, "worktree": path, "base_tree": path + ".base",
-                      "agent_config": agent_config_digest(path)})
+                      "git_dir": git_dir, "agent_config": agent_config_digest(path)})
 
     def _runner(self):
         return shlex.join([self.runner[0], "-I", self.runner[1], self.store.path("checks.json")])
@@ -75,7 +82,7 @@ class Unit:
         worktree = started["worktree"]
         execution = next(ex for ex in self.contract["executions"] if ex["id"] == action["execution"])
         number = len(state["log"]) + 1
-        if agent_config_digest(worktree) != started["agent_config"]:
+        if agent_config_digest(worktree) != started["agent_config"] or planted_configuration(self.worktrees, worktree):
             return self._unsafe(state, execution["id"], "before")
         prompt = prompts.compose(
             self.templates, self.contract, execution, action["feedback"],
@@ -116,7 +123,7 @@ class Unit:
         return state
 
     def _candidate(self, started):
-        return hashlib.sha256(self.git.patch(started["worktree"], started["base"])).hexdigest()
+        return hashlib.sha256(self.git.patch(started["worktree"], started["base"], started["git_dir"])).hexdigest()
 
     def _unsafe(self, state, execution, when):
         self._append({"type": "agent_config_changed", "execution": execution, "when": when})
@@ -126,7 +133,7 @@ class Unit:
     def _stop(self, state, action):
         started = self._started()
         reason = action["reason"]
-        patch = self.git.patch(started["worktree"], started["base"]) if started else b""
+        patch = self.git.patch(started["worktree"], started["base"], started["git_dir"]) if started else b""
         self.store.write_result("patch.diff", patch)
         stop = {"stop_reason": reason, "base": started["base"] if started else None,
                 "worktree": started["worktree"] if started else None,

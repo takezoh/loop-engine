@@ -47,6 +47,14 @@ executions:  id, agent, model, effort, instructions, reads, establishes, writes,
 
 worktree は状態の置き場所とは別の、agent の sandbox が書ける場所(`DEV_SKILLS_WORKTREES`)に作る。単位ごとに、作業用と、元の commit の複製の 2 つを持つ。
 
+この場所はどの agent も書けるので、そこにあるものを信用しない。
+
+- worktree の directory 名には、単位の id に推測できない値を付ける。先に同じ名前の directory を用意されても使わない。
+- 作った worktree が、途中に link を挟まず、engine が作った場所そのものにあることを確かめる。
+- worktree より上の directory に agent 設定や指示 file があれば、agent を起動せずに止める。
+- git は、worktree を作った時点で読んだ git directory を明示して起動する。agent が worktree の `.git` を書き換えても、その先を使わない。
+- agent 設定が link の場合は、link の先の内容まで digest に含める。
+
 ## 止まり方と終了コード
 
 | 止まり方 | 終了コード | 続け方 |

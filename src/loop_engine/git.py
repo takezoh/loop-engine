@@ -44,7 +44,8 @@ class Git:
             capture_output=True, timeout=TIMEOUT_SECONDS,
         )
         if check and process.returncode != 0:
-            raise GitError(f"git {args[0]} failed: {process.stderr.decode(errors='replace')[:500]}")
+            name = next((arg for arg in args if not arg.startswith("-")), args[0])
+            raise GitError(f"git {name} failed: {process.stderr.decode(errors='replace')[:500]}")
         return process
 
     def toplevel(self, directory):
@@ -67,10 +68,21 @@ class Git:
         return process.stdout if process.returncode == 0 else None
 
     def add_worktree(self, repository, path, commit):
+        """Create a worktree and return its git directory inside the repository.
+
+        The directory is read here, before any agent has run in the worktree. Later git calls
+        name it explicitly, so a `.git` file an agent rewrites is never followed.
+        """
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self._run(repository, "worktree", "add", "--detach", path, commit)
+        git_dir = self._run(path, "rev-parse", "--absolute-git-dir").stdout.decode().rstrip("\n")
+        owned = os.path.join(os.path.realpath(self.common_dir(repository)), "worktrees")
+        if os.path.dirname(os.path.realpath(git_dir)) != owned:
+            raise GitError("the new worktree's git directory is not inside the repository")
+        return os.path.realpath(git_dir)
 
-    def patch(self, worktree, base):
+    def patch(self, worktree, base, git_dir):
         """Everything the worktree differs from `base` by, untracked files included."""
-        self._run(worktree, "add", "--all", "--", ".")
-        return self._run(worktree, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", base).stdout
+        at = (f"--git-dir={git_dir}", f"--work-tree={worktree}")
+        self._run(worktree, *at, "add", "--all", "--", ".")
+        return self._run(worktree, *at, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", base).stdout

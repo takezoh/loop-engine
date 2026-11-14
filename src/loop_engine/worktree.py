@@ -12,6 +12,35 @@ from .check_runner import tree_digest  # the engine and the check program digest
 
 AGENT_CONFIG_DIRS = (".claude", ".codex", ".pi", ".agents")
 AGENT_CONFIG_FILES = (".mcp.json",)
+AGENT_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "AGENTS.override.md")
+MAX_LINK_DEPTH = 4
+
+
+def _target(path, depth):
+    """What a link resolves to: the content of a file, or of every file under a directory.
+
+    A link's text can stay the same while what it points at changes, and that target can lie
+    anywhere an agent may write. The digest therefore covers the target, not only the link.
+    """
+    resolved = os.path.realpath(path)
+    if depth >= MAX_LINK_DEPTH or not os.path.exists(resolved):
+        return "unresolved"
+    digest = hashlib.sha256()
+    if os.path.isfile(resolved):
+        try:
+            with open(resolved, "rb") as handle:
+                for block in iter(lambda: handle.read(1 << 16), b""):
+                    digest.update(block)
+        except OSError:
+            return "unreadable"
+        return f"file:{digest.hexdigest()}"
+    for directory, directories, files in os.walk(resolved, followlinks=False):
+        directories.sort()
+        for name in sorted([*files, *[d for d in directories if os.path.islink(os.path.join(directory, d))]]):
+            inner = os.path.join(directory, name)
+            content = _target(inner, depth + 1)
+            digest.update(f"{os.path.relpath(inner, resolved)}\0{content}\0".encode("utf-8", "surrogateescape"))
+    return f"dir:{digest.hexdigest()}"
 
 
 def _entry(root, relative):
@@ -21,7 +50,7 @@ def _entry(root, relative):
     except OSError:
         return None
     if stat.S_ISLNK(info.st_mode):
-        return f"link:{os.readlink(path)}"
+        return f"link:{os.readlink(path)}:{_target(path, 0)}"
     if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
         # Agents and their sandboxes leave empty placeholder files; they define nothing.
         return None
@@ -88,3 +117,25 @@ def read_text(worktree, relative):
             return handle.read()
     except OSError:
         return None
+
+
+def planted_configuration(worktrees, worktree):
+    """Agent configuration or instruction files in the directories above a worktree.
+
+    The worktree directory is writable by every agent on the machine. Some agents read
+    configuration and instructions from parent directories, so anything of that kind between
+    the worktree and the worktree root was put there by something other than the engine.
+    """
+    found = []
+    top = os.path.realpath(worktrees)
+    directory = os.path.dirname(os.path.realpath(worktree))
+    while os.path.commonpath([top, directory]) == top:
+        for name in (*AGENT_CONFIG_DIRS, *AGENT_CONFIG_FILES, *AGENT_INSTRUCTION_FILES):
+            path = os.path.join(directory, name)
+            if os.path.islink(path) or os.path.isdir(path) or (os.path.isfile(path) and os.path.getsize(path) > 0):
+                found.append(path)
+        if directory == top:
+            break
+        directory = os.path.dirname(directory)
+    return found
+
