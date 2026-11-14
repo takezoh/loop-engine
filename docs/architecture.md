@@ -47,6 +47,8 @@ executions:  id, agent, model, effort, instructions, reads, establishes, writes,
 
 worktree は状態の置き場所とは別の、agent の sandbox が書ける場所(`DEV_SKILLS_WORKTREES`)に作る。単位ごとに、作業用と、元の commit の複製の 2 つを持つ。
 
+単位が続けられない止まり方(`waiting_for_answer`、`unknown_result`、`invalid_result` 以外)で終わると、engine は 2 つの worktree を消す。変更は `result/patch.diff` に残る。
+
 この場所はどの agent も書けるので、そこにあるものを信用しない。
 
 - worktree の directory 名には、単位の id に推測できない値を付ける。先に同じ名前の directory を用意されても使わない。

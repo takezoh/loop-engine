@@ -8,11 +8,17 @@ import hashlib
 import os
 import secrets
 import shlex
+import shutil
 
 from . import facts, prompts
 from .agents import TurnRequest
 from .store import read_json, worktree_path
-from .worktree import agent_config_digest, changed_paths, read_text, tree_digest, unexpected_entries
+from .worktree import (
+    UNIT_DIRECTORY_RE, agent_config_digest, changed_paths, read_text, tree_digest, unexpected_entries,
+)
+
+# Stops a later request can continue from keep their worktree; every other stop is final.
+CONTINUABLE = ("waiting_for_answer", "unknown_result", "invalid_result")
 
 
 class Unit:
@@ -148,10 +154,30 @@ class Unit:
                 **facts.summary(self.contract, state)}
         self.store.write_result("stop.json", stop)
         self._append({"type": "stopped", "stop_reason": reason})
+        removed = reason not in CONTINUABLE and started is not None and self._discard(started)
         asked = action.get("question") if reason == "waiting_for_answer" else None
         self._status(state="stopped", stop_reason=reason, round=state["rounds"], worktree=stop["worktree"],
+                     worktree_removed=bool(removed),
                      question={"id": asked["id"], "text": asked["question"]} if asked else None)
         return reason
+
+    def _discard(self, started):
+        """Remove the unit's two worktrees once it ended for good; its changes are kept in patch.diff.
+
+        Only a directory the engine created is removed: it must still be where the engine put it,
+        with the name the engine gave it. Links inside it are removed, never followed.
+        """
+        root = os.path.realpath(self.worktrees)
+        removed = True
+        for path in (started["worktree"], started["base_tree"]):
+            inside = os.path.dirname(os.path.dirname(path)) == root and UNIT_DIRECTORY_RE.match(os.path.basename(path))
+            if not inside or os.path.islink(path) or os.path.realpath(path) != path:
+                removed = False
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            removed = removed and not os.path.exists(path)
+        self.git.prune_worktrees(self.contract["repository"])
+        return removed
 
     def run(self):
         """Advance until a stop and return its reason, or None when the engine is halting."""

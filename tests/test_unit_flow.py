@@ -292,6 +292,27 @@ class FlowTest(EngineCase):
         unknown["unit"]["base"] = "0" * 40
         self.assertIn("unit.base", engine.handle({"request": "start", "contract": unknown})["error"])
 
+    def test_a_unit_that_ended_for_good_leaves_no_worktree_and_one_that_can_continue_keeps_it(self):
+        asked = []
+
+        def script(request, commands, cancelled):
+            if request.unit_id == "ask" and not asked:
+                asked.append(request.role)
+                return TurnOutcome(True, '{"question": "which?", "id": "q-1"}', actions())
+            return produced(request, commands) if request.role == "producer" else approve(request)
+        engine, status = self.start(script)
+        self.assertEqual(("done", True), (status["stop_reason"], status["worktree_removed"]))
+        self.assertFalse(os.path.exists(status["worktree"]))
+        self.assertFalse(os.path.exists(status["worktree"] + ".base"))
+        self.assertIn(b"+made by the producer", self.result("patch.diff"))
+        self.assertNotIn(os.path.basename(status["worktree"]), git_out(self.repo, "worktree", "list"))
+        engine.handle({"request": "start", "contract": self.contract(unit_id="ask")})
+        waiting = self.run_to_stop(engine, "ask")
+        self.assertEqual(("waiting_for_answer", False), (waiting["stop_reason"], waiting["worktree_removed"]))
+        self.assertTrue(os.path.isdir(waiting["worktree"]))
+        engine.handle({"request": "answer", "unit_id": "ask", "question_id": "q-1", "answer": "the first"})
+        self.assertEqual(("done", True), (lambda s: (s["stop_reason"], s["worktree_removed"]))(self.run_to_stop(engine, "ask")))
+
     def test_unit_without_checks_goes_straight_to_review(self):
         def script(request, commands, cancelled):
             self.assertEqual({}, commands)

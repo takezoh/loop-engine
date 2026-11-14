@@ -81,6 +81,10 @@ class Git:
             raise GitError("the new worktree's git directory is not inside the repository")
         return os.path.realpath(git_dir)
 
+    def prune_worktrees(self, repository):
+        """Forget worktrees whose directories are gone."""
+        self._run(repository, "worktree", "prune", check=False)
+
     def patch(self, worktree, base, git_dir):
         """Everything the worktree differs from `base` by, untracked files included."""
         at = (f"--git-dir={git_dir}", f"--work-tree={worktree}")
