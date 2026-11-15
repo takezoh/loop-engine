@@ -23,7 +23,7 @@ updated: '2026-11-14'
 
 sandbox は、姉妹 repository の agent-environments が claude、codex、pi に共通の方針で提供している。dev-skills が別の sandbox を持つ理由はない。その repository の決定は、sandbox の外で実行させる経路に「実行される program が固定で、呼び出し側が子 program を選べないこと」と「実体が sandbox から書ける場所にないこと」を求めている。
 
-調査の事実と実測は[調査記録](../../../docs/note/note-20261114-loop-engine-redesign-investigation.md)にある。
+調査の事実と実測は[調査記録](../note/note-20261114-loop-engine-redesign-investigation.md)にある。
 
 ## ユーザーが述べた要件(2026-11-14)
 
