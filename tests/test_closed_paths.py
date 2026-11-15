@@ -9,6 +9,7 @@ import unittest
 from engine_support import SRC, EngineCase, approve, git, produced, recorded, write
 
 from loop_engine import git as engine_git
+from loop_engine.platform_facts import CURRENT
 
 PACKAGE = os.path.join(SRC, "loop_engine")
 MODULES = sorted(name for name in os.listdir(PACKAGE) if name.endswith(".py"))
@@ -73,8 +74,8 @@ class StructureTest(unittest.TestCase):
                 self.assertNotIn("cross_host_transport", source(name), name)
 
     def test_git_arguments_always_carry_the_safe_prefix(self):
-        for needle in ("core.hooksPath=/dev/null", "core.fsmonitor=false", "diff.external=",
-                       "core.attributesFile=/dev/null", f"--attr-source={engine_git.EMPTY_TREE}"):
+        for needle in (f"core.hooksPath={CURRENT.null_device}", "core.fsmonitor=false", "diff.external=",
+                       f"core.attributesFile={CURRENT.null_device}", f"--attr-source={engine_git.EMPTY_TREE}"):
             self.assertIn(needle, engine_git.SAFE)
         tree = ast.parse(source("git.py"))
         runs = [node for node in ast.walk(tree) if isinstance(node, ast.Call)

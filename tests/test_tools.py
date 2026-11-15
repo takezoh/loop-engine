@@ -15,6 +15,7 @@ import scenarios  # noqa: E402
 import unit_report  # noqa: E402
 
 from loop_engine import facts  # noqa: E402
+from loop_engine.platform_facts import CURRENT  # noqa: E402
 
 
 class UnitReportTest(EngineCase):
@@ -96,7 +97,7 @@ class ScenarioTest(unittest.TestCase):
         for name in sorted(os.listdir(root)):
             with self.subTest(name), tempfile.TemporaryDirectory() as work:
                 contract, expect = scenarios.prepare(os.path.join(root, name), work, unit_id="fixed-id")
-                facts.validate(contract)
+                facts.validate(contract, CURRENT.path_style)
                 self.assertEqual(("fixed-id", os.path.join(work, "repo")), (contract["unit_id"], contract["repository"]))
                 self.assertTrue(os.path.isdir(os.path.join(work, "repo", ".git")))
                 self.assertIn("stop_reason", expect)

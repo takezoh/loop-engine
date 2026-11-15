@@ -3,7 +3,6 @@
 Entries (CLI, MCP) read status and results from here and never write. A unit's
 events are the source of truth; status and results are derived views.
 """
-import errno
 import hashlib
 import json
 import os
@@ -12,6 +11,7 @@ import tempfile
 from threading import Lock
 
 from .facts import ID_RE
+from .platform_facts import CURRENT
 
 ROOT_NAME = "loop-engine"
 
@@ -42,7 +42,7 @@ def worktree_path(worktrees, common_dir, unit_id):
 
 
 def unit_dir(root, unit_id):
-    if not isinstance(unit_id, str) or not ID_RE.match(unit_id):
+    if not isinstance(unit_id, str) or not ID_RE.fullmatch(unit_id):
         raise ValueError("invalid unit id")
     return os.path.join(root, "units", unit_id)
 
@@ -74,7 +74,7 @@ def list_units(root):
         names = sorted(os.listdir(os.path.join(root, "units")))
     except OSError:
         return []
-    return [name for name in names if ID_RE.match(name)]
+    return [name for name in names if ID_RE.fullmatch(name)]
 
 
 class UnitStore:
@@ -189,8 +189,9 @@ def publish_check_program(root, source):
 
     Agents run the copy: their sandbox can read the state home, not the engine's code location.
     Publishing is idempotent and safe against a concurrent engine: the content is written under a
-    temporary name in the same directory and linked to the final name, which never replaces a file
-    already there. A file already there must hold the same content; it is never overwritten.
+    temporary name in the same directory and given the final name in a way that never replaces a file
+    already there (`Platform.place_new`). A file already there must hold the same content; it is never
+    overwritten.
     """
     with open(source, "rb") as handle:
         data = handle.read()
@@ -205,12 +206,10 @@ def publish_check_program(root, source):
                 written.flush()
                 os.fsync(written.fileno())
             os.chmod(temporary, 0o444)
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                pass  # another engine published it first; its content is checked below
-        finally:
+        except BaseException:
             os.unlink(temporary)
+            raise
+        CURRENT.place_new(temporary, path)  # when another engine published it first, its content is checked below
     return verified_check_program(path)
 
 
@@ -283,25 +282,14 @@ class LockFailed(Exception):
     """The lock could not be taken for a reason other than another process holding it."""
 
 
-def lock_contended(error, *, windows):
+def lock_contended(error, held):
     """Whether a refused non-blocking lock means that another process holds it.
 
-    Any other errno (permission, a missing directory, a filesystem without locks)
-    is a failure to lock, not a sign of another engine.
+    `held` is the platform's errnos for a lock another process holds (`Platform.lock_held`). Any
+    other errno (permission, a missing directory, a filesystem without locks) is a failure to
+    lock, not a sign of another engine.
     """
-    if windows:
-        return error.errno == errno.EACCES  # msvcrt.locking with LK_NBLCK on a locked byte
-    return error.errno in (errno.EAGAIN, errno.EWOULDBLOCK)  # flock with LOCK_NB on a locked file
-
-
-def _take(handle, *, windows):
-    if windows:
-        import msvcrt
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return error.errno in held
 
 
 class ProcessLock:
@@ -315,17 +303,16 @@ class ProcessLock:
 
         Raises `LockFailed`, naming the cause, when the lock cannot be taken at all.
         """
-        windows = os.name == "nt"
         try:
             os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
             handle = open(self.path, "a+b")
         except OSError as error:
             raise LockFailed(f"cannot open the lock file {self.path}: {error}") from error
         try:
-            _take(handle, windows=windows)
+            CURRENT.lock(handle)
         except OSError as error:
             handle.close()
-            if lock_contended(error, windows=windows):
+            if lock_contended(error, CURRENT.lock_held):
                 return False
             raise LockFailed(f"cannot lock {self.path}: {error}") from error
         self._handle = handle

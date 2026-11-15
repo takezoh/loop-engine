@@ -18,6 +18,7 @@ from loop_engine import composition, facts, store  # noqa: E402
 from loop_engine.agents import TurnOutcome  # noqa: E402
 from loop_engine.check_runner import tree_digest  # noqa: E402
 from loop_engine.git import Git  # noqa: E402
+from loop_engine.platform_facts import CURRENT  # noqa: E402
 from loop_engine.service import Engine  # noqa: E402
 
 RUNNER = os.path.join(SRC, "loop_engine", "check_runner.py")
@@ -141,7 +142,7 @@ class ScriptedAgents:
             return TurnOutcome(False, None, None, "session-not-continuable: scripted", session_lost=True)
         self.nth[request.role] = self.nth.get(request.role, 0) + 1
         unit = store.UnitStore(self.root, request.unit_id)
-        runner = shlex.join([sys.executable, "-I", published_runner(self.root), unit.path("checks.json")])
+        runner = CURRENT.quote([sys.executable, "-I", published_runner(self.root), unit.path("checks.json")])
         CHECKS_FILES[request.cwd] = unit.path("checks.json")
         commands = {}
         for name in facts.check_names(unit.contract())[0]:
@@ -233,7 +234,7 @@ class EngineCase(unittest.TestCase):
         self.agents = ScriptedAgents(self.root, script, durable)
         engine = Engine(self.root, git=Git(os.environ), agents=self.agents,
                         templates=composition.load_templates(), runner=(sys.executable, RUNNER),
-                        worktrees=os.path.join(self.home, "worktrees"),
+                        worktrees=os.path.join(self.home, "worktrees"), platform=CURRENT,
                         clock=lambda: "2026-01-01T00:00:00+00:00", **options)
         self.addCleanup(engine.halt)
         return engine

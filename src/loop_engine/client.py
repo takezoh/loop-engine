@@ -10,6 +10,7 @@ import time
 import uuid
 
 from . import store
+from .platform_facts import CURRENT
 
 ENGINE_MAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__main__.py")
 POLL_SECONDS = 0.1
@@ -45,7 +46,7 @@ def ensure_engine(root, environ):
     process = subprocess.Popen(
         engine_command(), env=dict(environ), cwd=os.path.dirname(ENGINE_MAIN),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **CURRENT.detached,
     )
     _started.append(process)
     return process

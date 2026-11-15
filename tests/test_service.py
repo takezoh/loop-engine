@@ -15,6 +15,7 @@ from engine_support import RUNNER, SRC, EngineCase, approve, changes, produced, 
 
 from loop_engine import cli, client, store
 from loop_engine.agents import TurnOutcome
+from loop_engine.platform_facts import CURRENT, POSIX, WINDOWS
 from loop_engine.service import Engine
 
 
@@ -227,7 +228,7 @@ class ProcessLockTest(unittest.TestCase):
         for windows, code, contended in cases:
             with self.subTest(windows=windows, errno=errno.errorcode[code]):
                 error = OSError(code, os.strerror(code))
-                self.assertIs(contended, store.lock_contended(error, windows=windows))
+                self.assertIs(contended, store.lock_contended(error, (WINDOWS if windows else POSIX).lock_held))
 
     def test_an_entry_that_cannot_lock_reports_the_cause_instead_of_assuming_an_engine(self):
         blocker = os.path.join(self.directory, "home")
@@ -236,7 +237,7 @@ class ProcessLockTest(unittest.TestCase):
         with self.assertRaisesRegex(client.EngineUnavailable, "cannot be locked: cannot open the lock file"):
             client.ensure_engine(blocker, dict(os.environ))
         engine = Engine(os.path.join(self.directory, "state"), git=None, agents=None, templates={},
-                        runner=(sys.executable, RUNNER), worktrees=self.directory)
+                        runner=(sys.executable, RUNNER), worktrees=self.directory, platform=CURRENT)
         with self.assertRaises(store.LockFailed):
             engine.serve(client.lock_path(blocker))
 

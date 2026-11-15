@@ -1,7 +1,6 @@
 """What the engine judges a worktree against, and that what it cannot read makes a judgment fail."""
 import json
 import os
-import shlex
 import shutil
 import stat
 import sys
@@ -14,6 +13,7 @@ from engine_support import (
 
 from loop_engine import facts, store
 from loop_engine.agents import TurnOutcome
+from loop_engine.platform_facts import CURRENT
 from loop_engine.worktree import Unreadable, agent_config_digest, changed_paths, tree_digest
 
 TEST = ("import os, sys, unittest\nsys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
@@ -86,7 +86,7 @@ class FailsOnBaseTest(EngineCase):
         return contract
 
     def ran_both(self, request):
-        runner = shlex.join([sys.executable, "-I", published_runner(self.root),
+        runner = CURRENT.quote([sys.executable, "-I", published_runner(self.root),
                              store.UnitStore(self.root, request.unit_id).path("checks.json")])
         return actions(("edit", None, None), *[
             ("command", command, run_command(command, request.cwd))

@@ -30,6 +30,11 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 LIMIT_KEYS = frozenset({"rounds"})
 # What a check must show: it passes on the candidate, or the candidate's tests fail on the base revision.
 CHECK_EXPECT = ("pass", "fails_on_base")
+# How an absolute path of the machine looks; the platform's facts name one (`platform_facts`).
+PATH_STYLES = ("posix", "windows")
+WINDOWS_NAME_RE = re.compile(r'[^\\/:*?"<>|\x00-\x1f]+')
+# A name Windows opens as a device, with or without an extension: CON, NUL.txt, com1.log.
+WINDOWS_DEVICE_RE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", re.IGNORECASE | re.DOTALL)
 # The structure of a unit: the facts, the executions that can establish them, and how they refer to
 # each other. A fact has id, required, by and the keys of its kind.
 FACT_KEYS = {"given": set(), "report": set(), "git": {"subject"}, "checks": {"subject"},
@@ -63,9 +68,45 @@ def _named(kind, items, index):
     item = items[index]
     if not isinstance(item, dict):
         raise InvalidContract(f"{kind} {index + 1} must be an object")
-    if not isinstance(item.get("id"), str) or not ID_RE.match(item["id"]):
+    if not isinstance(item.get("id"), str) or not ID_RE.fullmatch(item["id"]):
         raise InvalidContract(f"{kind} {index + 1}: id {item.get('id')!r} is not an admitted id")
     return f"{kind} {item['id']}"
+
+
+def _name(part, path_style):
+    """One name of a path: not empty, not . or .., and on Windows a name a file can have: none of
+    the characters Windows refuses, not ending with a dot or a space, and not a device name."""
+    return part not in ("", ".", "..") and (path_style == "posix" or (
+        WINDOWS_NAME_RE.fullmatch(part) is not None and not part.endswith((".", " "))
+        and WINDOWS_DEVICE_RE.fullmatch(part) is None))
+
+
+def absolute_path(path, path_style):
+    """Whether `path` is a normalized absolute path of a machine with this path style.
+
+    posix: /a/b. windows: C:\\a\\b or \\\\server\\share\\a, with backslashes only."""
+    if path_style not in PATH_STYLES:
+        raise ValueError(f"unknown path style {path_style!r}")
+    if not isinstance(path, str) or "\x00" in path:
+        return False
+    if path_style == "posix":
+        parts = path.split("/")[1:] if path.startswith("/") else None
+    elif path.startswith("\\\\"):
+        parts = path[2:].split("\\")  # server, share, then the names below the share
+        parts = parts if len(parts) >= 3 else None
+    else:
+        parts = path[3:].split("\\") if re.fullmatch(r"[A-Za-z]:\\.*", path, re.DOTALL) else None
+    return parts is not None and all(_name(part, path_style) for part in parts)
+
+
+def repository_path(path, path_style):
+    """Whether `path` is a path inside the repository in git's form: names separated by "/".
+
+    The form is the same on every platform; on Windows each name must be one a file can have."""
+    if path_style not in PATH_STYLES:
+        raise ValueError(f"unknown path style {path_style!r}")
+    return (isinstance(path, str) and "\x00" not in path and not path.startswith("/")
+            and all(_name(part, path_style) for part in path.split("/")))
 
 
 def check_limits(limits):
@@ -156,16 +197,14 @@ def _without(items, keys_of):
             for item in items]
 
 
-def _shape(contract):
+def _shape(contract, path_style):
     """Keys, ids and text. No value names a program or a path the engine executes; the strings
     that reach an agent command line (agent, model, effort) are held to a fixed alphabet."""
     if not isinstance(contract, dict) or set(contract) != CONTRACT_KEYS:
         raise InvalidContract("contract keys must be exactly " + ", ".join(sorted(CONTRACT_KEYS)))
-    if not isinstance(contract["unit_id"], str) or not ID_RE.match(contract["unit_id"]):
+    if not isinstance(contract["unit_id"], str) or not ID_RE.fullmatch(contract["unit_id"]):
         raise InvalidContract("unit_id is not an admitted id")
-    repository = contract["repository"]
-    if (not isinstance(repository, str) or not repository.startswith("/") or "\x00" in repository
-            or any(part in ("", ".", "..") for part in repository.split("/")[1:])):
+    if not absolute_path(contract["repository"], path_style):
         raise InvalidContract("repository must be a normalized absolute path")
     unit = contract["unit"]
     if not isinstance(unit, dict) or not UNIT_KEYS <= set(unit) or set(unit) - UNIT_KEYS - UNIT_OPTIONAL:
@@ -174,18 +213,18 @@ def _shape(contract):
     criteria = unit["criteria"]
     if (not isinstance(criteria, list) or len(criteria) > MAX_ITEMS
             or any(not isinstance(c, dict) or set(c) != {"id", "text"} or not isinstance(c["id"], str)
-                   or not ID_RE.match(c["id"]) for c in criteria)
+                   or not ID_RE.fullmatch(c["id"]) for c in criteria)
             or len({c["id"] for c in criteria}) != len(criteria)):
         raise InvalidContract("unit.criteria must be unique {id, text} entries")
     for criterion in criteria:
         _text(criterion["text"], f"criterion {criterion['id']}")
     scope = unit["scope"]
-    if (not isinstance(scope, list) or len(scope) > MAX_ITEMS or any(
-            not isinstance(p, str) or not p or p.startswith("/") or "\x00" in p
-            or any(part in ("", ".", "..") for part in p.rstrip("/").split("/")) for p in scope)):
+    if (not isinstance(scope, list) or len(scope) > MAX_ITEMS or any(  # a directory may end with "/"
+            not isinstance(p, str) or p.startswith("/") or not repository_path(p.rstrip("/"), path_style)
+            for p in scope)):
         raise InvalidContract("unit.scope must be relative paths inside the repository")
     check_limits(unit["limits"])
-    if "base" in unit and (not isinstance(unit["base"], str) or not COMMIT_RE.match(unit["base"])):
+    if "base" in unit and (not isinstance(unit["base"], str) or not COMMIT_RE.fullmatch(unit["base"])):
         raise InvalidContract("unit.base must be a full commit id")  # what an existing change is compared with
     if not isinstance(unit.get("allow_same_model", False), bool):
         raise InvalidContract("unit.allow_same_model must be a boolean")
@@ -201,15 +240,15 @@ def _shape(contract):
             checks = fact["checks"]
             if (not isinstance(checks, list) or not checks or len(checks) > MAX_ITEMS or any(
                     not isinstance(c, dict) or set(c) != {"name", "expect"} or not isinstance(c["name"], str)
-                    or not CHECK_NAME_RE.match(c["name"]) or c["expect"] not in CHECK_EXPECT
+                    or not CHECK_NAME_RE.fullmatch(c["name"]) or c["expect"] not in CHECK_EXPECT
                     for c in checks)):
                 raise InvalidContract(f"fact {fact['id']}: checks must be {{name, expect}} entries")
     for ex in contract["executions"]:
         _keys(f"execution {ex['id']}", ex, EXECUTION_KEYS | EXECUTION_RUN_KEYS)
-        if not isinstance(ex["agent"], str) or not ID_RE.match(ex["agent"]):
+        if not isinstance(ex["agent"], str) or not ID_RE.fullmatch(ex["agent"]):
             raise InvalidContract(f"execution {ex['id']}: agent is not an admitted id")
         for key in ("model", "effort"):
-            if ex[key] is not None and (not isinstance(ex[key], str) or not TARGET_RE.match(ex[key])):
+            if ex[key] is not None and (not isinstance(ex[key], str) or not TARGET_RE.fullmatch(ex[key])):
                 raise InvalidContract(f"execution {ex['id']}: {key} is not an admitted name")
         _text(ex["instructions"], f"execution {ex['id']}: instructions")
 
@@ -220,7 +259,7 @@ def check_names(contract):
     return sorted({c["name"] for c in wanted}), sorted({c["name"] for c in wanted if c["expect"] == "fails_on_base"})
 
 
-def checks_config(raw, names, on_base):
+def checks_config(raw, names, on_base, path_style):
     """What the project's checks file defines for the named checks, or raise `InvalidContract`.
 
     The file is read from the base commit: {"checks": {name: {"argv": [...], "test_paths": [...]}},
@@ -229,7 +268,8 @@ def checks_config(raw, names, on_base):
     if not isinstance(raw, dict) or not {"checks"} <= set(raw) <= {"checks", "ignore"} or not isinstance(raw["checks"], dict):
         raise InvalidContract('checks file must be {"checks": {name: {"argv": [...]}}, "ignore": [...]}')
     ignore = raw.get("ignore", [])
-    if not isinstance(ignore, list) or any(not isinstance(n, str) or not n or "/" in n or n in (".", "..") for n in ignore):
+    if not isinstance(ignore, list) or any(not isinstance(n, str) or "/" in n or not repository_path(n, path_style)
+                                           for n in ignore):
         raise InvalidContract("ignore must be a list of file or directory names")
 
     def strings(value):
@@ -240,7 +280,7 @@ def checks_config(raw, names, on_base):
         if not isinstance(entry, dict) or not {"argv"} <= set(entry) <= {"argv", "test_paths"} or not strings(entry["argv"]) or not entry["argv"]:
             raise InvalidContract(f"check {name!r} is not defined with a non-empty argv list")
         paths = entry.get("test_paths", [])
-        if not strings(paths) or any(p.startswith("/") or any(part in ("", ".", "..") for part in p.split("/")) for p in paths):
+        if not strings(paths) or not all(repository_path(p, path_style) for p in paths):
             raise InvalidContract(f"check {name!r}: test_paths must be relative paths")
         if name in on_base and not paths:
             raise InvalidContract(f"check {name!r} must fail on the base revision but declares no test_paths")
@@ -252,10 +292,12 @@ def sha(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def validate(contract):
+def validate(contract, path_style):
     """The contract, or raise `InvalidContract`: its unit, its structure (`check_structure`), what a run
-    adds to it, and that each execution is independent of those it names."""
-    _shape(contract)
+    adds to it, and that each execution is independent of those it names.
+
+    `path_style` is how an absolute path of the machine the engine runs on looks (`PATH_STYLES`)."""
+    _shape(contract, path_style)
     execs = {e["id"]: e for e in contract["executions"]}
     for eid, ex in execs.items():
         for other in ex["independent_of"]:
@@ -375,22 +417,31 @@ def question(text):
     """The question a reply ends with, or None."""
     value = tail_json(text)
     if (value is None or set(value) != {"question", "id"} or not isinstance(value["question"], str)
-            or not isinstance(value["id"], str) or not ID_RE.match(value["id"])):
+            or not isinstance(value["id"], str) or not ID_RE.fullmatch(value["id"])):
         return None
     return value
 
 
-def examined(record, paths):
-    """The share of the given paths that appear in what the agent read or ran."""
-    if not paths:
-        return 1.0
+def unexamined(record, paths):
+    """The given paths that appear nowhere in what the agent read or ran."""
     seen = set()
     for entry in record.get("entries", []):
         haystack = " ".join([*(entry.get("paths") or []), entry.get("command") or ""])
         for path in paths:
             if path in haystack or path.rsplit("/", 1)[-1] in haystack:
                 seen.add(path)
-    return len(seen) / len(paths)
+    return [path for path in paths if path not in seen]
+
+
+def examined(record, paths):
+    """The share of the given paths that appear in what the agent read or ran."""
+    return 1 - len(unexamined(record, paths)) / len(paths) if paths else 1.0
+
+
+def _seen(value, limit=60):
+    """A value from a reply as a reason names it: its JSON text, cut to `limit` characters."""
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _cited(citation, read, report=None):
@@ -411,18 +462,44 @@ def judge_verdict(unit, fact, text, record, read, subject_paths, report=None):
     `report` is the text under judgment when the subject is a report and not files.
     """
     value = tail_json(text)
-    if value is None or set(value) != {"criteria", "findings"}:
+    if value is None:
         return ("invalid", "reply must end with the criteria/findings object")
+    if set(value) != {"criteria", "findings"}:
+        keys = ", ".join(_seen(key, 40) for key in sorted(value)[:MAX_ITEMS]) or "none"
+        return ("invalid", f"the object your reply ends with has the keys {keys}; the reply must end with one object "
+                           "whose keys are criteria and findings, and every list and object before findings must be closed")
     criteria, findings = value["criteria"], value["findings"]
     wanted = [c["id"] for c in unit["criteria"]]
-    if not isinstance(criteria, list) or sorted(str(c.get("id")) for c in criteria) != sorted(wanted):
-        return ("invalid", "every criterion needs exactly one judgment")
-    if not isinstance(findings, list) or any(f.get("severity") not in SEVERITY for f in findings):
-        return ("invalid", "findings need a severity")
+    if not isinstance(criteria, list):
+        return ("invalid", f"criteria must be a list of judgments, not {_seen(criteria)}")
+    for index, judgment in enumerate(criteria, 1):
+        if not isinstance(judgment, dict):
+            return ("invalid", f"judgment {index} of criteria must be an object, not {_seen(judgment)}")
+    judged = sorted(str(c.get("id")) for c in criteria)
+    if judged != sorted(wanted):
+        return ("invalid", f"every criterion needs exactly one judgment: the criteria are {', '.join(sorted(wanted))}; "
+                           f"your judgments name {_seen(judged, 200)}")
+    if not isinstance(findings, list):
+        return ("invalid", f"findings must be a list, not {_seen(findings)}")
+    for index, finding in enumerate(findings, 1):
+        if not isinstance(finding, dict):
+            return ("invalid", f"finding {index} must be an object, not {_seen(finding)}")
+        if finding.get("severity") not in SEVERITY:
+            return ("invalid", f"findings need a severity of {', '.join(SEVERITY)}: finding {index} has "
+                               f"{_seen(finding.get('severity'))}")
     commands = {e["command"] for e in record.get("entries", []) if e["kind"] == "command" and e["command"]}
     for finding in findings:
         if not _cited(finding, read, report):
             return ("invalid", f"finding does not quote the present file or report: {finding.get('path')}:{finding.get('line')}")
+    for judgment in criteria:
+        evidence = judgment.get("evidence")
+        evidence = [] if evidence is None else evidence
+        if not isinstance(evidence, list):
+            return ("invalid", f"criterion {judgment['id']}: evidence must be a list, not {_seen(evidence)}")
+        for index, item in enumerate(evidence, 1):
+            if not isinstance(item, dict):
+                return ("invalid", f"criterion {judgment['id']}: evidence item {index} must be an object, "
+                                   f"not {_seen(item)}")
     for judgment in criteria:
         evidence = judgment.get("evidence") or []
         if judgment.get("met") is True:
@@ -441,9 +518,12 @@ def judge_verdict(unit, fact, text, record, read, subject_paths, report=None):
             if not any(f.get("criterion") == judgment["id"] for f in findings):
                 return ("invalid", f"criterion {judgment['id']} is called unmet without a finding")
         else:
-            return ("invalid", "met must be true or false")
+            return ("invalid", f"criterion {judgment['id']}: met must be true or false, not {_seen(judgment.get('met'))}")
     if examined(record, subject_paths) < unit.get("examine_min", 1.0):
-        return ("invalid", "the record does not show the changed files being examined")
+        missing = unexamined(record, subject_paths)
+        return ("invalid", "the record does not show the changed files being examined: "
+                           f"{len(missing)} of {len(subject_paths)} appear nowhere in what you read or ran, among them "
+                           + ", ".join(missing[:5]))
     level = SEVERITY[fact["block_at"]]
     blocking = [f for f in findings if SEVERITY[f["severity"]] >= level]
     unmet = [j["id"] for j in criteria if j["met"] is False]

@@ -25,6 +25,7 @@ from cross_host_transport.subsession.turn_result import TurnCollector, TurnProgr
 from loop_engine import composition  # noqa: E402
 from loop_engine.agents import TurnOutcome, TurnRequest  # noqa: E402
 from loop_engine.git import Git  # noqa: E402
+from loop_engine.platform_facts import CURRENT  # noqa: E402
 from loop_engine.service import Engine  # noqa: E402
 
 ACTIONS = {"version": 1, "dropped": 0, "entries": [], "refused": [
@@ -453,7 +454,7 @@ class WorktreeAfterReleaseTest(EngineCase):
         worktrees = os.path.join(self.home, "worktrees")
         agents = composition.TransportAgents(origin=worktrees, state_dir=os.path.join(self.home, "agent-state"))
         engine = Engine(self.root, git=Git(os.environ), agents=agents, templates=composition.load_templates(),
-                        runner=(sys.executable, RUNNER), worktrees=worktrees,
+                        runner=(sys.executable, RUNNER), worktrees=worktrees, platform=CURRENT,
                         clock=lambda: "2026-01-01T00:00:00+00:00")
         self.addCleanup(engine.halt)
         contract = self.with_agent(self.contract(checks=False), producer="codex", reviewer="codex")

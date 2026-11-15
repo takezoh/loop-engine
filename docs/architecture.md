@@ -17,6 +17,20 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 | `agents.py` | agent の turn を実行する port。session は中身を解釈しない token で表す |
 | `composition.py` | port を provider transport に接続する。transport に触れる唯一の module |
 | `client.py` / `cli.py` | 入口。要求を渡し、記録を読む。進行と判定の処理を持たない |
+| `platform_facts.py` | engine が動く machine の platform の事実(下の表)。`os.name` で POSIX と Windows を選ぶ唯一の module |
+
+platform の事実は `Platform` の値で、`CURRENT` が engine の動く machine のものである。`composition.py` が `Engine` に渡し、`Engine` は path の形を `facts.validate` と `facts.checks_config` に、quote を `Unit` に渡す。`git.py`、`store.py`、`client.py` は `CURRENT` の値を使う。`place_new` と `lock` は platform で異なる作用の adapter で、呼び出す OS の関数を引数で受け取る。Windows の adapter には偽の Windows の関数に対して、engine が動く machine の adapter と同じ契約テストを当てる。
+
+| 事実 | POSIX | Windows | 使う module |
+|---|---|---|---|
+| `path_style`(絶対 path の形) | `/a/b` | `C:\a\b` か `\\server\share\a`(`\` だけで区切る) | `facts.py` |
+| `null_device` | `/dev/null` | `nul` | `git.py`(hook、attributes、global 設定) |
+| `home`(環境に `HOME` がないときに git に渡す値) | `/` | 渡さない | `git.py` |
+| `quote`(agent に渡す検査の command line) | POSIX shell の quote | Microsoft C runtime が分け直す形(`subprocess.list2cmdline` と同じ) | `unit.py` |
+| `detached`(呼出し元から切り離した engine の起動) | 新しい session | 新しい process group、console なし | `client.py` |
+| `place_new`(すでにある file を置き換えない作成) | hard link | rename | `store.py`(検査 program の公開) |
+| `lock`(process の lock) | `flock` | `msvcrt.locking` | `store.py` |
+| `lock_held`(別の process が lock を持つときの errno。それ以外の errno は lock を取れないこと) | `EAGAIN`、`EWOULDBLOCK` | `EACCES` | `store.py`(`lock_contended`) |
 
 ## 契約
 
@@ -24,14 +38,14 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 
 | 対象 | 上限・文字種 |
 |---|---|
-| `unit_id`、事実・実行・受入条件の `id`、`agent` | `^[a-z0-9][a-z0-9-]{0,62}$` |
+| `unit_id`、事実・実行・受入条件の `id`、`agent`(下の文字種はどれも値の全体に当て、末尾の改行も受け付けない) | `^[a-z0-9][a-z0-9-]{0,62}$` |
 | `model`、`effort` | `null` か `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,95}$` |
 | 検査の名前 | `^[a-z0-9][a-z0-9_-]{0,31}$` |
 | `goal`、受入条件の `text`、`instructions` | 空でなく NUL を含まない 200,000 byte 以下の文字列 |
 | `criteria`、`scope`、`facts`、`executions`、検査 | 各 32 件以下。`facts` と `executions` は 1 件以上 |
 | `limits.rounds` | 1..10 |
 | `unit.base` | 40 桁の commit id |
-| `repository`、`scope` の path | `repository` は正規化した絶対 path、`scope` は `.`・`..`・空の要素を持たない相対 path |
+| `repository`、`scope` の path | `repository` は engine が動く machine の形(`path_style`)で正規化した絶対 path、`scope` は `/` で区切り `.`・`..`・空の要素を持たない相対 path。Windows では各要素が file の名前にできるもの(`\`・`:`・`*?"<>|`・制御文字を含まず、`.` か空白で終わらず、拡張子の有無を問わず大文字小文字を問わず `CON`・`PRN`・`AUX`・`NUL`・`COM1`〜`COM9`・`LPT1`〜`LPT9` でない)に限る。`.dev-skills/checks.json` の `test_paths` と `ignore` も同じ |
 
 契約の key は過不足なく一致しなければならない(事実は `by` ごとの項目だけを持つ)。同じ `unit_id` で異なる契約を渡すと受け付けない。
 
@@ -151,9 +165,9 @@ project は `.dev-skills/checks.json` に検査を定義する。engine は元�
 
 検査が書き出す cache(`__pycache__` など)は `ignore` に書く。書かないと、検査の前後で tree の digest が変わり、検査が「現在の tree で実行されていない」と判定される。
 
-engine は起動するたびに、自分の `check_runner.py` を状態の置き場所の `check/<内容の sha256>/check_runner.py` に複製する。一時的な名前で同じ directory に書いてから最終の名前へ link するので、同時に起動した engine も、書きかけの file も、すでにある file を置き換えない。その path に内容の sha256 が directory 名と一致しない file(link を含む)があれば、engine は起動しない。起動した後も、command を渡す前に毎回内容を確かめ、一致しなければ単位を `unknown_result` で止め、agent を起動しない。
+engine は起動するたびに、自分の `check_runner.py` を状態の置き場所の `check/<内容の sha256>/check_runner.py` に複製する。一時的な名前で同じ directory に書いてから、すでにある file を置き換えない方法(`place_new`)で最終の名前にするので、同時に起動した engine も、書きかけの file も、すでにある file を置き換えない。その path に内容の sha256 が directory 名と一致しない file(link を含む)があれば、engine は起動しない。起動した後も、command を渡す前に毎回内容を確かめ、一致しなければ単位を `unknown_result` で止め、agent を起動しない。
 
-agent に渡す command は `<engine の Python> -I <状態の置き場所>/check/<sha256>/check_runner.py <単位の directory>/checks.json <検査の名前> [--base]` である。Python は engine を動かしている interpreter(`sys.executable`)である。engine は、状態の置き場所と engine の Python を agent の sandbox が読めて、状態の置き場所には書けないことを前提とし、それを確かめない。
+agent に渡す command は `<engine の Python> -I <状態の置き場所>/check/<sha256>/check_runner.py <単位の directory>/checks.json <検査の名前> [--base]` で、path は platform の `quote` で quote する。Python は engine を動かしている interpreter(`sys.executable`)である。engine は、状態の置き場所と engine の Python を agent の sandbox が読めて、状態の置き場所には書けないことを前提とし、それを確かめない。
 
 agent は engine が指定した command を実行する。検査 program は結果の最後の行に、検査の名前、対象(候補か元の commit か)、候補の tree の digest、終了コードを出す。元の commit での検査では、複製した元の commit の tree の digest(`base=`)も出す。engine は実行記録のこの行だけで合否を判定する。tree の digest は、engine と検査 program が同じ関数で計算し、環境の entry を含めない。
 
@@ -177,5 +191,6 @@ agent は engine が指定した command を実行する。検査 program は結
 | 環境の entry を数えないこと、それ以外を数えること、digest の一致、空の directory と agent 設定の digest、外した名前の記録 | `tests/test_environment_entries.py` |
 | 元の commit を git の記録と engine の複製から読むこと、`fails_on_base` の判定、読めない tree で判定が失敗すること、agent 設定の名前の種類を問わないこと | `tests/test_judged_trees.py` |
 | 起動する process が git だけであること、純粋な module の範囲、repository の hook や filter が動かないこと | `tests/test_closed_paths.py` |
+| Windows の事実を値で渡した判断(絶対 path、repository の中の path、検査の command の quote)、platform を見分けるのが `platform_facts.py` だけであること、`place_new` と `lock` の adapter の契約、識別子が末尾の改行を受け付けないこと、評価役の返答の受け付けない理由 | `tests/test_platform_facts.py`、`tests/test_facts.py` |
 | agent の port の契約(transport への接続と台本の偽物の両方に当てる)、session の解放後に turn を返すこと、停止での解放と process の終了の順、解放後の worktree の判定 | `tests/test_transport_agents.py` |
 | 検証 tool | `tests/test_tools.py` |

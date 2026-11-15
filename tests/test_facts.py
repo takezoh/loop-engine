@@ -27,7 +27,7 @@ def unit(**extra):
 
 def contract(unit_value, facts, executions):
     return validate({"unit_id": "u1", "repository": "/work/repo", "unit": unit_value, "facts": facts,
-                     "executions": executions})
+                     "executions": executions}, "posix")
 
 
 def implementation(reviewers=("review-a", "review-b"), **extra):
@@ -320,16 +320,16 @@ class DecisionTest(unittest.TestCase):
         value = implementation()
         value["executions"][2].update(agent="codex", model="m1")
         with self.assertRaises(InvalidContract):
-            validate(value)
+            validate(value, "posix")
         value["unit"]["allow_same_model"] = True
-        validate(value)
+        validate(value, "posix")
 
     def test_contract_admits_only_its_exact_shape(self):
         def broken(change):
             value = json.loads(json.dumps(implementation()))
             change(value)
             with self.assertRaises(InvalidContract):
-                validate(value)
+                validate(value, "posix")
         broken(lambda v: v.update(command=["sh"]))
         broken(lambda v: v.update(repository="/work/../etc"))
         broken(lambda v: v["executions"][0].update(agent="--help"))
@@ -370,13 +370,13 @@ class DecisionTest(unittest.TestCase):
     def test_checks_file_must_define_every_named_check(self):
         raw = {"checks": {"unit": {"argv": ["python", "-m", "unittest"], "test_paths": ["tests"]}}, "ignore": ["__pycache__"]}
         self.assertEqual((["unit"], ["unit"]), facts.check_names(implementation()))
-        self.assertEqual({"checks": raw["checks"], "ignore": ["__pycache__"]}, facts.checks_config(raw, ["unit"], ["unit"]))
+        self.assertEqual({"checks": raw["checks"], "ignore": ["__pycache__"]}, facts.checks_config(raw, ["unit"], ["unit"], "posix"))
         for bad in ({"checks": {}}, {"checks": {"unit": ["python"]}}, {"checks": {"unit": {"argv": []}}},
                     {"checks": {"unit": {"argv": ["python"]}}},  # must fail on base, but names no tests
                     {"checks": {"unit": {"argv": ["python"], "test_paths": ["../x"]}}},
                     {"checks": raw["checks"], "ignore": ["a/b"]}, {"checks": raw["checks"], "run": "x"}):
             with self.assertRaises(InvalidContract):
-                facts.checks_config(bad, ["unit"], ["unit"])
+                facts.checks_config(bad, ["unit"], ["unit"], "posix")
 
     def test_answer_retry_and_cancel_continue_or_end_a_stopped_unit(self):
         scripts = {"survey": [survey], "review-a": [OK], "review-b": [OK]}
@@ -398,6 +398,134 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual({"candidate", "checks", "in-scope", "quality", "authority"},
                          {k for k, v in facts.summary(sim.contract, sim.state)["facts"].items() if v["holds"]})
         self.assertEqual("cancelled", decide(sim.contract, facts.cancel(sim.state))[1]["reason"])
+
+
+class PlatformFactsTest(unittest.TestCase):
+    """Paths are judged by the path style the platform's facts give, on whatever machine the test runs."""
+
+    def windows(self, change=lambda v: None):
+        value = json.loads(json.dumps(implementation()))
+        value["repository"] = "C:\\work\\repo"
+        change(value)
+        return validate(value, "windows")
+
+    def test_a_windows_contract_names_a_windows_absolute_path(self):
+        self.assertEqual("C:\\work\\repo", self.windows()["repository"])
+        self.windows(lambda v: v.update(repository="\\\\server\\share\\repo"))
+        for repository in ("work\\repo", "C:work\\repo", "C:/work/repo", "/work/repo", "C:\\work\\..\\repo",
+                           "C:\\work\\.\\repo", "C:\\work\\\\repo", "C:\\", "\\\\server\\share", "C:\\work\\repo\\",
+                           "C:\\work\\re:po", "\\\\?\\C:\\work\\repo", "C:\\work\\CON\\repo",
+                           "C:\\work\\nul.txt", "C:\\work.\\repo", "C:\\work \\repo", "\\\\server\\aux\\repo"):
+            with self.subTest(repository), self.assertRaises(InvalidContract):
+                self.windows(lambda v: v.update(repository=repository))
+        with self.assertRaises(InvalidContract):  # a Windows path is not absolute on a POSIX machine
+            validate({**implementation(), "repository": "C:\\work\\repo"}, "posix")
+        with self.assertRaises(ValueError):
+            validate(implementation(), "macos")
+
+    def test_paths_inside_the_repository_are_gits_form_on_every_platform(self):
+        self.assertEqual(["src", "tests/"], self.windows(lambda v: v["unit"].update(scope=["src", "tests/"]))["unit"]["scope"])
+        for scope in ("src\\calc.py", "C:src", "src/con:x", "src/a.", "src/a ", "/src", "src/CON", "nul",
+                      "src/nul.txt", "Com1/x", "src/lpt9.tar.gz", "aux.", "PRN"):
+            with self.subTest(scope), self.assertRaises(InvalidContract):
+                self.windows(lambda v: v["unit"].update(scope=[scope]))
+        # a device name is refused as a whole name only, with or without an extension
+        self.windows(lambda v: v["unit"].update(scope=["src/console.py", "src/connector", "src/com10", "lpt/x"]))
+        # on POSIX a backslash is a character of a file name, and CON is a name like any other
+        validate({**implementation(), "unit": unit(scope=["src\\calc.py", "src/CON", "src/a."])}, "posix")
+        raw = {"checks": {"unit": {"argv": ["python"], "test_paths": ["tests/test_calc.py"]}}, "ignore": ["__pycache__"]}
+        self.assertEqual(["tests/test_calc.py"], facts.checks_config(raw, ["unit"], ["unit"], "windows")["checks"]["unit"]["test_paths"])
+        for bad in ({**raw, "checks": {"unit": {"argv": ["python"], "test_paths": ["tests\\test_calc.py"]}}},
+                    {**raw, "checks": {"unit": {"argv": ["python"], "test_paths": ["C:\\tests"]}}},
+                    {**raw, "checks": {"unit": {"argv": ["python"], "test_paths": ["tests/NUL.py"]}}},
+                    {**raw, "checks": {"unit": {"argv": ["python"], "test_paths": ["tests/x "]}}},
+                    {**raw, "ignore": ["cache\\x"]}, {**raw, "ignore": ["a:b"]}, {**raw, "ignore": ["com3"]},
+                    {**raw, "ignore": ["cache."]}):
+            with self.subTest(bad), self.assertRaises(InvalidContract):
+                facts.checks_config(bad, ["unit"], ["unit"], "windows")
+
+
+class TrailingNewlineTest(unittest.TestCase):
+    """An identifier is the whole value: one that ends with a newline is refused."""
+
+    def refused(self, change):
+        value = json.loads(json.dumps(implementation()))
+        change(value)
+        with self.assertRaises(InvalidContract):
+            validate(value, "posix")
+
+    def test_every_identifier_of_a_contract_refuses_a_trailing_newline(self):
+        self.refused(lambda v: v.update(unit_id="u1\n"))
+        self.refused(lambda v: v["unit"]["criteria"][0].update(id="c1\n"))
+        self.refused(lambda v: v["facts"][3]["checks"][0].update(name="unit\n"))
+        self.refused(lambda v: v["executions"][0].update(agent="codex\n"))
+        self.refused(lambda v: v["executions"][0].update(model="m1\n"))
+        self.refused(lambda v: v["unit"].update(base="0" * 40 + "\n"))
+        self.refused(lambda v: v["facts"][0].update(id="authority\n"))
+        validate(json.loads(json.dumps(implementation())) | {"unit": unit(base="0" * 40)}, "posix")
+
+    def test_a_question_id_with_a_trailing_newline_is_no_question(self):
+        self.assertIsNotNone(facts.question('x\n{"question": "which?", "id": "q-1"}'))
+        self.assertIsNone(facts.question('x\n{"question": "which?", "id": "q-1\\n"}'))
+
+
+class VerdictReasonTest(unittest.TestCase):
+    """A reply the engine does not accept is answered with what the engine saw in it."""
+
+    UNIT = {"criteria": [{"id": "c1", "text": "one"}, {"id": "c2", "text": "two"}]}
+    FACT = {"block_at": "major"}
+
+    def reason(self, text, record=None, paths=()):
+        result = facts.judge_verdict(self.UNIT, self.FACT, text, record or {"entries": []},
+                                     lambda path: "line one is here\n", list(paths))
+        self.assertEqual("invalid", result[0])
+        return result[1]
+
+    def test_findings_nested_in_the_last_criterion_name_the_keys_of_the_object_the_reply_ends_with(self):
+        evidence = '{"path": "a.py", "line": 1, "quote": "line one is here"}'
+        text = ('reviewed\n{"criteria":[{"id":"c1","met":true,"evidence":[' + evidence + ']},'
+                '{"id":"c2","met":false,"evidence":[' + evidence + '],"findings":[{"severity":"major",'
+                '"criterion":"c2","path":"a.py","line":1,"quote":"line one is here","description":"wrong"}]}')
+        self.assertEqual(
+            'the object your reply ends with has the keys "evidence", "findings", "id", "met"; the reply must end '
+            "with one object whose keys are criteria and findings, and every list and object before findings must "
+            "be closed", self.reason(text))
+        self.assertEqual("reply must end with the criteria/findings object", self.reason("no object here"))
+        self.assertIn("has the keys none;", self.reason("x {}"))
+
+    def test_other_reasons_name_what_the_reply_held(self):
+        def reply(criteria, findings=()):
+            return json.dumps({"criteria": criteria, "findings": list(findings)})
+        met = {"met": True, "evidence": [{"path": "a.py", "line": 1, "quote": "line one is here"}]}
+        self.assertEqual('criteria must be a list of judgments, not "c1"', self.reason(reply("c1")))
+        self.assertEqual('every criterion needs exactly one judgment: the criteria are c1, c2; your judgments name '
+                         '["c1", "c3"]', self.reason(reply([{"id": "c1", **met}, {"id": "c3", **met}])))
+        self.assertEqual('findings must be a list, not {"severity": "major"}', self.reason(
+            json.dumps({"criteria": [{"id": "c1", **met}, {"id": "c2", **met}], "findings": {"severity": "major"}})))
+        self.assertEqual('findings need a severity of minor, major, blocker: finding 1 has "high"', self.reason(
+            reply([{"id": "c1", **met}, {"id": "c2", **met}], [{"severity": "high", "quote": "line one is here"}])))
+        self.assertEqual('criterion c2: met must be true or false, not "partly"',
+                         self.reason(reply([{"id": "c1", **met}, {"id": "c2", "met": "partly"}])))
+        self.assertEqual("the record does not show the changed files being examined: 1 of 2 appear nowhere in what "
+                         "you read or ran, among them src/b.py",
+                         self.reason(reply([{"id": "c1", **met}, {"id": "c2", **met}]),
+                                     {"entries": [{"kind": "read", "paths": ["src/a.py"], "command": None}]},
+                                     ["src/a.py", "src/b.py"]))
+
+    def test_an_item_that_is_not_an_object_is_named_and_never_raises(self):
+        met = {"met": True, "evidence": [{"path": "a.py", "line": 1, "quote": "line one is here"}]}
+        self.assertEqual('judgment 2 of criteria must be an object, not "c2"',
+                         self.reason(json.dumps({"criteria": [{"id": "c1", **met}, "c2"], "findings": []})))
+        self.assertEqual('finding 1 must be an object, not ["major"]', self.reason(json.dumps(
+            {"criteria": [{"id": "c1", **met}, {"id": "c2", **met}], "findings": [["major"]]})))
+        self.assertEqual('criterion c2: evidence item 2 must be an object, not "ran the tests"', self.reason(json.dumps(
+            {"criteria": [{"id": "c1", **met}, {"id": "c2", "met": True, "evidence": [
+                met["evidence"][0], "ran the tests"]}], "findings": []})))
+        self.assertEqual('criterion c1: evidence must be a list, not "see a.py"', self.reason(json.dumps(
+            {"criteria": [{"id": "c1", "met": True, "evidence": "see a.py"}, {"id": "c2", **met}], "findings": []})))
+        self.assertEqual('criterion c1: evidence must be a list, not {"path": "a.py"}', self.reason(json.dumps(
+            {"criteria": [{"id": "c1", "met": False, "evidence": {"path": "a.py"}}, {"id": "c2", **met}],
+             "findings": []})))
 
 
 if __name__ == "__main__":

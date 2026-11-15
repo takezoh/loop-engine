@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from .agents import TurnOutcome
 from .git import Git
+from .platform_facts import CURRENT
 from .service import Engine
 from .store import home_root, worktrees_root
 
@@ -242,7 +243,7 @@ def build(environ):
                 os.path.join(installation, "packages", "cross-host-transport"))
     engine = Engine(
         root, git=Git(environ), agents=agents, templates=load_templates(),
-        runner=(sys.executable, os.path.join(HERE, "check_runner.py")), worktrees=worktrees,
+        runner=(sys.executable, os.path.join(HERE, "check_runner.py")), worktrees=worktrees, platform=CURRENT,
         own_code=own_code,
     )
     return engine, os.path.join(root, "engine.lock")

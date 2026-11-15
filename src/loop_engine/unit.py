@@ -7,7 +7,6 @@ happened. Re-running it after any interruption continues from the saved state.
 import hashlib
 import os
 import secrets
-import shlex
 import shutil
 
 from . import facts, prompts
@@ -28,18 +27,19 @@ AGENT_CONFIG = (AGENT_CONFIG_DIRS, AGENT_CONFIG_FILES)
 
 
 class Unit:
-    def __init__(self, store, contract, admission, *, git, agents, templates, runner, worktrees, clock,
+    def __init__(self, store, contract, admission, *, git, agents, templates, runner, worktrees, quote, clock,
                  interrupt, halting):
         """`admission` is the base commit and the checks the engine fixed when it accepted the unit.
 
         `runner` is (python, check_runner_path); `worktrees` is the directory unit worktrees are
-        made in; `clock()` returns an ISO timestamp.
+        made in; `quote(argv)` is the command line the agent is told to run (`Platform.quote`);
+        `clock()` returns an ISO timestamp.
         `interrupt` is an event that ends a running turn; `halting()` tells that the
         engine itself is stopping, so the unit must keep its place and record nothing.
         """
         self.store, self.contract, self.admission = store, contract, admission
         self.git, self.agents, self.templates = git, agents, templates
-        self.runner, self.worktrees, self.clock = runner, worktrees, clock
+        self.runner, self.worktrees, self.quote, self.clock = runner, worktrees, quote, clock
         self.interrupt, self.halting = interrupt, halting
         self.ignore = admission["ignore"]
         self._base_files = None  # git's record of the base commit, read once
@@ -109,7 +109,7 @@ class Unit:
 
     def _runner(self):
         """The command prefix of every check: the published check program, verified before it is named."""
-        return shlex.join([self.runner[0], "-I", verified_check_program(self.runner[1]),
+        return self.quote([self.runner[0], "-I", verified_check_program(self.runner[1]),
                            self.store.path("checks.json")])
 
     def _check_commands(self, execution):
@@ -283,7 +283,7 @@ class Unit:
         removed = True
         for path, owned in (
                 (worktree, os.path.dirname(os.path.dirname(worktree)) == root
-                 and UNIT_DIRECTORY_RE.match(os.path.basename(worktree)) and os.path.realpath(worktree) == worktree),
+                 and UNIT_DIRECTORY_RE.fullmatch(os.path.basename(worktree)) and os.path.realpath(worktree) == worktree),
                 (base_tree, os.path.dirname(base_tree) == self.store.dir)):
             if not owned or os.path.islink(path):
                 removed = False

@@ -12,7 +12,7 @@ engine が起動するのは git と agent の command だけで、sandbox を�
 
 | path | 内容 |
 |---|---|
-| `src/loop_engine/` | engine 本体。`facts.py` と `prompts.py` は値だけを扱う |
+| `src/loop_engine/` | engine 本体。`facts.py` と `prompts.py` は値だけを扱い、platform の違い(Linux と native Windows)は `platform_facts.py` だけが見分ける |
 | `src/loop_engine/protocol/` | agent に渡す定型文(書く役、評価役、報告役の、session の最初のメッセージと続きのメッセージ) |
 | `tests/` | 実際の git repository と engine process を使うテスト。agent は台本で動く偽物 |
 | `tools/` | 記録の集計と、実際の agent を使う scenario の実行 |

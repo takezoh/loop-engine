@@ -204,7 +204,7 @@ def unexpected_entries(worktrees, worktree):
             return [directory]
         for name in names:
             path = os.path.join(directory, name)
-            if not pattern.match(name) or os.path.islink(path) or not os.path.isdir(path):
+            if not pattern.fullmatch(name) or os.path.islink(path) or not os.path.isdir(path):
                 found.append(path)
     if os.path.dirname(namespace) != root:
         found.append(namespace)

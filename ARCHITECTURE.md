@@ -54,6 +54,7 @@ engine の実装と変更が守る規則。各規則を決めた ADR を括弧�
 - **独立した package**: engine は独立した package で、導入時の複製から起動する。作業 tree のコードを読み込まず、呼出し元のコードに依存しない。依存する package は transport だけで、transport に接続するのは `composition.py` だけである。engine の core は `agents.py` の port(turn の実行、session の終了、全体の停止)だけに依存する。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4、7)
 - **対応する agent**: claude、codex、pi である。起動は transport の provider の共通処理と、protocol ごとの driver(codex-app-server、acp-v1、pi-rpc)を通す。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4 と、その「ユーザーが述べた要件」)
 - **port と偽物**: platform や agent で異なる作用は port の adapter に置き、agent の port には transport への接続と台本の偽物の両方に同じ契約テスト(`tests/test_transport_agents.py`)を当てる。(engine の ADR はなく、repository 全体の [platform と agent の差を port に置く ADR](../docs/adr/adr-20261115-platform-agent-differences-behind-ports.md) が決めている)
+- **platform の事実**: engine は Linux と native Windows で動く。platform で異なる事実(絶対 path の形、null device、agent に渡す検査の command line の quote、呼出し元から切り離した子 process の起動)は値として、platform で異なる作用(すでにある file を置き換えない作成、process の lock)は platform ごとの adapter として、`platform_facts.py` だけが `os.name` で選ぶ。判断(`facts.py`、`prompts.py`、lock の競合の判定)は platform を見ず、事実を値で受け取る。Windows の adapter には偽の OS の API に対して、POSIX の adapter と偽物と同じ契約テスト(`tests/test_platform_facts.py`)を当てる。git、状態の保存、時刻には port を置かない。(engine の ADR はなく、repository 全体の [platform と agent の差を port に置く ADR](../docs/adr/adr-20261115-platform-agent-differences-behind-ports.md) が決めている)
 - **確かめられない結果**: turn の結果を確かめられない単位は理由を付けて止まり(`unknown_result`、`invalid_result`)、自分ではやり直さない。やり直しは呼出し元の `retry` の要求だけで行う。session を続けられない turn を新しい session で 1 回だけ起動し直すことは、この規則の外である。(engine の ADR はない)
 
 ## 単位の宣言
@@ -94,14 +95,14 @@ flowchart LR
 ### 契約の形
 
 ```
-unit_id, repository(repository の最上位の絶対 path)
+unit_id, repository(repository の最上位の絶対 path。engine が動く machine の形)
 unit:        goal, criteria[{id, text}], scope[path], limits{rounds}
              任意: base(commit id)、allow_same_model(bool)、examine_min(0..1)
 facts:       {id, required, by} と by ごとの項目
 executions:  {id, agent, model, effort, instructions, reads, establishes, writes, independent_of}
 ```
 
-- `unit.goal` と `criteria` は全実行の指示に入る。評価役は `criteria` の条件ごとに判定する。`scope` は `git` の事実が判定する変更してよい path で、作る役にも示される。`limits.rounds` は差し戻しの上限である。
+- `unit.goal` と `criteria` は全実行の指示に入る。評価役は `criteria` の条件ごとに判定する。`scope` は `git` の事実が判定する変更してよい path で、作る役にも示される。`scope` の path は、どの platform でも git の形(`/` で区切った repository の中の path)で書く。`limits.rounds` は差し戻しの上限である。
 - `unit.base` を指定すると、その commit から repository の現在の commit までの既存の変更を対象にする(現在の commit は `base` の子孫でなければならない)。省略すると現在の commit が元の commit になる。
 - `allow_same_model` は `independent_of` の検査を緩める。`examine_min` は、評価役の実行記録が読んだことを示さなければならない変更 file の割合で、既定は 1 である。
 

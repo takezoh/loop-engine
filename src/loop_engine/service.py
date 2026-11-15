@@ -38,17 +38,18 @@ def timestamp():
 
 
 class Engine:
-    def __init__(self, root, *, git, agents, templates, runner, worktrees, own_code=(), idle_seconds=30.0,
+    def __init__(self, root, *, git, agents, templates, runner, worktrees, platform, own_code=(), idle_seconds=30.0,
                  clock=timestamp):
         """`runner` is (python, the check program's file): the engine publishes the program under its
         state home and names that copy in the commands it gives, so an agent's sandbox can read it.
+        `platform` is the `platform_facts.Platform` of the machine the engine runs on.
         `own_code` lists the directories the engine's code runs from; a repository
         that contains one of them is refused, so the engine never drives its own code."""
         self.root, self.git, self.agents = root, git, agents
         python, program = runner
         self.runner = (python, publish_check_program(root, program))
         self.templates, self.own_code = templates, tuple(own_code)
-        self.worktrees = worktrees
+        self.worktrees, self.platform = worktrees, platform
         self.idle_seconds, self.clock = idle_seconds, clock
         self._threads = {}
         self._interrupts = {}
@@ -92,8 +93,8 @@ class Engine:
         store = self._store(unit_id)
         try:
             Unit(store, store.contract(), store.admission(), git=self.git, agents=self.agents,
-                 templates=self.templates, runner=self.runner, worktrees=self.worktrees, clock=self.clock,
-                 interrupt=interrupt, halting=self._halting.is_set).run()
+                 templates=self.templates, runner=self.runner, worktrees=self.worktrees, quote=self.platform.quote,
+                 clock=self.clock, interrupt=interrupt, halting=self._halting.is_set).run()
         except Exception as error:  # the unit stops where it is; a retry continues from its events
             detail = f"{type(error).__name__}: {error}"[:1000]
             store.append({"type": "engine_error", "detail": detail, "at": self.clock()})
@@ -103,7 +104,7 @@ class Engine:
     # -- requests --
 
     def start(self, raw):
-        contract = facts.validate(raw)
+        contract = facts.validate(raw, self.platform.path_style)
         for execution in contract["executions"]:
             if not self.agents.known(execution["agent"]):
                 raise Rejected(f"{execution['id']}.agent is not in the installed catalog")
@@ -127,7 +128,7 @@ class Engine:
             if raw_checks is None:
                 raise Rejected(f"{CHECKS_FILE} is not in the repository's current commit")
             try:
-                checks = facts.checks_config(json.loads(raw_checks), names, on_base)
+                checks = facts.checks_config(json.loads(raw_checks), names, on_base, self.platform.path_style)
             except ValueError as error:
                 raise Rejected(f"{CHECKS_FILE}: {error}") from None
         store = self._store(contract["unit_id"])

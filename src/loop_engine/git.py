@@ -3,9 +3,11 @@ runs another program (hooks, filters, external diff, fsmonitor, pagers) turned o
 import os
 import subprocess
 
+from .platform_facts import CURRENT
+
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-SAFE = ("--no-pager", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-        "-c", "diff.external=", "-c", "core.attributesFile=/dev/null", "-c", "submodule.recurse=false",
+SAFE = ("--no-pager", "-c", f"core.hooksPath={CURRENT.null_device}", "-c", "core.fsmonitor=false",
+        "-c", "diff.external=", "-c", f"core.attributesFile={CURRENT.null_device}", "-c", "submodule.recurse=false",
         "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "core.sshCommand=false",
         "-c", "protocol.allow=never", f"--attr-source={EMPTY_TREE}")
 TIMEOUT_SECONDS = 300
@@ -34,8 +36,9 @@ class Git:
         self.executable = resolve_executable("git", environ.get("PATH"))
         if self.executable is None:
             raise GitError("git not found on PATH")
-        self.env = {"PATH": environ.get("PATH", ""), "HOME": environ.get("HOME", "/"),
-                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+        home = environ.get("HOME", CURRENT.home)
+        self.env = {"PATH": environ.get("PATH", ""), **({"HOME": home} if home is not None else {}),
+                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": CURRENT.null_device,
                     "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
 
     def _run(self, cwd, *args, check=True):
@@ -49,7 +52,8 @@ class Git:
         return process
 
     def toplevel(self, directory):
-        return self._run(directory, "rev-parse", "--show-toplevel").stdout.decode().rstrip("\n")
+        """The top directory of the work tree, in this machine's path form (git prints "/" on every platform)."""
+        return os.path.normpath(self._run(directory, "rev-parse", "--show-toplevel").stdout.decode().rstrip("\n"))
 
     def common_dir(self, directory):
         raw = self._run(directory, "rev-parse", "--git-common-dir").stdout.decode().rstrip("\n")
