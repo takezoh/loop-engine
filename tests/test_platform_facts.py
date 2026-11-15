@@ -68,11 +68,13 @@ class PlatformValuesTest(unittest.TestCase):
             with open(os.path.join(PACKAGE, name), encoding="utf-8") as handle:
                 tree = ast.parse(handle.read())
             named = {ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-            self.assertFalse(named & {"os.name", "sys.platform", "os.devnull", "platform.system"}, name)
+            self.assertFalse(named & {"os.name", "os.uname", "sys.platform", "sys.getwindowsversion", "os.devnull",
+                                      "platform.system"}, name)
             imported = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
                         for alias in node.names} | {node.module for node in ast.walk(tree)
                                                     if isinstance(node, ast.ImportFrom) and node.level == 0}
-            self.assertFalse(imported & {"fcntl", "msvcrt", "shlex", "platform"}, name)
+            self.assertFalse(imported & {"fcntl", "msvcrt", "winreg", "_winapi", "ctypes", "ctypes.wintypes", "termios",
+                                         "pwd", "grp", "resource", "posix", "nt", "shlex", "platform"}, name)
             text = ast.unparse(tree)
             for assumption in ("/dev/null", "start_new_session", "os.link"):
                 self.assertNotIn(assumption, text, name)
