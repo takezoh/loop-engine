@@ -167,7 +167,8 @@ class Unit:
         state = facts.remember_session(state, execution["id"], outcome.session, prompts.digests(reports))
         if not outcome.released:
             # A process of the agent may still be using the worktree: nothing in it is judged for this turn.
-            state = facts.apply_turn(self.contract, state, execution["id"], {"completed": False}, read=None)
+            state = facts.apply_turn(self.contract, state, execution["id"],
+                                     {"completed": False, "detail": turn["detail"]}, read=None)
             self._append({"type": "turn_finished", "execution": execution["id"], "turn": number,
                           "completed": False, "detail": turn["detail"], "refused_requests": outcome.refused,
                           "not_counted": None, "environment_entries": None})
@@ -199,8 +200,8 @@ class Unit:
         if completed and not execution["writes"] and self._candidate(started) != before:
             completed, detail = False, "a-turn-that-must-not-write-changed-the-worktree"
         state = facts.apply_turn(self.contract, state, execution["id"], {
-            "completed": completed, "text": turn["text"], "record": turn["actions"] or {"entries": []},
-            "tree": tree, "changed": changed,
+            "completed": completed, "detail": detail, "text": turn["text"],
+            "record": turn["actions"] or {"entries": []}, "tree": tree, "changed": changed,
         }, read=lambda relative: read_text(worktree, relative), runner=self._runner())
         refused = [item["description"] for item in state["feedback"].get(execution["id"], [])
                    if str(item.get("description", "")).startswith(facts.NOT_ACCEPTED)]
@@ -253,7 +254,8 @@ class Unit:
             self._end_sessions(state)
         removed = reason not in CONTINUABLE and started is not None and self._discard(started)
         asked = action.get("question") if reason == "waiting_for_answer" else None
-        self._status(state="stopped", stop_reason=reason, round=state["rounds"], worktree=stop["worktree"],
+        self._status(state="stopped", stop_reason=reason, detail=action.get("detail"), round=state["rounds"],
+                     worktree=stop["worktree"],
                      worktree_removed=bool(removed), refused=state["refused"],
                      question={"id": asked["id"], "text": asked["question"]} if asked else None)
         return reason

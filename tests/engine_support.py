@@ -259,6 +259,11 @@ class EngineCase(unittest.TestCase):
         with open(os.path.join(store.unit_dir(self.root, unit_id), "result", name), "rb") as handle:
             return handle.read()
 
+    def stop_details(self, unit_id="u1"):
+        """Why the unit stopped, as stop.json's stop and the status each name it."""
+        return (json.loads(self.result("stop.json", unit_id))["stop"].get("detail"),
+                store.UnitStore(self.root, unit_id).status().get("detail"))
+
 
 def run_command(command, cwd):
     """Run a check command the way an agent's shell would, returning its output."""

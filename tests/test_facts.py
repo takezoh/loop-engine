@@ -527,6 +527,22 @@ class VerdictReasonTest(unittest.TestCase):
             {"criteria": [{"id": "c1", "met": False, "evidence": {"path": "a.py"}}, {"id": "c2", **met}],
              "findings": []})))
 
+    def test_a_cited_command_is_one_line_or_part_of_a_command_run_in_this_turn_and_nothing_added(self):
+        script = "cd /work\npython3 -m unittest tests.test_stats -v\necho done"
+        record = {"entries": [{"kind": "command", "command": script}]}
+
+        def reply(command):
+            return json.dumps({"criteria": [
+                {"id": c, "met": True, "evidence": [{"command": command}]} for c in ("c1", "c2")], "findings": []})
+        accepted = facts.judge_verdict(self.UNIT, self.FACT, reply("python3 -m unittest tests.test_stats -v"),
+                                       record, lambda path: "", [])
+        self.assertEqual("ok", accepted[0])
+        self.assertEqual(
+            "evidence for c1: the command 'python3 -m unittest tests.test_stats -v (run against original stats.py)' "
+            "is not among the commands you ran in this turn; copy the cited text exactly from one of them, one line "
+            "or part of it and nothing added",
+            self.reason(reply("python3 -m unittest tests.test_stats -v (run against original stats.py)"), record))
+
 
 if __name__ == "__main__":
     unittest.main()

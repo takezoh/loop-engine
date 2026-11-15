@@ -108,6 +108,7 @@ class SessionTest(EngineCase):
             return changes(request, "handle the empty case")
         _engine, status = self.start(script)
         self.assertEqual("unknown_result", status["stop_reason"])
+        self.assertEqual(("agent-start-failed: launcher exited 1",) * 2, self.stop_details())
         self.assertEqual([None, self.opened("producer")[0], None],
                          [request.session for request in self.requests_of("producer")])
 
@@ -183,6 +184,7 @@ class SessionTest(EngineCase):
         finished = [event for event in self.events() if event["type"] == "turn_finished"][-1]
         self.assertEqual(("reviewer", False, "agent-session-not-released: unload-not-finished"),
                          (finished["execution"], finished["completed"], finished["detail"]))
+        self.assertEqual(("agent-session-not-released: unload-not-finished",) * 2, self.stop_details())
         self.assertNotIn("agent_config_changed", [event["type"] for event in self.events()])
         state = store.read_json(store.UnitStore(self.root, "u1").path("state.json"))
         self.assertEqual(["out.txt"], state["changed"])

@@ -510,7 +510,8 @@ def judge_verdict(unit, fact, text, record, read, subject_paths, report=None):
                     told = " ".join(str(item["command"]).split())
                     if len(told) < 3 or not any(told in " ".join(c.split()) for c in commands):
                         return ("invalid", f"evidence for {judgment['id']}: the command {told!r} is not among the "
-                                           "commands you ran in this turn")
+                                           "commands you ran in this turn; copy the cited text exactly from one "
+                                           "of them, one line or part of it and nothing added")
                 elif not _cited(item, read, report):
                     return ("invalid", f"evidence for {judgment['id']}: the quote is not at "
                                        f"{item.get('path')}:{item.get('line')} of the present file")

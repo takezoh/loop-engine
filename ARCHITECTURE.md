@@ -121,7 +121,7 @@ executions:  {id, agent, model, effort, instructions, reads, establishes, writes
 
 ### 実行の規則
 
-- `agent` は導入済みの対応表にある名前、`model` と `effort` は名前か `null` である。engine はこれらの値で agent を起動し、解釈しない。
+- `agent` は導入済みの対応表にある名前、`model` と `effort` は名前か `null` である。engine はこれらの値で agent を起動し、解釈しない。`claude` は transport の対応表(`providers.json` の `bindings.required`)が model を要するため、`model` が `null` だと agent が起動せず、単位は `unknown_result` で止まって detail に `agent-start-failed: ... provider-binding-required:model` を残す。
 - `establishes` は 1 つ以上で、`reads` と重ならない。参照する事実と実行はすべて契約にある。
 - `writes: true` の実行だけが worktree を変えてよい。書かない実行の turn が差分を変えれば、その turn は完了しない。
 - `independent_of` に挙げた実行とは、`unit.allow_same_model` が真でない限り、agent と model の組が違わなければならない。
@@ -136,7 +136,7 @@ executions:  {id, agent, model, effort, instructions, reads, establishes, writes
  "executions": [
   {"id": "x", "agent": "codex", "model": null, "effort": null, "instructions": "…",
    "reads": [], "establishes": ["a"], "writes": false, "independent_of": []},
-  {"id": "y", "agent": "claude", "model": null, "effort": null, "instructions": "…",
+  {"id": "y", "agent": "claude", "model": "sonnet", "effort": null, "instructions": "…",
    "reads": ["a"], "establishes": ["b"], "writes": false, "independent_of": ["x"]}]}
 ```
 

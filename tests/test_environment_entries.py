@@ -192,6 +192,7 @@ class FlowTest(EngineCase):
         _engine, status = self.start(script, unit_id="u2")
         self.assertNotEqual("done", status["stop_reason"])
         self.assertEqual(MUST_NOT_WRITE, self.finished("reviewer", "u2")[0])
+        self.assertEqual((MUST_NOT_WRITE,) * 2, self.stop_details("u2"))
         self.assertIn(b"b/AGENTS.md", self.result("patch.diff", "u2"))
 
     def test_a_writer_keeps_its_own_empty_file_in_the_patch(self):

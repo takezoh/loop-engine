@@ -105,6 +105,7 @@ class FlowTest(EngineCase):
             return TurnOutcome(True, "done", None)
         _engine, status = self.start(no_record)
         self.assertEqual("unknown_result", status["stop_reason"])
+        self.assertEqual(("no-execution-record",) * 2, self.stop_details())
         self.assertEqual(1, len(self.agents.requests))
 
         def vague_reviewer(request, commands, cancelled):
@@ -125,6 +126,7 @@ class FlowTest(EngineCase):
             return produced(request, commands) if request.role == "producer" else approve(request)
         engine, status = self.start(script)
         self.assertEqual("unknown_result", status["stop_reason"])
+        self.assertEqual(("agent-start-failed: boom",) * 2, self.stop_details())
         self.assertFalse(engine.handle({"request": "answer", "unit_id": "u1", "question_id": "q", "answer": "a"})["ok"])
         self.assertTrue(engine.handle({"request": "retry", "unit_id": "u1"})["ok"])
         self.assertEqual(("done", 0), (lambda s: (s["stop_reason"], s["round"]))(self.run_to_stop(engine)))
@@ -184,6 +186,7 @@ class FlowTest(EngineCase):
             return approve(request)
         _engine, status = self.start(script)
         self.assertEqual("unknown_result", status["stop_reason"])
+        self.assertEqual(("a-turn-that-must-not-write-changed-the-worktree",) * 2, self.stop_details())
 
     def test_caches_a_reviewer_leaves_in_ignored_paths_do_not_void_its_judgment(self):
         def script(request, commands, cancelled):
