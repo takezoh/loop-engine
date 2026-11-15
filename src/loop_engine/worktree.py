@@ -9,7 +9,8 @@ import os
 import re
 import stat
 
-from .check_runner import tree_digest  # the engine and the check program digest a tree the same way
+# the engine and the check program digest a tree, and tell the environment's entries, the same way
+from .check_runner import environment_entry, tree_digest
 
 AGENT_CONFIG_DIRS = (".claude", ".codex", ".pi", ".agents")
 AGENT_CONFIG_FILES = (".mcp.json",)
@@ -146,7 +147,7 @@ def _tree_entry(path):
     return f"file:{digest.hexdigest()}"
 
 
-def _files(root, ignore):
+def _files(root, ignore, committed):
     found = {}
     for folder, directories, files in os.walk(root, followlinks=False):
         for name in list(directories):
@@ -156,16 +157,24 @@ def _files(root, ignore):
                           and not os.path.islink(os.path.join(folder, name))]
         for name in files:
             path = os.path.join(folder, name)
+            if folder == root and environment_entry(root, name, committed):
+                continue
             if name != ".git" and name not in ignore and (os.path.islink(path) or os.path.isfile(path)):
                 relative = os.path.relpath(path, root)
                 found[relative] = _tree_entry(path)
     return found
 
 
-def changed_paths(base, worktree, ignore):
+def changed_paths(base, worktree, ignore, committed):
     """Paths whose content differs between the base revision's tree and the worktree."""
-    before, after = _files(base, ignore), _files(worktree, ignore)
+    before, after = _files(base, ignore, committed), _files(worktree, ignore, committed)
     return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+
+
+def environment_entries(worktree, committed):
+    """The names of the entries the environment placed in the worktree's top directory, which git leaves out."""
+    return [name for name in sorted(os.listdir(worktree))
+            if name != ".git" and environment_entry(worktree, name, committed)]
 
 
 def read_text(worktree, relative):

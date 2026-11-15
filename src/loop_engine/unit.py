@@ -14,7 +14,8 @@ from . import facts, prompts
 from .agents import TurnRequest
 from .store import read_json, worktree_path
 from .worktree import (
-    UNIT_DIRECTORY_RE, agent_config_digest, changed_paths, read_text, tree_digest, unexpected_entries,
+    UNIT_DIRECTORY_RE, agent_config_digest, changed_paths, environment_entries, read_text, tree_digest,
+    unexpected_entries,
 )
 
 # Stops a later request can continue from keep their worktree; every other stop is final.
@@ -69,11 +70,15 @@ class Unit:
         if os.path.realpath(path) != expected or os.path.realpath(path + ".base") != expected + ".base":
             raise RuntimeError("the unit worktree is not where the engine created it")
         path = expected
+        # What the environment may place in the worktree is told apart by names neither commit has.
+        committed = sorted({*self.git.top_names(repository, base),
+                            *self.git.top_names(repository, self.admission["head"])})
         self.store.write_json("checks.json", {"cwd": path, "base": path + ".base", "ignore": self.ignore,
-                                              "checks": self.admission["checks"]})
-        self._save(facts.new_state(tree_digest(path, self.ignore), changed_paths(path + ".base", path, self.ignore)))
+                                              "committed": committed, "checks": self.admission["checks"]})
+        self._save(facts.new_state(tree_digest(path, self.ignore, committed),
+                                   changed_paths(path + ".base", path, self.ignore, committed)))
         self._append({"type": "unit_started", "base": base, "worktree": path, "base_tree": path + ".base",
-                      "git_dir": git_dir, "agent_config": agent_config_digest(path)})
+                      "git_dir": git_dir, "committed": committed, "agent_config": agent_config_digest(path)})
 
     def _runner(self):
         return shlex.join([self.runner[0], "-I", self.runner[1], self.store.path("checks.json")])
@@ -139,7 +144,7 @@ class Unit:
             return state
         if not self._safe(started):
             return self._unsafe(state, execution["id"], "after")
-        tree = tree_digest(worktree, self.ignore) if execution["writes"] else state["tree"]
+        tree = tree_digest(worktree, self.ignore, started["committed"]) if execution["writes"] else state["tree"]
         completed, detail = bool(turn["completed"]), turn["detail"]
         by = {fact["id"]: fact["by"] for fact in self.contract["facts"]}
         judged = any(by[fid] in ("checks", "verdict") for fid in execution["establishes"])
@@ -149,7 +154,8 @@ class Unit:
             completed, detail = False, "a-turn-that-must-not-write-changed-the-worktree"
         state = facts.apply_turn(self.contract, state, execution["id"], {
             "completed": completed, "text": turn["text"], "record": turn["actions"] or {"entries": []},
-            "tree": tree, "changed": changed_paths(started["base_tree"], worktree, self.ignore),
+            "tree": tree,
+            "changed": changed_paths(started["base_tree"], worktree, self.ignore, started["committed"]),
         }, read=lambda relative: read_text(worktree, relative), runner=self._runner())
         refused = [item["description"] for item in state["feedback"].get(execution["id"], [])
                    if str(item.get("description", "")).startswith(facts.NOT_ACCEPTED)]
@@ -164,8 +170,13 @@ class Unit:
             model=execution["model"], effort=execution["effort"], cwd=worktree, prompt=prompt, session=session,
         )
 
+    def _patch(self, started):
+        worktree = started["worktree"]
+        return self.git.patch(worktree, started["base"], started["git_dir"],
+                              environment_entries(worktree, started["committed"]))
+
     def _candidate(self, started):
-        return hashlib.sha256(self.git.patch(started["worktree"], started["base"], started["git_dir"])).hexdigest()
+        return hashlib.sha256(self._patch(started)).hexdigest()
 
     def _safe(self, started):
         """The worktree's agent configuration is what it was, readable in full, and nothing was put above it."""
@@ -181,7 +192,7 @@ class Unit:
     def _stop(self, state, action):
         started = self._started()
         reason = action["reason"]
-        patch = self.git.patch(started["worktree"], started["base"], started["git_dir"]) if started else b""
+        patch = self._patch(started) if started else b""
         self.store.write_result("patch.diff", patch)
         stop = {"stop_reason": reason, "base": started["base"] if started else None,
                 "worktree": started["worktree"] if started else None,

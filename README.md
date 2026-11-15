@@ -4,6 +4,7 @@
 
 - engine が起動するのは git と、対応表にある agent の command だけである。project の command は実行しない。
 - sandbox を持たず、agent に sandbox や承認の指定を渡さない。project code は agent が自分の sandbox の中で実行する。agent の承認の要求は明示的に拒否し、turn は続ける。
+- 環境が作業 directory の最上位に置く空の読み取り専用 file(どちらの commit にもない名前)は、役の変更として数えない。worktree の中のものは削除も変更もしない。
 - 同じ実行が再び走るときは、その実行の agent session を続け、新しいことだけを送る。
 - Profile、skill、判断知識を知らない。受け取るのは契約(成立させる事実と、それを成立させられる実行)だけである。
 

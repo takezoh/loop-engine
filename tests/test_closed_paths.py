@@ -254,8 +254,8 @@ class LinkedConfigurationTest(EngineCase):
         write(base, "a.txt", "same\n")
         write(candidate, "a.txt", "same\n")
         os.symlink("/usr/lib", os.path.join(candidate, "big"))
-        self.assertEqual(["big"], worktree.changed_paths(base, candidate, []))
-        self.assertEqual(worktree.tree_digest(candidate, []), worktree.tree_digest(candidate, []))
+        self.assertEqual(["big"], worktree.changed_paths(base, candidate, [], ["a.txt"]))
+        self.assertEqual(worktree.tree_digest(candidate, [], ["a.txt"]), worktree.tree_digest(candidate, [], ["a.txt"]))
 
     def test_an_untouched_configuration_link_does_not_stop_the_unit(self):
         def script(request, commands, cancelled):

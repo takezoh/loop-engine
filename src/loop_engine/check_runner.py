@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,8 +21,30 @@ import tempfile
 STATUS_PREFIX = "loop-engine-check"
 
 
-def tree_digest(root, ignore):
-    """Digest of every file under root except .git and the ignored names. The engine computes the same."""
+def environment_entry(root, name, committed):
+    """Whether `name`, in the top directory of `root`, is an entry the environment placed there.
+
+    Such an entry is a regular file, not a link, of size 0 that the evaluating process cannot write,
+    whose name is not in `committed`: the names the top directory has in the base revision or in the
+    commit the worktree was made from. It holds no content and is not part of the tree: neither its
+    digest, nor the changed paths, nor the patch. A file that is not empty, is writable, is a link,
+    lies below the top directory or has a committed name is part of the tree as any other file.
+    """
+    if name in committed:
+        return False
+    path = os.path.join(root, name)
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_size == 0 and not os.access(path, os.W_OK)
+
+
+def tree_digest(root, ignore, committed):
+    """Digest of every file under root except .git, the ignored names and the environment's entries.
+
+    The engine computes the same.
+    """
     digest = hashlib.sha256()
     for folder, directories, files in os.walk(root, followlinks=False):
         kept = []
@@ -34,7 +57,7 @@ def tree_digest(root, ignore):
                 kept.append(name)
         directories[:] = kept
         for name in sorted(files):
-            if name == ".git" or name in ignore:
+            if name == ".git" or name in ignore or (folder == root and environment_entry(root, name, committed)):
                 continue
             path = os.path.join(folder, name)
             if not os.path.islink(path) and not os.path.isfile(path):
@@ -86,8 +109,8 @@ def main(argv):
         with open(path, encoding="utf-8") as handle:
             config = json.load(handle)
         check, cwd, base, ignore = config["checks"][name], config["cwd"], config["base"], config["ignore"]
-        command, test_paths = check["argv"], check["test_paths"]
-        digest = tree_digest(cwd, ignore)  # before the check writes caches
+        command, test_paths, committed = check["argv"], check["test_paths"], frozenset(config["committed"])
+        digest = tree_digest(cwd, ignore, committed)  # before the check writes caches
     except (OSError, ValueError, KeyError, TypeError):
         print(f"{STATUS_PREFIX} {name} tree={tree} digest=none exit=127")
         return 127

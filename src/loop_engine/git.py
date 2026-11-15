@@ -67,6 +67,11 @@ class Git:
         process = self._run(directory, "cat-file", "blob", f"{commit}:{relative}", check=False)
         return process.stdout if process.returncode == 0 else None
 
+    def top_names(self, directory, commit):
+        """The names in the top directory of a commit's tree."""
+        listed = self._run(directory, "ls-tree", "-z", "--name-only", f"{commit}^{{tree}}").stdout
+        return sorted(os.fsdecode(name) for name in listed.split(b"\0") if name)
+
     def add_worktree(self, repository, path, commit):
         """Create a worktree and return its git directory inside the repository.
 
@@ -85,8 +90,15 @@ class Git:
         """Forget worktrees whose directories are gone."""
         self._run(repository, "worktree", "prune", check=False)
 
-    def patch(self, worktree, base, git_dir):
-        """Everything the worktree differs from `base` by, untracked files included."""
+    def patch(self, worktree, base, git_dir, left_out):
+        """Everything the worktree differs from `base` by, untracked files included, except `left_out`.
+
+        `left_out` are top-directory names the environment placed in the worktree: they are taken out
+        of the index too, so one that was counted before it became such an entry is not kept there.
+        """
         at = (f"--git-dir={git_dir}", f"--work-tree={worktree}")
         self._run(worktree, *at, "add", "--all", "--", ".")
+        if left_out:
+            self._run(worktree, *at, "--literal-pathspecs", "rm", "--cached", "--quiet", "--ignore-unmatch",
+                      "--", *left_out)
         return self._run(worktree, *at, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", base).stdout

@@ -44,8 +44,14 @@ def actions(*entries):
         for index, entry in enumerate(entries)]}
 
 
+CHECKS_FILES = {}  # worktree -> the checks file the engine wrote for the check program
+
+
 def status_line(cwd, name, code, tree="candidate"):
-    return f"loop-engine-check {name} tree={tree} digest={tree_digest(cwd, IGNORE)} exit={code}"
+    """The line the check program prints, computed as it computes it from the unit's checks file."""
+    with open(CHECKS_FILES[cwd], encoding="utf-8") as handle:
+        committed = json.load(handle)["committed"]
+    return f"loop-engine-check {name} tree={tree} digest={tree_digest(cwd, IGNORE, committed)} exit={code}"
 
 
 def passing(commands, cwd, *, before=()):
@@ -121,6 +127,7 @@ class ScriptedAgents:
         self.nth[request.role] = self.nth.get(request.role, 0) + 1
         unit = store.UnitStore(self.root, request.unit_id)
         runner = shlex.join([sys.executable, "-I", RUNNER, unit.path("checks.json")])
+        CHECKS_FILES[request.cwd] = unit.path("checks.json")
         commands = {}
         for name in facts.check_names(unit.contract())[0]:
             commands[name] = facts.expected_command(runner, name, "candidate")
