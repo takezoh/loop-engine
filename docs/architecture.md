@@ -20,7 +20,7 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 
 ## 契約
 
-契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、次の上限と文字種を加える。
+契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、事実と実行の構造には `check_structure`、`limits` には `check_limits` を使う。2 つは公開の純粋関数で、契約の一部だけを問える。検査は次の上限と文字種を加える。
 
 | 対象 | 上限・文字種 |
 |---|---|
@@ -150,7 +150,7 @@ agent は engine が指定した command を実行する。検査 program は結
 
 | 確かめること | テスト |
 |---|---|
-| 判断の規則、判定の規則、契約の受付 | `tests/test_facts.py` |
+| 判断の規則、判定の規則、契約の受付、構造と `limits` だけの検査 | `tests/test_facts.py` |
 | 実際の repository と engine での流れ、止まり方、再開、取消 | `tests/test_unit_flow.py` |
 | session の継続、続きのメッセージ、続けられない session、session を閉じること、解放されなかった turn、拒否の回数 | `tests/test_sessions.py` |
 | 要求の受付、要求 file、CLI、engine process の起動 | `tests/test_service.py` |

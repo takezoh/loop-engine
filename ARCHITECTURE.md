@@ -76,7 +76,7 @@ flowchart LR
   UG -->|"scope: 範囲の判定"| FT
 ```
 
-契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義し(`facts.py` の `validate`)、受付時に検査して、合わない契約を受け付けない。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
+契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義する。`facts.py` の `check_structure` が事実と実行の構造を、`check_limits` が `limits` を検査し、`validate` は契約全体をそれらと実行に要る値で検査して、合わない契約を受け付けない。`check_structure` が見るのは、`checks` の事実の `checks` と実行の `agent`・`model`・`effort`・`instructions` を除いた事実と実行である。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
 
 ### 契約の形
 

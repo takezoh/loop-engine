@@ -339,6 +339,33 @@ class DecisionTest(unittest.TestCase):
         broken(lambda v: v["facts"][4].pop("block_at"))
         broken(lambda v: v["executions"][1]["reads"].append("candidate"))  # a fact that reads itself
 
+    def test_the_structure_alone_is_checked_without_what_a_run_adds(self):
+        value = implementation()
+        structure_facts = [{k: v for k, v in f.items() if k not in facts.FACT_RUN_KEYS.get(f["by"], ())}
+                           for f in value["facts"]]
+        structure_executions = [{k: v for k, v in e.items() if k not in facts.EXECUTION_RUN_KEYS}
+                                for e in value["executions"]]
+        facts.check_structure(structure_facts, structure_executions)
+
+        def refused(change, message):
+            changed_facts, changed_executions = copy.deepcopy(structure_facts), copy.deepcopy(structure_executions)
+            change(changed_facts, changed_executions)
+            with self.assertRaises(InvalidContract) as caught:
+                facts.check_structure(changed_facts, changed_executions)
+            self.assertEqual(message, str(caught.exception))
+        refused(lambda f, e: e[1].update(establishs=e[1].pop("establishes")),
+                "execution implement: unknown key establishs; missing key establishes")
+        refused(lambda f, e: e[0].update(agent="codex"), "execution survey: unknown key agent")
+        refused(lambda f, e: f[4].pop("block_at"), "fact quality: missing key block_at")
+        refused(lambda f, e: f[4].update(by="opinion"), "fact quality: by must be one of given, report, git, checks, verdict")
+        refused(lambda f, e: f[4].update(block_at="fatal"), "fact quality: block_at must be one of minor, major, blocker")
+        refused(lambda f, e: f[2].update(subject="nothing"), "fact in-scope: subject 'nothing' is not a fact of the unit")
+        refused(lambda f, e: e[2].update(independent_of=["nobody"]),
+                "execution review-a: unknown execution nobody in independent_of")
+        with self.assertRaises(InvalidContract):
+            facts.check_limits({"rounds": facts.MAX_ROUNDS + 1})
+        facts.check_limits({"rounds": facts.MAX_ROUNDS})
+
     def test_checks_file_must_define_every_named_check(self):
         raw = {"checks": {"unit": {"argv": ["python", "-m", "unittest"], "test_paths": ["tests"]}}, "ignore": ["__pycache__"]}
         self.assertEqual((["unit"], ["unit"]), facts.check_names(implementation()))

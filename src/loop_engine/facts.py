@@ -11,7 +11,6 @@ import json
 import re
 
 SEVERITY = {"minor": 1, "major": 2, "blocker": 3}
-BY = ("given", "report", "checks", "verdict", "git")
 STATUS_RE = re.compile(
     r"^loop-engine-check (\S+) tree=(candidate|base) digest=([0-9a-f]+)(?: base=([0-9a-f]+))? exit=(-?\d+)$")
 MAX_INVALID = 2
@@ -28,10 +27,15 @@ CONTRACT_KEYS = frozenset({"unit_id", "repository", "unit", "facts", "executions
 UNIT_KEYS = frozenset({"goal", "criteria", "scope", "limits"})
 UNIT_OPTIONAL = frozenset({"allow_same_model", "examine_min", "base"})
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-FACT_KEYS = {"given": set(), "report": set(), "git": {"subject"}, "checks": {"subject", "checks"},
+# The structure of a unit: the facts, the executions that can establish them, and how they refer to
+# each other. A fact has id, required, by and the keys of its kind.
+FACT_KEYS = {"given": set(), "report": set(), "git": {"subject"}, "checks": {"subject"},
              "verdict": {"subject", "block_at"}}
-EXECUTION_KEYS = frozenset({"id", "agent", "model", "effort", "instructions", "reads", "establishes", "writes",
-                            "independent_of"})
+EXECUTION_KEYS = frozenset({"id", "reads", "establishes", "writes", "independent_of"})
+# What a contract adds to the structure for a run: the checks a `checks` fact asks for, and who runs
+# each execution with which instructions.
+FACT_RUN_KEYS = {"checks": {"checks"}}
+EXECUTION_RUN_KEYS = frozenset({"agent", "model", "effort", "instructions"})
 
 
 class InvalidContract(ValueError):
@@ -42,6 +46,111 @@ def _text(value, name):
     if (not isinstance(value, str) or not value.strip() or "\x00" in value
             or len(value.encode("utf-8", "replace")) > MAX_TEXT_BYTES):
         raise InvalidContract(f"{name} must be non-empty text of at most {MAX_TEXT_BYTES} bytes")
+
+
+def _keys(name, value, wanted):
+    unknown, missing = sorted(set(value) - set(wanted)), sorted(set(wanted) - set(value))
+    if unknown or missing:
+        raise InvalidContract(f"{name}: " + "; ".join(
+            [*(["unknown key " + ", ".join(unknown)] if unknown else []),
+             *(["missing key " + ", ".join(missing)] if missing else [])]))
+
+
+def _named(kind, items, index):
+    item = items[index]
+    if not isinstance(item, dict):
+        raise InvalidContract(f"{kind} {index + 1} must be an object")
+    if not isinstance(item.get("id"), str) or not ID_RE.match(item["id"]):
+        raise InvalidContract(f"{kind} {index + 1}: id {item.get('id')!r} is not an admitted id")
+    return f"{kind} {item['id']}"
+
+
+def check_limits(limits):
+    """Pure: the limits of a unit, or raise `InvalidContract`."""
+    if (not isinstance(limits, dict) or set(limits) != {"rounds"} or isinstance(limits["rounds"], bool)
+            or not isinstance(limits["rounds"], int) or not 1 <= limits["rounds"] <= MAX_ROUNDS):
+        raise InvalidContract(f"limits.rounds must be 1..{MAX_ROUNDS}")
+
+
+def check_structure(facts, executions):
+    """Pure: the facts of a unit and the executions that can establish them, without what a run adds
+    (`FACT_RUN_KEYS`, `EXECUTION_RUN_KEYS`), or raise `InvalidContract` naming the fact or execution.
+
+    Checks the keys and ids, the kinds of fact, the references between facts and executions, which
+    executions may establish which kind of fact, and that what an execution reads does not depend on
+    what it establishes."""
+    if not isinstance(facts, list) or not 1 <= len(facts) <= MAX_ITEMS:
+        raise InvalidContract(f"facts must be a list of 1..{MAX_ITEMS} facts")
+    for index, fact in enumerate(facts):
+        name = _named("fact", facts, index)
+        if fact.get("by") not in FACT_KEYS:
+            raise InvalidContract(f"{name}: by must be one of " + ", ".join(FACT_KEYS))
+        _keys(name, fact, {"id", "required", "by"} | FACT_KEYS[fact["by"]])
+        if not isinstance(fact["required"], bool):
+            raise InvalidContract(f"{name}: required must be a boolean")
+        if "block_at" in fact and fact["block_at"] not in SEVERITY:
+            raise InvalidContract(f"{name}: block_at must be one of " + ", ".join(SEVERITY))
+    if not isinstance(executions, list) or not 1 <= len(executions) <= MAX_ITEMS:
+        raise InvalidContract(f"executions must be a list of 1..{MAX_ITEMS} executions")
+    for index, ex in enumerate(executions):
+        name = _named("execution", executions, index)
+        _keys(name, ex, EXECUTION_KEYS)
+        if not isinstance(ex["writes"], bool):
+            raise InvalidContract(f"{name}: writes must be a boolean")
+        for key in ("reads", "establishes", "independent_of"):
+            if not isinstance(ex[key], list) or any(not isinstance(ref, str) for ref in ex[key]):
+                raise InvalidContract(f"{name}: {key} must be a list of ids")
+        if not ex["establishes"]:
+            raise InvalidContract(f"{name}: an execution establishes at least one fact")
+    by_fact = {f["id"]: f for f in facts}
+    execs = {e["id"]: e for e in executions}
+    if len(by_fact) != len(facts) or len(execs) != len(executions):
+        raise InvalidContract("duplicate id")
+    for eid, ex in execs.items():
+        for ref in [*ex["reads"], *ex["establishes"]]:
+            if ref not in by_fact:
+                raise InvalidContract(f"execution {eid}: unknown fact {ref}")
+        if set(ex["reads"]) & set(ex["establishes"]):
+            raise InvalidContract(f"execution {eid}: an execution cannot read a fact it establishes")
+        for other in ex["independent_of"]:
+            if other not in execs:
+                raise InvalidContract(f"execution {eid}: unknown execution {other} in independent_of")
+    makers = {fid: [e["id"] for e in executions if fid in e["establishes"]] for fid in by_fact}
+    for fid, fact in by_fact.items():
+        if "subject" in fact and fact["subject"] not in by_fact:
+            raise InvalidContract(f"fact {fid}: subject {fact['subject']!r} is not a fact of the unit")
+        if fact["by"] in ("given", "git") and makers[fid]:
+            raise InvalidContract(f"fact {fid}: the engine establishes this fact")
+        if fact["by"] == "report" and len(makers[fid]) != 1:
+            raise InvalidContract(f"fact {fid}: exactly one execution establishes a report")
+        if fact["by"] == "checks":
+            subject_makers = makers[fact["subject"]]
+            if makers[fid] != subject_makers or not all(execs[m]["writes"] for m in subject_makers):
+                raise InvalidContract(f"fact {fid}: checks are read from the record of the execution that wrote the subject")
+        if fact["by"] == "verdict" and not makers[fid]:
+            raise InvalidContract(f"fact {fid}: no execution establishes it")
+    structure = {"facts": facts, "executions": executions}
+    seen = set()
+
+    def visit(fid, path):  # reads must not form a cycle through establishes
+        if fid in path:
+            raise InvalidContract(f"cycle through {fid}")
+        if fid in seen:
+            return
+        for dep in deps(structure, fid):
+            visit(dep, path | {fid})
+        seen.add(fid)
+
+    for fid in by_fact:
+        visit(fid, frozenset())
+
+
+def _without(items, keys_of):
+    """The items without the keys `keys_of(item)` names; anything that is not a list of objects as it is."""
+    if not isinstance(items, list):
+        return items
+    return [{k: v for k, v in item.items() if k not in keys_of(item)} if isinstance(item, dict) else item
+            for item in items]
 
 
 def _shape(contract):
@@ -72,10 +181,7 @@ def _shape(contract):
             not isinstance(p, str) or not p or p.startswith("/") or "\x00" in p
             or any(part in ("", ".", "..") for part in p.rstrip("/").split("/")) for p in scope)):
         raise InvalidContract("unit.scope must be relative paths inside the repository")
-    limits = unit["limits"]
-    if (not isinstance(limits, dict) or set(limits) != {"rounds"} or isinstance(limits["rounds"], bool)
-            or not isinstance(limits["rounds"], int) or not 1 <= limits["rounds"] <= MAX_ROUNDS):
-        raise InvalidContract(f"unit.limits.rounds must be 1..{MAX_ROUNDS}")
+    check_limits(unit["limits"])
     if "base" in unit and (not isinstance(unit["base"], str) or not COMMIT_RE.match(unit["base"])):
         raise InvalidContract("unit.base must be a full commit id")  # what an existing change is compared with
     if not isinstance(unit.get("allow_same_model", False), bool):
@@ -83,38 +189,26 @@ def _shape(contract):
     share = unit.get("examine_min", 1.0)
     if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 <= share <= 1:
         raise InvalidContract("unit.examine_min must be 0..1")
-    facts, executions = contract["facts"], contract["executions"]
-    if not isinstance(facts, list) or not facts or len(facts) > MAX_ITEMS:
-        raise InvalidContract("facts must be a non-empty list")
-    for fact in facts:
-        if (not isinstance(fact, dict) or fact.get("by") not in FACT_KEYS
-                or set(fact) != {"id", "required", "by"} | FACT_KEYS[fact["by"]]
-                or not isinstance(fact["id"], str) or not ID_RE.match(fact["id"])
-                or not isinstance(fact["required"], bool)):
-            raise InvalidContract("each fact needs id, required, by and exactly the keys of its kind")
+    check_structure(_without(contract["facts"], lambda f: FACT_RUN_KEYS.get(f.get("by"), ())),
+                    _without(contract["executions"], lambda e: EXECUTION_RUN_KEYS))
+    for fact in contract["facts"]:
+        _keys(f"fact {fact['id']}", fact, {"id", "required", "by"} | FACT_KEYS[fact["by"]]
+              | FACT_RUN_KEYS.get(fact["by"], set()))
         if fact["by"] == "checks":
             checks = fact["checks"]
             if (not isinstance(checks, list) or not checks or len(checks) > MAX_ITEMS or any(
                     not isinstance(c, dict) or set(c) != {"name", "expect"} or not isinstance(c["name"], str)
                     or not CHECK_NAME_RE.match(c["name"]) or c["expect"] not in ("pass", "fails_on_base")
                     for c in checks)):
-                raise InvalidContract(f"{fact['id']}: checks must be {{name, expect}} entries")
-    if not isinstance(executions, list) or not executions or len(executions) > MAX_ITEMS:
-        raise InvalidContract("executions must be a non-empty list")
-    for ex in executions:
-        if (not isinstance(ex, dict) or set(ex) != EXECUTION_KEYS or not isinstance(ex["id"], str)
-                or not ID_RE.match(ex["id"]) or not isinstance(ex["agent"], str) or not ID_RE.match(ex["agent"])
-                or not isinstance(ex["writes"], bool)):
-            raise InvalidContract("each execution needs exactly " + ", ".join(sorted(EXECUTION_KEYS)))
+                raise InvalidContract(f"fact {fact['id']}: checks must be {{name, expect}} entries")
+    for ex in contract["executions"]:
+        _keys(f"execution {ex['id']}", ex, EXECUTION_KEYS | EXECUTION_RUN_KEYS)
+        if not isinstance(ex["agent"], str) or not ID_RE.match(ex["agent"]):
+            raise InvalidContract(f"execution {ex['id']}: agent is not an admitted id")
         for key in ("model", "effort"):
             if ex[key] is not None and (not isinstance(ex[key], str) or not TARGET_RE.match(ex[key])):
-                raise InvalidContract(f"{ex['id']}.{key} is not an admitted name")
-        _text(ex["instructions"], f"{ex['id']}.instructions")
-        for key in ("reads", "establishes", "independent_of"):
-            if not isinstance(ex[key], list) or any(not isinstance(ref, str) for ref in ex[key]):
-                raise InvalidContract(f"{ex['id']}.{key} must be a list of ids")
-        if not ex["establishes"]:
-            raise InvalidContract(f"{ex['id']}: an execution establishes at least one fact")
+                raise InvalidContract(f"execution {ex['id']}: {key} is not an admitted name")
+        _text(ex["instructions"], f"execution {ex['id']}: instructions")
 
 
 def check_names(contract):
@@ -156,57 +250,15 @@ def sha(value):
 
 
 def validate(contract):
+    """The contract, or raise `InvalidContract`: its unit, its structure (`check_structure`), what a run
+    adds to it, and that each execution is independent of those it names."""
     _shape(contract)
-    facts = {f["id"]: f for f in contract["facts"]}
     execs = {e["id"]: e for e in contract["executions"]}
-    if len(facts) != len(contract["facts"]) or len(execs) != len(contract["executions"]):
-        raise InvalidContract("duplicate id")
-    makers = {fid: [e["id"] for e in contract["executions"] if fid in e["establishes"]] for fid in facts}
-    for fid, fact in facts.items():
-        if fact["by"] not in BY:
-            raise InvalidContract(f"{fid}: unknown by")
-        if fact["by"] in ("checks", "verdict", "git") and fact.get("subject") not in facts:
-            raise InvalidContract(f"{fid}: subject required")
-        if fact["by"] in ("given", "git") and makers[fid]:
-            raise InvalidContract(f"{fid}: the engine establishes this fact")
-        if fact["by"] == "report" and len(makers[fid]) != 1:
-            raise InvalidContract(f"{fid}: exactly one execution establishes a report")
-        if fact["by"] == "checks":
-            subject_makers = makers[fact["subject"]]
-            if makers[fid] != subject_makers or not all(execs[m]["writes"] for m in subject_makers):
-                raise InvalidContract(f"{fid}: checks are read from the record of the execution that wrote the subject")
-        if fact["by"] == "verdict":
-            if not makers[fid]:
-                raise InvalidContract(f"{fid}: no execution establishes it")
-            if fact.get("block_at") not in SEVERITY:
-                raise InvalidContract(f"{fid}: block_at required")
     for eid, ex in execs.items():
-        for ref in [*ex["reads"], *ex["establishes"]]:
-            if ref not in facts:
-                raise InvalidContract(f"{eid}: unknown fact {ref}")
-        if set(ex["reads"]) & set(ex["establishes"]):
-            raise InvalidContract(f"{eid}: an execution cannot read a fact it establishes")
-        for other in ex.get("independent_of", ()):
-            if other not in execs:
-                raise InvalidContract(f"{eid}: unknown execution {other}")
+        for other in ex["independent_of"]:
             same = (execs[other]["agent"], execs[other]["model"]) == (ex["agent"], ex["model"])
             if same and not contract["unit"].get("allow_same_model"):
-                raise InvalidContract(f"{eid}: not independent of {other} (same agent and model)")
-    # reads must not form a cycle through establishes
-    order, seen = [], set()
-
-    def visit(fid, path):
-        if fid in path:
-            raise InvalidContract(f"cycle through {fid}")
-        if fid in seen:
-            return
-        for dep in deps(contract, fid):
-            visit(dep, path | {fid})
-        seen.add(fid)
-        order.append(fid)
-
-    for fid in facts:
-        visit(fid, frozenset())
+                raise InvalidContract(f"execution {eid}: not independent of {other} (same agent and model)")
     return contract
 
 
