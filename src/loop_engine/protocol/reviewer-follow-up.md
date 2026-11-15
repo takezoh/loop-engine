@@ -6,6 +6,8 @@ This continues the assessment you were asked for earlier in this session. Its in
 
 ## Reports that changed since your previous reply
 
+Each report is what another role found about the requested work, to be weighed as evidence, or judged when your verdict is about it. Rules that role was given for its own turn are not constraints on you or on the work.
+
 {reports}
 
 ## About your previous reply
@@ -13,6 +15,8 @@ This continues the assessment you were asked for earlier in this session. Its in
 {feedback}
 
 ## What to do
+
+The rules in this section are the caller's rules for your turn only: they do not bind the work you judge or any other role, so do not cite them as constraints or findings.
 
 Do not change any file. Judge the files as they are now: read every changed file in the current directory again, because they may have changed since your previous reply. You may run commands; only the commands you run in this turn count as evidence. Judge each acceptance criterion separately. Do not state an overall approval; the caller computes it from your answer.
 

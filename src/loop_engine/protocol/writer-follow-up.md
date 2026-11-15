@@ -6,6 +6,8 @@ This continues the task of the first message in this session. Its instructions, 
 
 ## Reports that changed since your previous turn
 
+Each report is what another role found about the requested work, to be weighed as evidence. Rules that role was given for its own turn are not constraints on you or on the work.
+
 {reports}
 
 ## How this turn is judged

@@ -27,6 +27,9 @@ CONTRACT_KEYS = frozenset({"unit_id", "repository", "unit", "facts", "executions
 UNIT_KEYS = frozenset({"goal", "criteria", "scope", "limits"})
 UNIT_OPTIONAL = frozenset({"allow_same_model", "examine_min", "base"})
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+LIMIT_KEYS = frozenset({"rounds"})
+# What a check must show: it passes on the candidate, or the candidate's tests fail on the base revision.
+CHECK_EXPECT = ("pass", "fails_on_base")
 # The structure of a unit: the facts, the executions that can establish them, and how they refer to
 # each other. A fact has id, required, by and the keys of its kind.
 FACT_KEYS = {"given": set(), "report": set(), "git": {"subject"}, "checks": {"subject"},
@@ -67,7 +70,7 @@ def _named(kind, items, index):
 
 def check_limits(limits):
     """Pure: the limits of a unit, or raise `InvalidContract`."""
-    if (not isinstance(limits, dict) or set(limits) != {"rounds"} or isinstance(limits["rounds"], bool)
+    if (not isinstance(limits, dict) or set(limits) != LIMIT_KEYS or isinstance(limits["rounds"], bool)
             or not isinstance(limits["rounds"], int) or not 1 <= limits["rounds"] <= MAX_ROUNDS):
         raise InvalidContract(f"limits.rounds must be 1..{MAX_ROUNDS}")
 
@@ -198,7 +201,7 @@ def _shape(contract):
             checks = fact["checks"]
             if (not isinstance(checks, list) or not checks or len(checks) > MAX_ITEMS or any(
                     not isinstance(c, dict) or set(c) != {"name", "expect"} or not isinstance(c["name"], str)
-                    or not CHECK_NAME_RE.match(c["name"]) or c["expect"] not in ("pass", "fails_on_base")
+                    or not CHECK_NAME_RE.match(c["name"]) or c["expect"] not in CHECK_EXPECT
                     for c in checks)):
                 raise InvalidContract(f"fact {fact['id']}: checks must be {{name, expect}} entries")
     for ex in contract["executions"]:
