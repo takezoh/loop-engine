@@ -10,7 +10,7 @@ This continues the task of the first message in this session. Its instructions, 
 
 ## How this turn is judged
 
-Work only in the current directory and change only the paths the first message named. Do not commit, and do not change agent configuration (`.claude/`, `.codex/`, `.pi/`, `.agents/`, `.mcp.json`).
+Work only in the current directory and change only the paths the first message named. Do not commit, and do not change agent configuration ({agent_config}).
 
 When you are finished changing files, run each of these commands exactly as written, each as its own command with nothing else on the line, as your final actions. Only the commands you run in this turn count; runs from earlier turns do not. If you change any file afterwards, run all of them again.
 

@@ -5,7 +5,7 @@ import unittest
 
 from engine_support import EngineCase, actions, approve, changes, produced, write
 
-from loop_engine import composition, prompts, store
+from loop_engine import composition, prompts, store, unit, worktree
 from loop_engine.agents import TurnOutcome
 
 
@@ -242,15 +242,50 @@ class FollowUpTest(unittest.TestCase):
         reports = {"notes": "unchanged notes", "draft": "a second draft"}
         sent = prompts.digests({"notes": "unchanged notes", "draft": "the first draft"})
         text = prompts.follow_up(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
-                                 reports=reports, sent=sent)
+                                 reports=reports, sent=sent, agent_config=unit.AGENT_CONFIG)
         self.assertIn("a second draft", text)
         for old in ("unchanged notes", "the instructions", "the goal", "the criterion"):
             self.assertNotIn(old, text)
         self.assertIn('{"criteria": [', text)
         full = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[], base="/b",
-                               reports=reports)
+                               reports=reports, agent_config=unit.AGENT_CONFIG)
         self.assertIn("unchanged notes", full)
         self.assertIn("the instructions", full)
+
+
+class AgentConfigurationTest(unittest.TestCase):
+    """A writer is told not to change exactly the agent configuration the engine watches."""
+
+    CONTRACT = {
+        "unit": {"goal": "the goal", "criteria": [{"id": "c1", "text": "the criterion"}], "scope": ["a.md"]},
+        "facts": [{"id": "done", "by": "report"}],
+        "executions": [{"id": "make", "writes": True, "instructions": "the instructions",
+                        "reads": [], "establishes": ["done"]}],
+    }
+    NAMES = (*(f"{name}/" for name in worktree.AGENT_CONFIG_DIRS), *worktree.AGENT_CONFIG_FILES)
+
+    def test_a_writers_messages_name_exactly_the_engines_list(self):
+        templates = composition.load_templates()
+        execution = self.CONTRACT["executions"][0]
+        expected = "(" + ", ".join(f"`{name}`" for name in self.NAMES) + ")"
+        first = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
+                                base="/b", reports={}, agent_config=unit.AGENT_CONFIG)
+        later = prompts.follow_up(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
+                                  reports={}, sent={}, agent_config=unit.AGENT_CONFIG)
+        for text in (first, later):
+            self.assertIn(f"do not change agent configuration {expected}.", text)
+        moved = ((".x",), (".y.json",))
+        text = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
+                               base="/b", reports={}, agent_config=moved)
+        self.assertIn("(`.x/`, `.y.json`)", text)
+        for name in self.NAMES:
+            self.assertNotIn(name, text)
+
+    def test_no_template_names_the_agent_configuration_itself(self):
+        for role, text in composition.load_templates().items():
+            for name in (*worktree.AGENT_CONFIG_DIRS, *worktree.AGENT_CONFIG_FILES):
+                with self.subTest(template=role, name=name):
+                    self.assertNotIn(name, text)
 
 
 if __name__ == "__main__":

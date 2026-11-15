@@ -12,6 +12,12 @@ def _bullets(items, empty="(none)"):
     return "\n".join(f"- {item}" for item in items) if items else empty
 
 
+def _agent_config(agent_config):
+    """`agent_config` is (directory names, file names) of the agent configuration a writer must not change."""
+    directories, files = agent_config
+    return ", ".join(f"`{name}`" for name in (*(f"{d}/" for d in directories), *files))
+
+
 def kind(contract, execution):
     """Which protocol an execution follows: it changes files, it judges, or it only reports."""
     if execution["writes"]:
@@ -58,12 +64,13 @@ def changed_reports(reports, sent):
     return {fid: text for fid, text in reports.items() if sent.get(fid) != now[fid]}
 
 
-def follow_up(templates, contract, execution, feedback, *, check_commands, changed, reports, sent):
+def follow_up(templates, contract, execution, feedback, *, check_commands, changed, reports, sent, agent_config):
     """The message that continues an execution's session: feedback, what changed, and how to answer.
 
     `sent` is what the session was already given (`digests`); only reports it has not seen go in.
     """
     return templates[kind(contract, execution) + "-follow-up"].format(
+        agent_config=_agent_config(agent_config),
         feedback=_bullets(map(_finding, feedback)),
         checks="\n".join(check_commands) if check_commands else "(no checks are configured for this turn)",
         changed=_bullets(changed),
@@ -75,10 +82,11 @@ def _reports(reports):
     return "\n\n".join(f"### {fid}\n\n{text.strip()}" for fid, text in reports.items()) or "(none)"
 
 
-def compose(templates, contract, execution, feedback, *, check_commands, changed, base, reports):
+def compose(templates, contract, execution, feedback, *, check_commands, changed, base, reports, agent_config):
     """`templates` maps writer | reviewer | reporter -> text with named fields."""
     unit = contract["unit"]
     return templates[kind(contract, execution)].format(
+        agent_config=_agent_config(agent_config),
         instructions=execution["instructions"].strip(),
         goal=unit["goal"].strip(),
         criteria=_bullets(f"{c['id']}: {c['text']}" for c in unit["criteria"]),

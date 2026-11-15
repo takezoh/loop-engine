@@ -14,7 +14,7 @@ from . import facts, prompts
 from .agents import TurnRequest
 from .store import read_json, verified_check_program, worktree_path
 from .worktree import (
-    UNIT_DIRECTORY_RE, Unreadable, agent_config_digest, changed_paths, environment_entries, read_text,
+    AGENT_CONFIG_DIRS, AGENT_CONFIG_FILES, UNIT_DIRECTORY_RE, Unreadable, agent_config_digest, changed_paths, environment_entries, read_text,
     tree_digest, unexpected_entries,
 )
 
@@ -23,6 +23,8 @@ CONTINUABLE = ("waiting_for_answer", "unknown_result", "invalid_result")
 # The record lists at most this many environment entries, each name cut to this many characters.
 MAX_LISTED = facts.MAX_ITEMS
 MAX_NAME = 1000
+# The agent configuration a writer is told not to change: the same names the engine watches.
+AGENT_CONFIG = (AGENT_CONFIG_DIRS, AGENT_CONFIG_FILES)
 
 
 class Unit:
@@ -128,12 +130,13 @@ class Unit:
         def first_message():
             return prompts.compose(self.templates, self.contract, execution, action["feedback"],
                                    check_commands=checks, changed=state["changed"], base=started["base_tree"],
-                                   reports=reports)
+                                   reports=reports, agent_config=AGENT_CONFIG)
 
         session = facts.session_of(state, execution["id"])
         prompt = first_message() if session is None else prompts.follow_up(
             self.templates, self.contract, execution, action["feedback"], check_commands=checks,
-            changed=state["changed"], reports=reports, sent=facts.delivered(state, execution["id"]))
+            changed=state["changed"], reports=reports, sent=facts.delivered(state, execution["id"]),
+            agent_config=AGENT_CONFIG)
         # What git would record, so caches a reviewer's own test run leaves behind do not count as a change.
         before = None if execution["writes"] else self._candidate(started)
         self._append({"type": "turn_started", "execution": execution["id"], "turn": number,

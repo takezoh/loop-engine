@@ -80,6 +80,9 @@ def main(argv=None, environ=None):
         if not code:
             _print(result)
         return code
+    except client.EngineUnavailable as error:  # waiting found no engine and none could be started
+        print(str(error), file=sys.stderr)
+        return EXIT_UNAVAILABLE
     except (OSError, ValueError) as error:
         print(f"invalid: {error}", file=sys.stderr)
         return EXIT_INVALID

@@ -312,7 +312,8 @@ class DecisionTest(unittest.TestCase):
         templates = {"reviewer": "{instructions}|{goal}|{criteria}|{changed}|{base}|{reports}|{feedback}|{scope}|{checks}"}
         text = prompts.compose(templates, sim.contract, assess, [{"fact": "assessed", "path": "a.py", "line": 3,
                                                                  "description": "wrong"}],
-                               check_commands=[], changed=["a.py"], base="/base", reports={"account": "cause: A"})
+                               check_commands=[], changed=["a.py"], base="/base", reports={"account": "cause: A"},
+                               agent_config=((".x",), ()))
         self.assertIn("- c1: add returns the sum|- a.py|/base|### account\n\ncause: A|- [assessed] a.py:3 wrong", text)
 
     def test_contract_rejects_a_reviewer_on_the_producers_model(self):

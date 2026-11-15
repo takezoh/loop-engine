@@ -3,6 +3,7 @@
 Entries (CLI, MCP) read status and results from here and never write. A unit's
 events are the source of truth; status and results are derived views.
 """
+import errno
 import hashlib
 import json
 import os
@@ -278,6 +279,31 @@ def drop_old_responses(root, older_than):
             continue
 
 
+class LockFailed(Exception):
+    """The lock could not be taken for a reason other than another process holding it."""
+
+
+def lock_contended(error, *, windows):
+    """Whether a refused non-blocking lock means that another process holds it.
+
+    Any other errno (permission, a missing directory, a filesystem without locks)
+    is a failure to lock, not a sign of another engine.
+    """
+    if windows:
+        return error.errno == errno.EACCES  # msvcrt.locking with LK_NBLCK on a locked byte
+    return error.errno in (errno.EAGAIN, errno.EWOULDBLOCK)  # flock with LOCK_NB on a locked file
+
+
+def _take(handle, *, windows):
+    if windows:
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 class ProcessLock:
     """An exclusive lock on a file, held for as long as the owning process lives."""
 
@@ -285,20 +311,23 @@ class ProcessLock:
         self.path, self._handle = path, None
 
     def acquire(self):
-        """True when this process now holds the lock; False when another process does."""
-        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
-        handle = open(self.path, "a+b")
+        """True when this process now holds the lock; False when another process does.
+
+        Raises `LockFailed`, naming the cause, when the lock cannot be taken at all.
+        """
+        windows = os.name == "nt"
         try:
-            if os.name == "nt":
-                import msvcrt
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+            os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+            handle = open(self.path, "a+b")
+        except OSError as error:
+            raise LockFailed(f"cannot open the lock file {self.path}: {error}") from error
+        try:
+            _take(handle, windows=windows)
+        except OSError as error:
             handle.close()
-            return False
+            if lock_contended(error, windows=windows):
+                return False
+            raise LockFailed(f"cannot lock {self.path}: {error}") from error
         self._handle = handle
         return True
 

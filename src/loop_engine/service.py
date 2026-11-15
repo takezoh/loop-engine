@@ -233,7 +233,10 @@ class Engine:
                 self._launch(unit_id)
 
     def serve(self, lock_path):
-        """Serve requests until idle. Returns False when another engine holds the state home."""
+        """Serve requests until idle. Returns False when another engine holds the state home.
+
+        Raises `LockFailed` when the state home cannot be locked at all.
+        """
         lock = ProcessLock(lock_path)
         for _attempt in range(LOCK_ATTEMPTS):
             if lock.acquire():

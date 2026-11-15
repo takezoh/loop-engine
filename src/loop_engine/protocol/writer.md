@@ -18,7 +18,7 @@
 
 ## How this turn is judged
 
-Work only in the current directory and change only these paths. Do not commit, and do not change agent configuration (`.claude/`, `.codex/`, `.pi/`, `.agents/`, `.mcp.json`).
+Work only in the current directory and change only these paths. Do not commit, and do not change agent configuration ({agent_config}).
 
 {scope}
 

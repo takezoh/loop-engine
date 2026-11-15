@@ -7,10 +7,10 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 | module | 責務 |
 |---|---|
 | `facts.py` | 契約の受付検査、次の実行の選択、事実の成立と無効化、検査と評価の判定。値だけを扱う |
-| `prompts.py` | 実行に渡す指示文(session の最初のメッセージと続きのメッセージ)の組み立て。値だけを扱う |
+| `prompts.py` | 実行に渡す指示文(session の最初のメッセージと続きのメッセージ)の組み立て。値だけを扱う。書く役に変えさせない agent 設定の名前は、`worktree.py` が観測する一覧を値として受け取る |
 | `unit.py` | 1 単位を、保存された状態から次に止まるところまで進める |
 | `service.py` | engine process。単位ごとに thread を持ち、要求を受け付ける |
-| `store.py` | 単位の記録、要求と応答の file、process の lock、検査 program の公開 |
+| `store.py` | 単位の記録、要求と応答の file、process の lock、検査 program の公開。lock の取得は、取れた・別の process が持つ・取れない(原因を示す `LockFailed`)の 3 つを区別し、取れないことを別の engine が動いているとは扱わない |
 | `git.py` | git の起動。hook、filter、外部 diff を無効にした引数を必ず付ける |
 | `worktree.py` | worktree の観測(agent 設定の digest、tree の digest、git の記録と比べた変更された path) |
 | `check_runner.py` | agent が sandbox の中で実行する固定の検査 program。tree の読み方(読めないものがあれば失敗する)、tree の digest、環境の entry の判定を持ち、`worktree.py` も同じものを使う |
@@ -121,7 +121,7 @@ worktree は状態の置き場所とは別の、agent の sandbox が書ける�
 | `invalid_result` | 17 | `retry` |
 | `stuck` | 18 | |
 
-要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。
+要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。状態の置き場所の lock を取れない(権限、directory を作れない、lock のない filesystem)場合も 3 で、原因を stderr に示す。
 
 ## 検査
 

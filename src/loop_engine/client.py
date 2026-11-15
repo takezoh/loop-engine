@@ -36,8 +36,11 @@ def ensure_engine(root, environ):
     """Start the engine process unless one already holds the state home; return what was started."""
     _started[:] = [process for process in _started if process.poll() is None]  # reap engines that exited
     probe = store.ProcessLock(lock_path(root))
-    if not probe.acquire():
-        return None
+    try:
+        if not probe.acquire():
+            return None
+    except store.LockFailed as error:
+        raise EngineUnavailable(f"the engine's state home cannot be locked: {error}") from error
     probe.release()
     process = subprocess.Popen(
         engine_command(), env=dict(environ), cwd=os.path.dirname(ENGINE_MAIN),

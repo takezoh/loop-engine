@@ -1,8 +1,11 @@
 """Requests the engine accepts and refuses, the request files, the client and the CLI."""
+import errno
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -12,6 +15,7 @@ from engine_support import RUNNER, SRC, EngineCase, approve, changes, produced, 
 
 from loop_engine import cli, client, store
 from loop_engine.agents import TurnOutcome
+from loop_engine.service import Engine
 
 
 def finishing(request, commands, cancelled):
@@ -182,6 +186,59 @@ class ServeTest(EngineCase):
     def test_engine_command_is_fixed_and_isolated(self):
         command = client.engine_command()
         self.assertEqual([sys.executable, "-I", os.path.join(SRC, "loop_engine", "__main__.py"), "serve"], command)
+
+
+class ProcessLockTest(unittest.TestCase):
+    """Taking the engine's lock has three outcomes: acquired, held by another, failed."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+
+    def test_acquired_then_held_by_another_then_free_again(self):
+        path = os.path.join(self.directory, "home", "engine.lock")
+        first, second = store.ProcessLock(path), store.ProcessLock(path)
+        self.assertTrue(first.acquire())
+        self.addCleanup(first.release)
+        self.assertFalse(second.acquire())
+        first.release()
+        self.assertTrue(second.acquire())
+        second.release()
+
+    def test_a_lock_that_cannot_be_taken_names_its_cause(self):
+        blocker = os.path.join(self.directory, "not-a-directory")
+        with open(blocker, "w") as handle:
+            handle.write("x")
+        directory_lock = os.path.join(self.directory, "a-directory")
+        os.mkdir(directory_lock)
+        for path in (os.path.join(blocker, "engine.lock"), directory_lock):
+            with self.subTest(path=path):
+                with self.assertRaises(store.LockFailed) as raised:
+                    store.ProcessLock(path).acquire()
+                self.assertIn(path, str(raised.exception))
+                self.assertIsInstance(raised.exception.__cause__, OSError)
+
+    def test_only_contention_means_another_engine(self):
+        cases = (
+            (False, errno.EWOULDBLOCK, True), (False, errno.EAGAIN, True),
+            (False, errno.ENOLCK, False), (False, errno.EACCES, False), (False, errno.EOPNOTSUPP, False),
+            (True, errno.EACCES, True), (True, errno.EBADF, False), (True, errno.EINVAL, False),
+        )
+        for windows, code, contended in cases:
+            with self.subTest(windows=windows, errno=errno.errorcode[code]):
+                error = OSError(code, os.strerror(code))
+                self.assertIs(contended, store.lock_contended(error, windows=windows))
+
+    def test_an_entry_that_cannot_lock_reports_the_cause_instead_of_assuming_an_engine(self):
+        blocker = os.path.join(self.directory, "home")
+        with open(blocker, "w") as handle:
+            handle.write("x")
+        with self.assertRaisesRegex(client.EngineUnavailable, "cannot be locked: cannot open the lock file"):
+            client.ensure_engine(blocker, dict(os.environ))
+        engine = Engine(os.path.join(self.directory, "state"), git=None, agents=None, templates={},
+                        runner=(sys.executable, RUNNER), worktrees=self.directory)
+        with self.assertRaises(store.LockFailed):
+            engine.serve(client.lock_path(blocker))
 
 
 class EngineProcessTest(EngineCase):
