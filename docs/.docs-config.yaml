@@ -6,5 +6,7 @@ lint_targets:
 - adr/*.md
 - note/*.md
 - issue/*.md
+# archived: 効力を失った文書の退避先。relation の参照先として index には残す。
+- archived/issue/*.md
 sqlite_path: index/docs.sqlite
 default_change_profile: sdd@1
