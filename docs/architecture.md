@@ -1,6 +1,6 @@
 # Loop Engine の構造
 
-現在の構造だけを書く。決定の理由と比較した案は [adr/](adr/) にある。
+module、契約の field、記録の file、command の詳細を書く。全体像と境界は [ARCHITECTURE.md](../ARCHITECTURE.md)、決定の理由と比較した案は [adr/](adr/) にある。
 
 ## 責務
 
@@ -20,17 +20,20 @@
 
 ## 契約
 
-```
-unit_id, repository
-unit:        goal, criteria[{id, text}], scope[paths], limits{rounds}, base(省略可)
-facts:       id, required, by: given | report | checks | verdict | git, と種類ごとの項目
-executions:  id, agent, model, effort, instructions, reads, establishes, writes, independent_of
-```
+契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、次の上限と文字種を加える。
 
-- 事実は、成立したときの根拠(判定の対象と読んだ事実の内容)を持つ。根拠が現在と同じ間だけ成立する。
-- engine は、読む事実がすべて成立していて、成立させる事実に未成立が残る実行を選ぶ。
-- `checks`・`verdict`・`git` の事実が否定されると、その対象を作った実行へ指摘を渡して戻す。対象を作る実行がなければ、指摘を結果として終える。
-- `unit.base` を指定すると、その commit から現在の commit までの既存の変更を対象にする。
+| 対象 | 上限・文字種 |
+|---|---|
+| `unit_id`、事実・実行・受入条件の `id`、`agent` | `^[a-z0-9][a-z0-9-]{0,62}$` |
+| `model`、`effort` | `null` か `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,95}$` |
+| 検査の名前 | `^[a-z0-9][a-z0-9_-]{0,31}$` |
+| `goal`、受入条件の `text`、`instructions` | 空でなく NUL を含まない 200,000 byte 以下の文字列 |
+| `criteria`、`scope`、`facts`、`executions`、検査 | 各 32 件以下。`facts` と `executions` は 1 件以上 |
+| `limits.rounds` | 1..10 |
+| `unit.base` | 40 桁の commit id |
+| `repository`、`scope` の path | `repository` は正規化した絶対 path、`scope` は `.`・`..`・空の要素を持たない相対 path |
+
+契約の key は過不足なく一致しなければならない(事実は `by` ごとの項目だけを持つ)。同じ `unit_id` で異なる契約を渡すと受け付けない。
 
 ## agent の session
 

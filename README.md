@@ -2,14 +2,9 @@
 
 委任された 1 単位の作業を、契約にある事実がすべて成立するまで host 上で進める engine。作る・機械検査する・独立に評価する、を agent に行わせ、engine 自身は判断の規則と記録だけを持つ。
 
-- engine が起動するのは git と、対応表にある agent の command だけである。project の command は実行しない。
-- sandbox を持たず、agent に sandbox や承認の指定を渡さない。project code は agent が自分の sandbox の中で実行する。agent の承認の要求は明示的に拒否し、turn は続ける。
-- 環境が作業 directory の最上位に置く空の読み取り専用 file(どちらの commit にもない名前)は、役の変更として数えない。外した名前は turn ごとと `stop.json` に記録する。worktree の中のものは削除も変更もしない。
-- agent に実行させる検査 program は、engine が状態の置き場所に複製したものである。範囲内の判定は git の記録した元の commit と比べ、読めないものがある worktree では判定しない。
-- 同じ実行が再び走るときは、その実行の agent session を続け、新しいことだけを送る。
-- Profile、skill、判断知識を知らない。受け取るのは契約(成立させる事実と、それを成立させられる実行)だけである。
+engine が起動するのは git と agent の command だけで、sandbox を持たず、project の command を実行しない。受け取るのは契約(成立させる事実と、それを成立させられる実行)だけである。
 
-決定の理由は [docs/adr/](docs/adr/)、現在の構造は [docs/architecture.md](docs/architecture.md) にある。
+全体像と境界は [ARCHITECTURE.md](ARCHITECTURE.md)、module・契約の field・記録の詳細は [docs/architecture.md](docs/architecture.md)、決定の理由は [docs/adr/](docs/adr/) にある。
 
 ## 配置
 
