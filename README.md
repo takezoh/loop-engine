@@ -4,7 +4,9 @@
 
 engine が起動するのは git と agent の command だけで、sandbox を持たず、project の command を実行しない。受け取るのは契約(成立させる事実と、それを成立させられる実行)だけである。
 
-全体像と境界は [ARCHITECTURE.md](ARCHITECTURE.md)、module・契約の field・記録の詳細は [docs/architecture.md](docs/architecture.md)、決定の理由は [docs/adr/](docs/adr/) にある。
+全体像、境界と設計原則は [ARCHITECTURE.md](ARCHITECTURE.md)、module・契約の field・記録の詳細は [docs/architecture.md](docs/architecture.md)、決定の理由は [docs/adr/](docs/adr/) にある。
+
+この repository では dev-skills が engine を使う。dev-skills が契約をどう組み立て、単位の結果をどう扱うかは [dev-skills の単位の入口](../docs/architecture/loop-kernel.md)にある。
 
 ## 配置
 

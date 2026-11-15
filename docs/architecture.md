@@ -20,7 +20,7 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 
 ## 契約
 
-契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、事実と実行の構造には `check_structure`、`limits` には `check_limits` を使う。2 つは公開の純粋関数で、契約の一部だけを問える。検査は次の上限と文字種を加える。
+契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、事実と実行の構造には `check_structure`、`limits` には `check_limits` を使う。2 つは公開の純粋関数で、契約の一部だけを問える。契約を組み立てる側が engine の名前を写さずに使えるよう、`unit` の key(`UNIT_KEYS`、`UNIT_OPTIONAL`)、`limits` の key(`LIMIT_KEYS`)、run が加える項目(`FACT_RUN_KEYS`、`EXECUTION_RUN_KEYS`)、検査の `expect` の値(`CHECK_EXPECT`)と id・名前・commit の文字種(`ID_RE`、`CHECK_NAME_RE`、`COMMIT_RE`)も公開する。検査は次の上限と文字種を加える。
 
 | 対象 | 上限・文字種 |
 |---|---|
@@ -41,6 +41,7 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 
 - 実行の最初の turn は新しい session を開始し、役の定型文に指示の全文を入れて送る。port は turn が動いた session の token を返し、engine は実行ごとに `state.json` に保存する。
 - 同じ実行が再び走るとき(差し戻し、回答、やり直し)は、その token で session を続け、役の続きの定型文(`protocol/<役>-follow-up.md`)を送る。続きのメッセージは、指摘・回答・やり直しの理由、その session がまだ受け取っていない報告、評価役には今の変更 file の一覧、と返答の形式を持つ。指示、目的、受入条件は送り直さない。
+- 定型文は、役に渡す報告を、ほかの役がこの作業について見出したことで証拠として量るものとして渡し、その役が自分の turn に受けた規則は読む役も作業も縛らないと示す。書かない役(報告役・評価役)の定型文は、返答の形を決める節の規則がその turn だけの規則で、報告や指摘の対象ではないと示す。役の返答が別の役へ届くのは、書かない役の報告と評価役の指摘だけで、書く役の報告はどの役にも渡さない(`prompts.inputs`)。
 - 異なる実行は session を共有しない。評価役は作る役の session を見ない。
 - port が「session を続けられない」と返したら、engine はその turn を 1 回だけ、指示の全文で新しい session として起動し直す。その失敗はほかの失敗した turn と同じに扱う。
 - token は `state.json` にあるので、engine が再起動しても同じ session を続ける。
@@ -48,6 +49,23 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 - agent 設定の検査、worktree より上の検査、取消は、続けた turn にも同じく当てる。事実の判定に使う実行記録は、その turn のものだけである。
 
 transport への接続(`composition.py`)では、token は provider の session の識別子(Codex の thread、ACP と Pi の session)である。transport は turn が終わるたびに session を解放(unload)し、続けるときに識別子で読み込み直す。session を保つとは engine が token を `state.json` に持つことで、閉じるとは token を捨て、transport もその session を続ける対応を捨てることである。provider が保存した会話は消さない。
+
+`composition.py` は transport の `ProviderSessions` を engine と同じ process で使う。
+
+- 実行の最初の turn は provider、model、effort、cwd、prompt を渡して `start` し、同じ実行の後の turn は同じ session に `continue` する。engine の再起動後は、保存した識別子を `recover_binding` で束ねてから `continue` する。
+- どちらも `wait_turn` で待ち、`observe` で結果を読み、`wait_release` で session の解放を待ってから turn を返す。terminal view の `provider_thread_id` が session の token になる。
+- `continue` が `session_lost` か `recovery_pending` を返すか、session の bind が失敗したら、port は「session を続けられない」と返す。
+- `close` は単位が続けられない止まり方で終わったときと、続けられなかった session に使う。取消は `cancel` である。
+
+transport の各操作の意味と driver ごとの wire 手順は transport の文書([subsession の構造](../../docs/architecture/subsession.md))にある。
+
+## 指示文
+
+`prompts.py` が、実行ごとに `protocol/` の定型文から turn のメッセージを組み立てる。定型文は書く役(`writer`)、評価役(`reviewer`)、報告役(`reporter`)の 3 つで、`writes: true` の実行は書く役、`verdict` の事実を成立させる書かない実行は評価役、それ以外は報告役の定型文を使う(`prompts.kind`)。
+
+- 最初のメッセージは、定型文に実行の `instructions` をそのまま入れ、`## Goal` の節に `unit.goal`、受入条件の節に `criteria` を置き、与えられる報告と前回の指摘を加える。評価役には変更 file の一覧と元の commit の場所、書く役には範囲(`scope`)、検査の command、変えてはならない agent 設定の名前を加える。返答の形(報告、条件ごとの判定と指摘、質問)は定型文が決める。
+- 続きのメッセージの中身は [agent の session](#agent-の-session) にある。
+- engine は `instructions` の中身を解釈しない。呼出し元が役の振る舞いと判断の基準を `instructions` に書き、目的、受入条件、範囲、検査、返答の形は定型文が付ける。
 
 ## turn の終わりと worktree
 

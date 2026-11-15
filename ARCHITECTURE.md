@@ -8,7 +8,7 @@ Loop Engine は、委任された 1 単位の作業を、契約にある必須�
 
 ```mermaid
 flowchart LR
-  Entry["呼出し元の入口<br/>MCP server・CLI・CI<br/>client.py / cli.py"]
+  Entry["呼出し元の入口<br/>呼出し元の server・CLI・CI<br/>client.py / cli.py"]
   subgraph HostG["host"]
     Engine["engine process<br/>service.py・unit.py"]
     Git["git<br/>hook・filter・外部 diff を無効にして起動"]
@@ -37,11 +37,24 @@ flowchart LR
   Engine -.->|"起動しない"| Never
 ```
 
-engine が起動する process は git と、transport の対応表にある agent の起動 command だけであり、project の code が動くのは agent の sandbox の中だけである。
+engine が起動する process は git と、transport の対応表にある agent の起動 command だけであり、project の code が動くのは agent の sandbox の中だけである。この境界を保つ規則は次の[設計原則](#設計原則)にある。
 
-- 入口は要求を file で渡し、engine の記録を読むだけで、進行・判定・記録の処理を持たない。engine process が動いていなければ、入口が固定の command(`python -I` で engine の main)で起動する。
-- engine は 1 つの状態の置き場所につき 1 つの process で、単位ごとに thread を持つ。止まっても、次の engine が記録から続ける。
-- agent の起動は `composition.py` だけが transport に接続する。engine の core は `agents.py` の port(turn の実行、session の終了、全体の停止)だけに依存する。
+## 設計原則
+
+engine の実装と変更が守る規則。各規則を決めた ADR を括弧に示す。
+
+- **起動するもの**: engine が起動するのは git(hook、filter、外部 diff を無効にした引数で)と、導入済みの対応表にある agent の起動 command だけである。project の command(test、build、script)は実行せず、agent が自分の sandbox の中で実行する。LLM の出力と project の内容に、host で実行される program、引数、設定を決めさせない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 3)
+- **sandbox**: engine は sandbox を作らず、確かめず、変えない。起動する agent に sandbox や承認の指定を渡さず、利用者の設定のまま起動する。承認の要求は拒否して turn を続け、承認する経路を持たない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 2、[session と承認](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) 項目 7)
+- **process の形**: engine は host で動く固定のコードで、呼出し元の入口(server、CLI)とは別の process である。1 つの状態の置き場所につき 1 つの process が複数の単位を実行し、単位ごとに thread を持ち、単位ごとに process を作らない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1)
+- **入口**: 入口は要求を file で渡し、engine の記録を読むだけで、進行・判定・記録の処理を持たない。engine process が動いていなければ、入口が固定の command(`python -I` で engine の main)で起動する。CI では CLI が単位の止まるまで待ち、止まり方を終了コードで受け取る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1)
+- **継続と再開**: 入口の接続や呼出し元の会話が終わっても、engine は実行中の単位を進める。engine が止まったら、次の起動で記録(`state.json`)から続ける。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1 と結果)
+- **状態の置き場所と書き手**: 状態は状態の置き場所(`DEV_SKILLS_HOME` の下の `loop-engine/`、既定 `~/.dev-skills`)に置き、書き手は engine の process だけである(`agents/` は engine の process の中の transport が書く)。契約、回答、やり直し、取消は入口から data として渡る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 6)
+- **値だけの判断**: 判断(`facts.py`)と指示文の組み立て(`prompts.py`)は値だけを扱い、I/O、時計、乱数、process、global な実行文脈を持たない。状態は JSON として保存でき、読み直して続きから進められる。([事実による完了](docs/adr/adr-20261114-unit-completes-when-facts-hold.md) 項目 8。`prompts.py` を含めることは engine の ADR になく、`tests/test_closed_paths.py` が検査する)
+- **agent 設定**: worktree の agent 設定(`.claude/`、`.codex/`、`.pi/`、`.agents/`、`.mcp.json`)が worktree の作成時から変わっていたら、agent を起動せずに止める(`unsafe_agent_config`)。3 つの agent で同じに扱い、agent による例外を持たない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 5)
+- **独立した package**: engine は独立した package で、導入時の複製から起動する。作業 tree のコードを読み込まず、呼出し元のコードに依存しない。依存する package は transport だけで、transport に接続するのは `composition.py` だけである。engine の core は `agents.py` の port(turn の実行、session の終了、全体の停止)だけに依存する。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4、7)
+- **対応する agent**: claude、codex、pi である。起動は transport の provider の共通処理と、protocol ごとの driver(codex-app-server、acp-v1、pi-rpc)を通す。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4 と、その「ユーザーが述べた要件」)
+- **port と偽物**: platform や agent で異なる作用は port の adapter に置き、agent の port には transport への接続と台本の偽物の両方に同じ契約テスト(`tests/test_transport_agents.py`)を当てる。(engine の ADR はなく、repository 全体の [platform と agent の差を port に置く ADR](../docs/adr/adr-20261115-platform-agent-differences-behind-ports.md) が決めている)
+- **確かめられない結果**: turn の結果を確かめられない単位は理由を付けて止まり(`unknown_result`、`invalid_result`)、自分ではやり直さない。やり直しは呼出し元の `retry` の要求だけで行う。session を続けられない turn を新しい session で 1 回だけ起動し直すことは、この規則の外である。(engine の ADR はない)
 
 ## 単位の宣言
 
@@ -76,7 +89,7 @@ flowchart LR
   UG -->|"scope: 範囲の判定"| FT
 ```
 
-契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義する。`facts.py` の `check_structure` が事実と実行の構造を、`check_limits` が `limits` を検査し、`validate` は契約全体をそれらと実行に要る値で検査して、合わない契約を受け付けない。`check_structure` が見るのは、`checks` の事実の `checks` と実行の `agent`・`model`・`effort`・`instructions` を除いた事実と実行である。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
+契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義する。`facts.py` の `check_structure` が事実と実行の構造を、`check_limits` が `limits` を検査し、`validate` は契約全体をそれらと実行に要る値で検査して、合わない契約を受け付けない。`check_structure` が見るのは、`checks` の事実の `checks` と実行の `agent`・`model`・`effort`・`instructions` を除いた事実と実行である。契約を組み立てる側は、key の名前(`unit`・`limits` の key、run が加える項目)と検査の `expect` の値も `facts.py` の公開の定数から使い、写さない。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
 
 ### 契約の形
 
