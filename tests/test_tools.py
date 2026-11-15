@@ -73,6 +73,23 @@ class UnitReportTest(EngineCase):
         self.assertIn("finding [major] c1 out.txt", text)
 
 
+    def test_report_names_the_environment_entries_left_out_of_each_turn_and_of_the_patch(self):
+        def script(request, commands, cancelled):
+            if request.role == "reviewer":
+                return approve(request)
+            path = os.path.join(request.cwd, "conftest.py")
+            open(path, "x").close()
+            os.chmod(path, 0o444)
+            return produced(request, commands)
+        self.start(script)
+        unit = unit_report.load_unit(self.root, "u1")
+        self.assertEqual({"count": 1, "names": ["conftest.py"]}, unit["environment_entries"])
+        self.assertEqual([{"count": 1, "names": ["conftest.py"]}] * 2, [t["environment_entries"] for t in unit["turns"]])
+        text = unit_report.render([unit], unit_report.summarize([unit]))
+        self.assertIn("environment entries in the worktree, not in the patch: conftest.py", text)
+        self.assertIn("left out: conftest.py", text)
+
+
 class ScenarioTest(unittest.TestCase):
     def test_every_shipped_scenario_builds_a_repository_and_a_contract_the_engine_admits(self):
         root = os.path.join(TOOLS, "scenarios")
@@ -91,6 +108,13 @@ class ScenarioTest(unittest.TestCase):
             repository = contract["repository"]
             self.assertEqual(contract["unit"]["base"], scenarios._git(repository, "rev-parse", "HEAD~1"))
             self.assertIn("return 0", scenarios._git(repository, "show", "HEAD:stats.py"))
+
+    def test_a_run_uses_the_home_it_is_given_for_the_engine_and_so_for_the_published_check_program(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as work, mock.patch.object(scenarios.subprocess, "run") as run:
+            home = os.path.join(work, "home")
+            self.assertIsNone(scenarios.run_contract({"unit_id": "u1"}, home, work))
+            self.assertEqual(home, run.call_args.kwargs["env"]["DEV_SKILLS_HOME"])
 
     def test_judge_names_every_difference_from_the_expectation(self):
         unit = {"stop_reason": "rejected", "turns": [1, 2, 3], "findings": [{"criterion": "c2"}]}

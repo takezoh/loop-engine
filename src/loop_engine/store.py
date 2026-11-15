@@ -6,6 +6,8 @@ events are the source of truth; status and results are derived views.
 import hashlib
 import json
 import os
+import stat
+import tempfile
 from threading import Lock
 
 from .facts import ID_RE
@@ -140,6 +142,75 @@ class UnitStore:
     def write_result(self, name, data):
         with self._lock:
             _write_atomic(self.path("result", name), data if isinstance(data, bytes) else _dump(data))
+
+
+# -- the check program agents run: a copy under the state home, named by its content --
+
+CHECK_PROGRAM = "check_runner.py"
+
+
+class CheckProgramChanged(RuntimeError):
+    """The published check program is not the content its directory names: no command names it."""
+
+
+def check_program_path(root, digest):
+    return os.path.join(root, "check", digest, CHECK_PROGRAM)
+
+
+def _content_digest(path):
+    """The sha256 of a regular file reached without following a link at its last component."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    handle = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            raise CheckProgramChanged(f"{path} is not a regular file")
+        digest = hashlib.sha256()
+        for block in iter(lambda: os.read(handle, 1 << 16), b""):
+            digest.update(block)
+        return digest.hexdigest()
+    finally:
+        os.close(handle)
+
+
+def verified_check_program(path):
+    """`path` when its content still hashes to the name of its directory; else `CheckProgramChanged`."""
+    try:
+        digest = _content_digest(path)
+    except OSError as error:
+        raise CheckProgramChanged(f"{path} cannot be read: {error}") from None
+    if digest != os.path.basename(os.path.dirname(path)):
+        raise CheckProgramChanged(f"{path} does not hold the content its directory names")
+    return path
+
+
+def publish_check_program(root, source):
+    """Copy the check program to `<root>/check/<sha256>/check_runner.py` and return that path.
+
+    Agents run the copy: their sandbox can read the state home, not the engine's code location.
+    Publishing is idempotent and safe against a concurrent engine: the content is written under a
+    temporary name in the same directory and linked to the final name, which never replaces a file
+    already there. A file already there must hold the same content; it is never overwritten.
+    """
+    with open(source, "rb") as handle:
+        data = handle.read()
+    path = check_program_path(root, hashlib.sha256(data).hexdigest())
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    if not os.path.lexists(path):
+        handle, temporary = tempfile.mkstemp(prefix=".publishing-", dir=directory)
+        try:
+            with os.fdopen(handle, "wb") as written:
+                written.write(data)
+                written.flush()
+                os.fsync(written.fileno())
+            os.chmod(temporary, 0o444)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass  # another engine published it first; its content is checked below
+        finally:
+            os.unlink(temporary)
+    return verified_check_program(path)
 
 
 # -- requests: entries drop a request file, the engine answers with a response file --

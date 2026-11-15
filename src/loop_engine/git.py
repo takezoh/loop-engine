@@ -72,6 +72,24 @@ class Git:
         listed = self._run(directory, "ls-tree", "-z", "--name-only", f"{commit}^{{tree}}").stdout
         return sorted(os.fsdecode(name) for name in listed.split(b"\0") if name)
 
+    def tree_files(self, worktree, git_dir, commit):
+        """(object format, {path: ("file" | "link", blob id)}): git's record of every file of a commit.
+
+        Read through the git directory fixed when the worktree was made. Submodule entries are not files.
+        """
+        at = (f"--git-dir={git_dir}", f"--work-tree={worktree}")
+        object_format = self._run(worktree, *at, "rev-parse", "--show-object-format").stdout.decode().strip()
+        listed = self._run(worktree, *at, "ls-tree", "-r", "-z", "--full-tree", f"{commit}^{{tree}}").stdout
+        files = {}
+        for item in listed.split(b"\0"):
+            if not item:
+                continue
+            meta, path = item.split(b"\t", 1)
+            mode, kind, oid = meta.split(b" ")
+            if kind == b"blob":
+                files[os.fsdecode(path)] = ("link" if mode == b"120000" else "file", oid.decode())
+        return object_format, files
+
     def add_worktree(self, repository, path, commit):
         """Create a worktree and return its git directory inside the repository.
 

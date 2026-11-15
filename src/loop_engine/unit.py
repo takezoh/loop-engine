@@ -12,14 +12,17 @@ import shutil
 
 from . import facts, prompts
 from .agents import TurnRequest
-from .store import read_json, worktree_path
+from .store import read_json, verified_check_program, worktree_path
 from .worktree import (
-    UNIT_DIRECTORY_RE, agent_config_digest, changed_paths, environment_entries, read_text, tree_digest,
-    unexpected_entries,
+    UNIT_DIRECTORY_RE, Unreadable, agent_config_digest, changed_paths, environment_entries, read_text,
+    tree_digest, unexpected_entries,
 )
 
 # Stops a later request can continue from keep their worktree; every other stop is final.
 CONTINUABLE = ("waiting_for_answer", "unknown_result", "invalid_result")
+# The record lists at most this many environment entries, each name cut to this many characters.
+MAX_LISTED = facts.MAX_ITEMS
+MAX_NAME = 1000
 
 
 class Unit:
@@ -37,6 +40,7 @@ class Unit:
         self.runner, self.worktrees, self.clock = runner, worktrees, clock
         self.interrupt, self.halting = interrupt, halting
         self.ignore = admission["ignore"]
+        self._base_files = None  # git's record of the base commit, read once
 
     # -- recording --
 
@@ -58,30 +62,53 @@ class Unit:
         """Create the worktree at the repository's commit and a copy of the base revision, and fix the checks.
 
         The two differ only when the contract names an earlier base: the unit then judges an existing change.
+        The worktree is where agents write. The copy of the base revision, which a check on the base
+        revision runs the candidate's tests on, is in the unit's directory under the state home, which
+        only the engine writes.
         """
         repository, base = self.contract["repository"], self.admission["base"]
         # The worktree root is writable by every agent, so the directory gets a name nobody can
         # prepare in advance, and it must be exactly where the engine put it: no link on the way.
-        name = f"{self.store.unit_id}-{secrets.token_hex(8)}"
+        token = secrets.token_hex(8)
+        name = f"{self.store.unit_id}-{token}"
         path = worktree_path(self.worktrees, self.git.common_dir(repository), name)
         expected = os.path.join(os.path.realpath(self.worktrees), os.path.basename(os.path.dirname(path)), name)
         git_dir = self.git.add_worktree(repository, path, self.admission["head"])
-        self.git.add_worktree(repository, path + ".base", base)
-        if os.path.realpath(path) != expected or os.path.realpath(path + ".base") != expected + ".base":
+        base_tree = self.store.path(f"base-{token}")
+        self.git.add_worktree(repository, base_tree, base)
+        if os.path.realpath(path) != expected:
             raise RuntimeError("the unit worktree is not where the engine created it")
         path = expected
         # What the environment may place in the worktree is told apart by names neither commit has.
         committed = sorted({*self.git.top_names(repository, base),
                             *self.git.top_names(repository, self.admission["head"])})
-        self.store.write_json("checks.json", {"cwd": path, "base": path + ".base", "ignore": self.ignore,
+        self.store.write_json("checks.json", {"cwd": path, "base": base_tree, "ignore": self.ignore,
                                               "committed": committed, "checks": self.admission["checks"]})
-        self._save(facts.new_state(tree_digest(path, self.ignore, committed),
-                                   changed_paths(path + ".base", path, self.ignore, committed)))
-        self._append({"type": "unit_started", "base": base, "worktree": path, "base_tree": path + ".base",
-                      "git_dir": git_dir, "committed": committed, "agent_config": agent_config_digest(path)})
+        started = {"type": "unit_started", "base": base, "worktree": path, "base_tree": base_tree,
+                   "git_dir": git_dir, "committed": committed, "agent_config": agent_config_digest(path, committed)}
+        self._save(facts.new_state(tree_digest(path, self.ignore, committed), self._changed(started),
+                                   tree_digest(base_tree, self.ignore, committed)))
+        self._append(started)
+
+    def _changed(self, started):
+        """The paths whose content differs from git's record of the base commit; raises `Unreadable`.
+
+        The record is read from the git directory fixed when the worktree was made, never from a
+        tree an agent can write.
+        """
+        if self._base_files is None:
+            self._base_files = self.git.tree_files(started["worktree"], started["git_dir"], started["base"])
+        return changed_paths(self._base_files, started["worktree"], self.ignore, started["committed"])
+
+    def _left_out(self, started):
+        """The environment's entries now in the worktree, as the record lists them: names only, capped."""
+        names = environment_entries(started["worktree"], started["committed"])
+        return {"count": len(names), "names": [name[:MAX_NAME] for name in names[:MAX_LISTED]]}
 
     def _runner(self):
-        return shlex.join([self.runner[0], "-I", self.runner[1], self.store.path("checks.json")])
+        """The command prefix of every check: the published check program, verified before it is named."""
+        return shlex.join([self.runner[0], "-I", verified_check_program(self.runner[1]),
+                           self.store.path("checks.json")])
 
     def _check_commands(self, execution):
         by_id = {fact["id"]: fact for fact in self.contract["facts"]}
@@ -140,11 +167,27 @@ class Unit:
             state = facts.apply_turn(self.contract, state, execution["id"], {"completed": False}, read=None)
             self._append({"type": "turn_finished", "execution": execution["id"], "turn": number,
                           "completed": False, "detail": turn["detail"], "refused_requests": outcome.refused,
-                          "not_counted": None})
+                          "not_counted": None, "environment_entries": None})
             return state
         if not self._safe(started):
             return self._unsafe(state, execution["id"], "after")
-        tree = tree_digest(worktree, self.ignore, started["committed"]) if execution["writes"] else state["tree"]
+        try:
+            # Every turn's worktree is read in full before anything is judged: git, too, leaves out
+            # what it cannot read, so a path left out would shrink the candidate and the patch.
+            tree = tree_digest(worktree, self.ignore, started["committed"])
+            changed = self._changed(started)
+            left_out = self._left_out(started)
+        except Unreadable as error:
+            where = os.path.relpath(error.filename, worktree) if isinstance(error.filename, str) else "?"
+            detail = f"worktree-not-readable: {where}"[:1000]
+            state = facts.apply_turn(self.contract, state, execution["id"], {"completed": False, "detail": detail},
+                                     read=None)
+            self._append({"type": "turn_finished", "execution": execution["id"], "turn": number,
+                          "completed": False, "detail": detail, "refused_requests": outcome.refused,
+                          "not_counted": None, "environment_entries": None})
+            return state
+        if not execution["writes"]:
+            tree = state["tree"]
         completed, detail = bool(turn["completed"]), turn["detail"]
         by = {fact["id"]: fact["by"] for fact in self.contract["facts"]}
         judged = any(by[fid] in ("checks", "verdict") for fid in execution["establishes"])
@@ -154,14 +197,14 @@ class Unit:
             completed, detail = False, "a-turn-that-must-not-write-changed-the-worktree"
         state = facts.apply_turn(self.contract, state, execution["id"], {
             "completed": completed, "text": turn["text"], "record": turn["actions"] or {"entries": []},
-            "tree": tree,
-            "changed": changed_paths(started["base_tree"], worktree, self.ignore, started["committed"]),
+            "tree": tree, "changed": changed,
         }, read=lambda relative: read_text(worktree, relative), runner=self._runner())
         refused = [item["description"] for item in state["feedback"].get(execution["id"], [])
                    if str(item.get("description", "")).startswith(facts.NOT_ACCEPTED)]
         self._append({"type": "turn_finished", "execution": execution["id"], "turn": number,
                       "completed": completed, "detail": detail, "refused_requests": outcome.refused,
-                      "not_counted": refused[0][len(facts.NOT_ACCEPTED):] if refused else None})
+                      "not_counted": refused[0][len(facts.NOT_ACCEPTED):] if refused else None,
+                      "environment_entries": left_out})
         return state
 
     def _request(self, execution, number, worktree, prompt, session):
@@ -181,7 +224,7 @@ class Unit:
     def _safe(self, started):
         """The worktree's agent configuration is what it was, readable in full, and nothing was put above it."""
         return (started["agent_config"] is not None
-                and agent_config_digest(started["worktree"]) == started["agent_config"]
+                and agent_config_digest(started["worktree"], started["committed"]) == started["agent_config"]
                 and not unexpected_entries(self.worktrees, started["worktree"]))
 
     def _unsafe(self, state, execution, when):
@@ -197,6 +240,8 @@ class Unit:
         stop = {"stop_reason": reason, "base": started["base"] if started else None,
                 "worktree": started["worktree"] if started else None,
                 "patch_sha256": hashlib.sha256(patch).hexdigest(),
+                # what the worktree holds now and the patch leaves out, read from the worktree at the stop
+                "environment_entries": self._left_out(started) if started else None,
                 "stop": {key: value for key, value in action.items() if key != "do"},
                 **facts.summary(self.contract, state)}
         self.store.write_result("stop.json", stop)
@@ -224,16 +269,20 @@ class Unit:
             self._append({"type": "sessions_closed", "executions": [execution for execution, _ in ended]})
 
     def _discard(self, started):
-        """Remove the unit's two worktrees once it ended for good; its changes are kept in patch.diff.
+        """Remove the unit's worktree and its copy of the base revision once it ended for good.
+
+        Its changes are kept in patch.diff.
 
         Only a directory the engine created is removed: it must still be where the engine put it,
         with the name the engine gave it. Links inside it are removed, never followed.
         """
-        root = os.path.realpath(self.worktrees)
+        root, worktree, base_tree = os.path.realpath(self.worktrees), started["worktree"], started["base_tree"]
         removed = True
-        for path in (started["worktree"], started["base_tree"]):
-            inside = os.path.dirname(os.path.dirname(path)) == root and UNIT_DIRECTORY_RE.match(os.path.basename(path))
-            if not inside or os.path.islink(path) or os.path.realpath(path) != path:
+        for path, owned in (
+                (worktree, os.path.dirname(os.path.dirname(worktree)) == root
+                 and UNIT_DIRECTORY_RE.match(os.path.basename(worktree)) and os.path.realpath(worktree) == worktree),
+                (base_tree, os.path.dirname(base_tree) == self.store.dir)):
+            if not owned or os.path.islink(path):
                 removed = False
                 continue
             shutil.rmtree(path, ignore_errors=True)

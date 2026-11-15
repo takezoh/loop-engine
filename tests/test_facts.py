@@ -81,8 +81,9 @@ class Turn:
         self._add("command", command=command, output_tail=output)
 
     def check(self, name, code, tree="candidate"):
+        on_base = f" base={sha(self.sim.base)}" if tree == "base" else ""
         self.cmd(expected_command("RUNNER", name, tree),
-                 f"...\nloop-engine-check {name} tree={tree} digest={sha(self.sim.files)} exit={code}")
+                 f"...\nloop-engine-check {name} tree={tree} digest={sha(self.sim.files)}{on_base} exit={code}")
 
     def shell_write(self, path, content):  # a change the record does not mark as an edit
         self.sim.files[path] = content
@@ -93,7 +94,7 @@ class Sim:
     def __init__(self, contract, scripts, files=BASE):
         self.contract, self.scripts = contract, {k: list(v) for k, v in scripts.items()}
         self.base, self.files = dict(files), dict(files)
-        self.state, self.feedback_seen = new_state(sha(self.files)), {}
+        self.state, self.feedback_seen = new_state(sha(self.files), base_tree=sha(self.base)), {}
 
     def changed(self):
         return sorted(p for p in set(self.base) | set(self.files) if self.base.get(p) != self.files.get(p))

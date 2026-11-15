@@ -8,7 +8,7 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from engine_support import SRC, EngineCase, approve, changes, produced, git, write
+from engine_support import RUNNER, SRC, EngineCase, approve, changes, produced, published_runner, git, write
 
 from loop_engine import cli, client, store
 from loop_engine.agents import TurnOutcome
@@ -203,6 +203,9 @@ class EngineProcessTest(EngineCase):
                          client.request(self.root, {"request": "ping"}, environ=environ))
         self.assertEqual(1, len(client._started) - len(before))
         self.assertIsNone(client.ensure_engine(self.root, environ))
+        # the engine this entry started publishes the check program into the state home it was given
+        with open(published_runner(self.root), "rb") as published, open(RUNNER, "rb") as source:
+            self.assertEqual(source.read(), published.read())
         unknown = client.request(self.root, {"request": "start", "contract": self.with_agent(
             self.contract(), producer="gamma")}, environ=environ)
         self.assertIn("installed catalog", unknown["error"])

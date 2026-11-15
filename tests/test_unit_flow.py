@@ -155,15 +155,26 @@ class FlowTest(EngineCase):
         self.assertEqual("unsafe_agent_config", status["stop_reason"])
         self.assertEqual(["producer"], [request.role for request in self.agents.requests])
 
-    def test_existing_agent_config_and_empty_placeholders_do_not_stop(self):
+    def test_the_environment_entries_among_agent_config_names_do_not_stop_and_empty_config_files_do(self):
         def script(request, commands, cancelled):
             if request.role == "reviewer":
                 return approve(request)
-            for name in (".codex/config.toml", ".mcp.json", ".pi/settings.json", ".agents/x"):
-                write(request.cwd, name, "")
+            if request.unit_id == "u1":  # what an agent's host places: empty directories, empty read-only files
+                os.makedirs(os.path.join(request.cwd, ".codex"), exist_ok=True)
+                os.makedirs(os.path.join(request.cwd, ".agents"), exist_ok=True)
+                for name in (".mcp.json", ".pi"):
+                    if not os.path.lexists(os.path.join(request.cwd, name)):
+                        write(request.cwd, name, "")
+                        os.chmod(os.path.join(request.cwd, name), 0o444)
+            else:  # files that define nothing yet are still agent configuration
+                write(request.cwd, {"u2": ".codex/config.toml", "u3": ".mcp.json", "u4": ".agents/x"}[request.unit_id], "")
             return produced(request, commands)
         _engine, status = self.start(script)
         self.assertEqual("done", status["stop_reason"])
+        for unit_id in ("u2", "u3", "u4"):
+            with self.subTest(unit_id):
+                _engine, status = self.start(script, unit_id=unit_id)
+                self.assertEqual("unsafe_agent_config", status["stop_reason"])
 
     def test_reviewer_that_changes_the_candidate_is_not_an_approval(self):
         def script(request, commands, cancelled):

@@ -15,7 +15,7 @@ from loop_engine.check_runner import tree_digest
 TEST = ("import os, sys, unittest\nsys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
         "from calc import add\n\nclass T(unittest.TestCase):\n    def test_it(self):\n        self.assertEqual({want}, add({args}))\n")
 COMMITTED = ["calc.py", "tests"]
-STATUS = re.compile(r"^loop-engine-check (\S+) tree=(candidate|base) digest=(\S+) exit=(-?\d+)$")
+STATUS = re.compile(r"^loop-engine-check (\S+) tree=(candidate|base) digest=(\S+)(?: base=(\S+))? exit=(-?\d+)$")
 
 
 class CheckRunnerTest(unittest.TestCase):
@@ -52,14 +52,16 @@ class CheckRunnerTest(unittest.TestCase):
             entries.append({"seq": len(entries) + 1, "kind": "command", "command": command, "ended": True,
                             "output_tail": done.stdout[-2048:]})
         fact = {"checks": [{"name": "unit", "expect": "pass"}, {"name": "unit", "expect": "fails_on_base"}]}
-        return facts.judge_checks(fact, {"entries": entries}, runner, tree_digest(self.candidate, ["__pycache__"], COMMITTED))
+        return facts.judge_checks(fact, {"entries": entries}, runner, tree_digest(self.candidate, ["__pycache__"], COMMITTED),
+                                  tree_digest(self.base, ["__pycache__"], COMMITTED))
 
     def test_status_line_is_last_and_carries_the_tree_its_digest_and_the_exit_code(self):
         digest = tree_digest(self.candidate, ["__pycache__"], COMMITTED)
         code, status = self.run_check(self.config, "unit")
-        self.assertEqual((0, ("unit", "candidate", digest, "0")), (code, status.groups()))
+        self.assertEqual((0, ("unit", "candidate", digest, None, "0")), (code, status.groups()))
         code, status = self.run_check(self.config, "unit", "--base")
-        self.assertEqual((0, ("unit", "base", digest, "1")), (code, status.groups()))  # the candidate's test fails there
+        base = tree_digest(self.base, ["__pycache__"], COMMITTED)
+        self.assertEqual((0, ("unit", "base", digest, base, "1")), (code, status.groups()))  # the candidate's test fails there
         self.assertEqual(digest, tree_digest(self.candidate, ["__pycache__"], COMMITTED))  # caches the check wrote are ignored
         self.assertFalse(os.path.exists(os.path.join(self.base, "tests", "__pycache__")))  # the base copy is not run in place
 
@@ -82,9 +84,9 @@ class CheckRunnerTest(unittest.TestCase):
 
     def test_unknown_check_missing_program_and_extra_arguments_do_not_pass(self):
         code, status = self.run_check(self.config, "nope")
-        self.assertEqual((127, "127"), (code, status.group(4)))
+        self.assertEqual((127, "127"), (code, status.group(5)))
         code, status = self.run_check(self.config, "missing")
-        self.assertEqual((1, "127"), (code, status.group(4)))
+        self.assertEqual((1, "127"), (code, status.group(5)))
         self.assertEqual((2, None), self.run_check(self.config, "unit", "--base", "extra"))
         self.assertEqual((2, None), self.run_check(self.config, "unit", "; touch x"))
         self.assertEqual(127, self.run_check(os.path.join(self.candidate, "absent.json"), "unit")[0])

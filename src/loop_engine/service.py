@@ -14,7 +14,8 @@ from . import facts
 from .facts import InvalidContract
 from .git import GitError
 from .store import (
-    ProcessLock, UnitStore, drop_old_responses, list_units, read_json, take_requests, write_response,
+    ProcessLock, UnitStore, drop_old_responses, list_units, publish_check_program, read_json, take_requests,
+    write_response,
 )
 from .unit import Unit
 
@@ -39,10 +40,14 @@ def timestamp():
 class Engine:
     def __init__(self, root, *, git, agents, templates, runner, worktrees, own_code=(), idle_seconds=30.0,
                  clock=timestamp):
-        """`own_code` lists the directories the engine's code runs from; a repository
+        """`runner` is (python, the check program's file): the engine publishes the program under its
+        state home and names that copy in the commands it gives, so an agent's sandbox can read it.
+        `own_code` lists the directories the engine's code runs from; a repository
         that contains one of them is refused, so the engine never drives its own code."""
         self.root, self.git, self.agents = root, git, agents
-        self.templates, self.runner, self.own_code = templates, runner, tuple(own_code)
+        python, program = runner
+        self.runner = (python, publish_check_program(root, program))
+        self.templates, self.own_code = templates, tuple(own_code)
         self.worktrees = worktrees
         self.idle_seconds, self.clock = idle_seconds, clock
         self._threads = {}

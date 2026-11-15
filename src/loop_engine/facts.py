@@ -12,7 +12,8 @@ import re
 
 SEVERITY = {"minor": 1, "major": 2, "blocker": 3}
 BY = ("given", "report", "checks", "verdict", "git")
-STATUS_RE = re.compile(r"^loop-engine-check (\S+) tree=(candidate|base) digest=([0-9a-f]+) exit=(-?\d+)$")
+STATUS_RE = re.compile(
+    r"^loop-engine-check (\S+) tree=(candidate|base) digest=([0-9a-f]+)(?: base=([0-9a-f]+))? exit=(-?\d+)$")
 MAX_INVALID = 2
 NOT_ACCEPTED = "result not accepted: "
 
@@ -227,8 +228,9 @@ def deps(contract, fid):
     return sorted(set(found))
 
 
-def new_state(tree, changed=()):
-    return {"tree": tree, "changed": sorted(changed), "facts": {}, "votes": {},
+def new_state(tree, changed=(), base_tree=None):
+    """`base_tree` is the digest of the copy of the base revision the engine placed for checks on it."""
+    return {"tree": tree, "changed": sorted(changed), "base_tree": base_tree, "facts": {}, "votes": {},
             "invalid": {}, "feedback": {}, "last_findings": {}, "reported": {}, "rounds": 0, "stop": None,
             "notes": [], "log": [], "sessions": {}, "refused": {}}
 
@@ -265,11 +267,13 @@ def expected_command(runner, check, tree):
     return f"{runner} {check}" + (" --base" if tree == "base" else "")
 
 
-def judge_checks(fact, record, runner, tree_digest):
+def judge_checks(fact, record, runner, tree_digest, base_digest=None):
     """Failed checks by name; empty when the record shows each one run on the present tree.
 
     The fixed program prints the digest of the tree it ran on. An agent can change files through
-    the shell without the record marking an edit, so the order of entries is not relied on.
+    the shell without the record marking an edit, so the order of entries is not relied on. A check
+    on the base revision also names the copy of the base revision it ran on, which must be the one
+    the engine placed (`base_digest`).
     """
     entries = record.get("entries", [])
     failed = {}
@@ -283,13 +287,16 @@ def judge_checks(fact, record, runner, tree_digest):
             continue
         lines = (runs[-1].get("output_tail") or "").strip().splitlines()
         match = STATUS_RE.match(lines[-1]) if lines else None
-        if not match or match.group(1) != check["name"] or match.group(2) != tree:
+        name, ran_on, digest, base, code = match.groups() if match else (None,) * 5
+        if not match or name != check["name"] or ran_on != tree or (base is None) != (tree == "candidate"):
             failed[f"{check['name']}:{tree}"] = "no status line"
-        elif match.group(3) != tree_digest:
+        elif digest != tree_digest:
             failed[f"{check['name']}:{tree}"] = "not run on the present tree"
-        elif tree == "candidate" and match.group(4) != "0":
-            failed[f"{check['name']}:{tree}"] = f"exit {match.group(4)}"
-        elif tree == "base" and match.group(4) == "0":
+        elif tree == "base" and base != base_digest:
+            failed[f"{check['name']}:{tree}"] = "not run on the base revision the engine placed"
+        elif tree == "candidate" and code != "0":
+            failed[f"{check['name']}:{tree}"] = f"exit {code}"
+        elif tree == "base" and code == "0":
             failed[f"{check['name']}:{tree}"] = "passes on the base revision: no test fails without the change"
     return failed
 
@@ -491,6 +498,8 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
     state["log"].append(execution_id)
     if not outcome.get("completed"):
         state["stop"] = {"reason": "unknown_result", "execution": execution_id}
+        if outcome.get("detail"):  # why the turn proves nothing, when the engine could tell
+            state["stop"]["detail"] = outcome["detail"]
         return state
     record = outcome.get("record") or {"entries": []}
     asked = question(outcome.get("text"))
@@ -519,7 +528,7 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
             if ex["writes"]:
                 state["facts"][fid]["tree"] = state["tree"]
         elif fact["by"] == "checks":
-            failed = judge_checks(fact, record, runner, state["tree"])
+            failed = judge_checks(fact, record, runner, state["tree"], state["base_tree"])
             findings = [{"severity": "major", "check": name, "description": why} for name, why in sorted(failed.items())]
             _record(contract, state, fid, not failed, [state["tree"], failed], findings)
         elif fact["by"] == "verdict":

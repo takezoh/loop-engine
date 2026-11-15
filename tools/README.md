@@ -8,7 +8,7 @@ engine、定型文、判定の規則を変えたときに、変更の前後を�
 runtime/python loop-engine/tools/unit_report.py [--home DIR] [--json] [unit_id ...]
 ```
 
-engine の記録だけを読む。単位ごとに、止まり方、差し戻しの回数、実行ごとの turn 数と時間、各 turn が新しい session か続けた session か、各 turn の実行記録の内訳、拒否された承認の要求の回数、成立した事実、残った指摘を示す。合計には、やり直しになった turn、未完了の turn、数えられなかった結果(理由つき)、session を続けた turn、続けられずに置き換えた session、拒否された要求の件数が出る。
+engine の記録だけを読む。単位ごとに、止まり方、差し戻しの回数、実行ごとの turn 数と時間、各 turn が新しい session か続けた session か、各 turn の実行記録の内訳、拒否された承認の要求の回数、各 turn の判定で外した環境の entry、成立した事実、残った指摘、worktree にあって patch に入っていない環境の entry を示す。合計には、やり直しになった turn、未完了の turn、数えられなかった結果(理由つき)、session を続けた turn、続けられずに置き換えた session、拒否された要求の件数が出る。
 
 読み方の目安:
 
@@ -24,6 +24,8 @@ runtime/python loop-engine/tools/scenarios.py run <scenario>... [--home DIR] [--
 ```
 
 `run` は engine と agent を起動する。agent の利用枠を使い、数分かかるので、実行前に対象と費用を利用者に示して承認を得る。期待と違う止まり方をした scenario があれば、終了コード 1 を返す。
+
+engine は検査 program と元の commit の複製を `--home` の状態の置き場所に置き、agent はそこから検査を実行する。検査の事実が意味を持つのは、agent の sandbox がその場所を読めて書けない場合だけである。実際の agent での実行には、そうした場所(既定の `~/.dev-skills`)を使う。sandbox が読めない場所では検査の状態の行が出ず、書ける場所では元の commit での検査を agent が変えられる。
 
 scenario は次の directory である。
 

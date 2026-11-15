@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from engine_support import SRC, EngineCase, approve, git, produced, write
+from engine_support import SRC, EngineCase, approve, git, produced, recorded, write
 
 from loop_engine import git as engine_git
 
@@ -254,7 +254,7 @@ class LinkedConfigurationTest(EngineCase):
         write(base, "a.txt", "same\n")
         write(candidate, "a.txt", "same\n")
         os.symlink("/usr/lib", os.path.join(candidate, "big"))
-        self.assertEqual(["big"], worktree.changed_paths(base, candidate, [], ["a.txt"]))
+        self.assertEqual(["big"], worktree.changed_paths(recorded(base), candidate, [], ["a.txt"]))
         self.assertEqual(worktree.tree_digest(candidate, [], ["a.txt"]), worktree.tree_digest(candidate, [], ["a.txt"]))
 
     def test_an_untouched_configuration_link_does_not_stop_the_unit(self):

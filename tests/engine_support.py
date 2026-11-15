@@ -1,4 +1,5 @@
 """Shared fixtures: a real git repository, a scripted agent port and an engine over them."""
+import hashlib
 import json
 import os
 import shlex
@@ -22,12 +23,26 @@ from loop_engine.service import Engine  # noqa: E402
 RUNNER = os.path.join(SRC, "loop_engine", "check_runner.py")
 
 
+def published_runner(root):
+    """Where an engine over the state home `root` publishes the check program agents run."""
+    with open(RUNNER, "rb") as handle:
+        return store.check_program_path(root, hashlib.sha256(handle.read()).hexdigest())
+
+
 def git(cwd, *args):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args], cwd=cwd,
                    check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 IGNORE = ["__pycache__"]
+
+
+def recorded(directory):
+    """Git's record of a directory's files, as `changed_paths` compares a worktree with it."""
+    git(directory, "init", "-q")
+    git(directory, "add", "-A")
+    git(directory, "commit", "-qm", "base", "--allow-empty")
+    return Git(os.environ).tree_files(directory, os.path.join(directory, ".git"), "HEAD")
 
 
 def git_out(cwd, *args):
@@ -126,7 +141,7 @@ class ScriptedAgents:
             return TurnOutcome(False, None, None, "session-not-continuable: scripted", session_lost=True)
         self.nth[request.role] = self.nth.get(request.role, 0) + 1
         unit = store.UnitStore(self.root, request.unit_id)
-        runner = shlex.join([sys.executable, "-I", RUNNER, unit.path("checks.json")])
+        runner = shlex.join([sys.executable, "-I", published_runner(self.root), unit.path("checks.json")])
         CHECKS_FILES[request.cwd] = unit.path("checks.json")
         commands = {}
         for name in facts.check_names(unit.contract())[0]:

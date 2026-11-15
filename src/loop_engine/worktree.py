@@ -9,8 +9,8 @@ import os
 import re
 import stat
 
-# the engine and the check program digest a tree, and tell the environment's entries, the same way
-from .check_runner import environment_entry, tree_digest
+# the engine and the check program read a tree, and tell the environment's entries, the same way
+from .check_runner import Unreadable, environment_entry, read_blocks, refuse, tree_digest, tree_files
 
 AGENT_CONFIG_DIRS = (".claude", ".codex", ".pi", ".agents")
 AGENT_CONFIG_FILES = (".mcp.json",)
@@ -35,12 +35,11 @@ class _Budget:
             raise TooLarge()
 
     def read(self, path, digest):
-        with open(path, "rb") as handle:
-            for block in iter(lambda: handle.read(1 << 16), b""):
-                self.bytes += len(block)
-                if self.bytes > MAX_CONFIG_BYTES:
-                    raise TooLarge()
-                digest.update(block)
+        for block in read_blocks(path):
+            self.bytes += len(block)
+            if self.bytes > MAX_CONFIG_BYTES:
+                raise TooLarge()
+            digest.update(block)
 
 
 def _target(path, depth, budget):
@@ -50,74 +49,73 @@ def _target(path, depth, budget):
     anywhere an agent may write. The digest therefore covers the target, not only the link.
     """
     resolved = os.path.realpath(path)
-    if not os.path.exists(resolved):
+    if not os.path.lexists(resolved):
         return "unresolved"
     if depth >= MAX_LINK_DEPTH:
         raise TooLarge()
     digest = hashlib.sha256()
-    if os.path.isfile(resolved):
-        try:
-            budget.read(resolved, digest)
-        except OSError:
-            return "unreadable"
-        return f"file:{digest.hexdigest()}"
-    for directory, directories, files in os.walk(resolved, followlinks=False):
+    if not os.path.isdir(resolved):
+        return _content(resolved, budget, depth)
+    for directory, directories, files in os.walk(resolved, followlinks=False, onerror=refuse):
         directories.sort()
         for name in sorted([*files, *[d for d in directories if os.path.islink(os.path.join(directory, d))]]):
             budget.entry()
             inner = os.path.join(directory, name)
-            if os.path.islink(inner):
-                content = f"link:{os.readlink(inner)}:{_target(inner, depth + 1, budget)}"
-            elif os.path.isfile(inner):
-                inner_digest = hashlib.sha256()
-                try:
-                    budget.read(inner, inner_digest)
-                    content = f"file:{inner_digest.hexdigest()}"
-                except OSError:
-                    content = "unreadable"
-            else:
-                content = "special"
-            digest.update(f"{os.path.relpath(inner, resolved)}\0{content}\0".encode("utf-8", "surrogateescape"))
+            digest.update(f"{os.path.relpath(inner, resolved)}\0{_content(inner, budget, depth + 1)}\0".encode(
+                "utf-8", "surrogateescape"))
     return f"dir:{digest.hexdigest()}"
 
 
-def _entry(root, relative, budget=None):
-    budget = budget or _Budget()
-    path = os.path.join(root, relative)
+def _content(path, budget, depth):
+    """One path of the agent configuration by what it is: a link with its target, a file by its content,
+    anything else by its type. A path the engine cannot read raises `Unreadable`."""
     try:
         info = os.lstat(path)
-    except OSError:
-        return None
+    except OSError as error:
+        refuse(error)
     if stat.S_ISLNK(info.st_mode):
-        return f"link:{os.readlink(path)}:{_target(path, 0, budget)}"
-    if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
-        # Agents and their sandboxes leave empty placeholder files; they define nothing.
-        return None
+        try:
+            text = os.readlink(path)
+        except OSError as error:
+            refuse(error)
+        return f"link:{text}:{_target(path, depth, budget)}"
+    if not stat.S_ISREG(info.st_mode):
+        return f"special:{stat.S_IFMT(info.st_mode):o}"
     digest = hashlib.sha256()
     budget.read(path, digest)
     return f"file:{digest.hexdigest()}"
 
 
-def agent_config_digest(root):
-    """A digest of every non-empty file and link under the agent configuration paths.
+def agent_config_digest(root, committed):
+    """A digest of every path under the agent configuration names, of any file type.
 
-    None when the configuration is more than the engine will read: the caller must not drive the unit.
+    Only the environment's entries (see `check_runner.environment_entry`) are left out, as from
+    every other judgment of the worktree. None when the configuration is more than the engine will
+    read, or anything in it cannot be read: the caller must not drive the unit.
     """
     try:
-        return _agent_config_digest(root)
-    except TooLarge:
+        return _agent_config_digest(root, committed)
+    except (TooLarge, Unreadable):
         return None
 
 
-def _agent_config_digest(root):
+def _agent_config_digest(root, committed):
     budget = _Budget()
-    relatives = [name for name in AGENT_CONFIG_FILES]
-    for top in AGENT_CONFIG_DIRS:
-        base = os.path.join(root, top)
-        if os.path.islink(base):
+    relatives = []
+    for top in (*AGENT_CONFIG_DIRS, *AGENT_CONFIG_FILES):
+        path = os.path.join(root, top)
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            refuse(error)
+        if environment_entry(root, top, committed):
+            continue
+        if not stat.S_ISDIR(info.st_mode):
             relatives.append(top)
             continue
-        for directory, directories, files in os.walk(base, followlinks=False):
+        for directory, directories, files in os.walk(path, followlinks=False, onerror=refuse):
             for name in directories:
                 if os.path.islink(os.path.join(directory, name)):
                     files.append(name)
@@ -127,47 +125,39 @@ def _agent_config_digest(root):
     digest = hashlib.sha256()
     for relative in sorted(relatives):
         budget.entry()
-        entry = _entry(root, relative, budget)
-        if entry is not None:
-            digest.update(f"{relative}\0{entry}\0".encode("utf-8", "surrogateescape"))
+        digest.update(f"{relative}\0{_content(os.path.join(root, relative), budget, 0)}\0".encode(
+            "utf-8", "surrogateescape"))
     return digest.hexdigest()
 
 
-def _tree_entry(path):
-    """A file of a tree for comparison: a link by its text, a file by its content. Links are not followed."""
-    if os.path.islink(path):
-        return f"link:{os.readlink(path)}"
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as handle:
-            for block in iter(lambda: handle.read(1 << 16), b""):
-                digest.update(block)
-    except OSError:
-        return "unreadable"
-    return f"file:{digest.hexdigest()}"
+def _object_id(path, info, object_format):
+    """The id git gives the blob of a file of the tree: a link's text, or a file's content."""
+    digest = hashlib.new(object_format)
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            data = os.fsencode(os.readlink(path))
+        except OSError as error:
+            refuse(error)
+        digest.update(b"blob %d\0" % len(data) + data)
+        return ("link", digest.hexdigest())
+    hashed = hashlib.new(object_format)
+    hashed.update(b"blob %d\0" % info.st_size)  # content that changes while it is read is counted as changed
+    for block in read_blocks(path):
+        hashed.update(block)
+    return ("file", hashed.hexdigest())
 
 
-def _files(root, ignore, committed):
-    found = {}
-    for folder, directories, files in os.walk(root, followlinks=False):
-        for name in list(directories):
-            if os.path.islink(os.path.join(folder, name)):
-                files.append(name)
-        directories[:] = [name for name in directories if name != ".git" and name not in ignore
-                          and not os.path.islink(os.path.join(folder, name))]
-        for name in files:
-            path = os.path.join(folder, name)
-            if folder == root and environment_entry(root, name, committed):
-                continue
-            if name != ".git" and name not in ignore and (os.path.islink(path) or os.path.isfile(path)):
-                relative = os.path.relpath(path, root)
-                found[relative] = _tree_entry(path)
-    return found
+def changed_paths(base_files, worktree, ignore, committed):
+    """Paths whose content differs between git's record of the base commit and the worktree.
 
-
-def changed_paths(base, worktree, ignore, committed):
-    """Paths whose content differs between the base revision's tree and the worktree."""
-    before, after = _files(base, ignore, committed), _files(worktree, ignore, committed)
+    `base_files` is `Git.tree_files` of the base commit. The worktree is read as the check program
+    reads it (`check_runner.tree_files`); anything in it the engine cannot read raises `Unreadable`.
+    """
+    object_format, listed = base_files
+    before = {path: entry for path, entry in listed.items()
+              if not any(part == ".git" or part in ignore for part in path.split("/"))}
+    after = {relative.replace(os.sep, "/"): _object_id(path, info, object_format)
+             for relative, path, info in tree_files(worktree, ignore, committed)}
     return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
 
 
@@ -193,7 +183,7 @@ def read_text(worktree, relative):
 
 
 NAMESPACE_RE = re.compile(r"^[0-9a-f]{64}$")
-UNIT_DIRECTORY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}-[0-9a-f]{16}(\.base)?$")
+UNIT_DIRECTORY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}-[0-9a-f]{16}$")
 
 
 def unexpected_entries(worktrees, worktree):

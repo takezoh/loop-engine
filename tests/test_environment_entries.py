@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from engine_support import EngineCase, RUNNER, actions, approve, git, git_out, produced, run_command, write
+from engine_support import EngineCase, RUNNER, actions, approve, git, git_out, produced, recorded, run_command, write
 
 from loop_engine import check_runner, store
 from loop_engine.agents import TurnOutcome
@@ -55,6 +55,7 @@ class TreeTest(unittest.TestCase):
             write(folder, "calc.py", "def add(a, b):\n    return a + b\n")
             write(folder, "pkg/mod.py", "x = 1\n")
         self.committed = ["calc.py", "pkg"]
+        self.recorded = recorded(self.base)
         self.config = os.path.join(root, "checks.json")
         with open(self.config, "w") as handle:
             json.dump({"cwd": self.tree, "base": self.base, "ignore": [], "committed": self.committed,
@@ -62,19 +63,19 @@ class TreeTest(unittest.TestCase):
         self.clean = tree_digest(self.tree, [], self.committed)
 
     def observed(self):
-        return tree_digest(self.tree, [], self.committed), changed_paths(self.base, self.tree, [], self.committed)
+        return tree_digest(self.tree, [], self.committed), changed_paths(self.recorded, self.tree, [], self.committed)
 
     def program_digest(self):
         line = run_command(f"{sys.executable} -I {RUNNER} {self.config} ok", self.tree).strip().splitlines()[-1]
         return line.split(" digest=")[1].split(" ")[0]
 
     def test_empty_read_only_files_and_empty_directories_change_no_digest_on_either_side(self):
-        config = agent_config_digest(self.tree)
+        config = agent_config_digest(self.tree, self.committed)
         place_environment(self.tree)
         self.assertEqual((self.clean, []), self.observed())
         self.assertEqual(self.clean, self.program_digest())
         self.assertEqual(sorted(ENVIRONMENT_FILES), environment_entries(self.tree, self.committed))
-        self.assertEqual(config, agent_config_digest(self.tree))  # an empty .pi, empty .codex and .agents
+        self.assertEqual(config, agent_config_digest(self.tree, self.committed))  # an empty .pi, empty .codex and .agents
 
     def test_the_mode_an_entry_is_shown_with_does_not_matter_while_it_is_not_writable(self):
         place_environment(self.tree)
@@ -109,7 +110,7 @@ class TreeTest(unittest.TestCase):
                 self.assertTrue(changed)
                 self.assertEqual([], environment_entries(self.tree, self.committed))
                 shutil.rmtree(self.tree)
-                shutil.copytree(self.base, self.tree)
+                shutil.copytree(self.base, self.tree, ignore=shutil.ignore_patterns(".git"))
 
     def test_an_entry_that_later_holds_content_or_becomes_writable_is_counted(self):
         place_environment(self.tree)
@@ -221,7 +222,7 @@ class FlowTest(EngineCase):
             place_environment(request.cwd)
             if request.role == "producer":
                 return produced(request, commands)
-            path = os.path.join(request.cwd, ".pi")
+            path = os.path.join(request.cwd, "AGENTS.md")
             os.chmod(path, 0o644)
             if request.unit_id == "u1":
                 with open(path, "w") as handle:
@@ -232,7 +233,69 @@ class FlowTest(EngineCase):
             with self.subTest(unit_id):
                 self.start(script, unit_id=unit_id)
                 self.assertEqual(MUST_NOT_WRITE, self.finished("reviewer", unit_id)[0])
-                self.assertIn(".pi", patched_paths(self.result("patch.diff", unit_id)))
+                self.assertIn("AGENTS.md", patched_paths(self.result("patch.diff", unit_id)))
+
+    def listed(self, unit_id="u1"):
+        return json.loads(self.result("stop.json", unit_id))["environment_entries"]
+
+    def turn_lists(self, unit_id="u1"):
+        return [(event["execution"], event["environment_entries"]) for event in self.events(unit_id)
+                if event["type"] == "turn_finished"]
+
+    def test_the_entries_left_out_are_named_in_the_record_of_each_turn_and_of_the_stop(self):
+        def script(request, commands, cancelled):
+            if request.unit_id == "u1":
+                place_environment(request.cwd)
+            return produced(request, commands) if request.role == "producer" else approve(request)
+        _engine, status = self.start(script)
+        self.assertEqual("done", status["stop_reason"])
+        entries = {"count": 3, "names": sorted(ENVIRONMENT_FILES)}
+        self.assertEqual(entries, self.listed())
+        self.assertEqual([("producer", entries), ("reviewer", entries)], self.turn_lists())
+        _engine, status = self.start(script, unit_id="u2")
+        self.assertEqual({"count": 0, "names": []}, self.listed("u2"))
+        self.assertEqual([("producer", {"count": 0, "names": []}), ("reviewer", {"count": 0, "names": []})],
+                         self.turn_lists("u2"))
+
+    def test_an_empty_read_only_file_a_role_places_at_the_top_is_named_although_the_patch_leaves_it_out(self):
+        def script(request, commands, cancelled):
+            if request.role == "reviewer":
+                return approve(request)
+            read_only_empty(request.cwd, "conftest.py")  # changes what a test run collects, holds nothing
+            return produced(request, commands)
+        _engine, status = self.start(script)
+        self.assertEqual("done", status["stop_reason"])
+        self.assertEqual(["out.txt"], patched_paths(self.result("patch.diff")))
+        self.assertEqual({"count": 1, "names": ["conftest.py"]}, self.listed())
+        self.assertEqual(("producer", {"count": 1, "names": ["conftest.py"]}), self.turn_lists()[0])
+
+    def test_the_names_are_read_from_the_worktree_at_the_stop_also_after_the_engine_restarts(self):
+        def script(request, commands, cancelled):
+            if request.role == "producer" and self.agents.nth["producer"] == 1 and request.session is None:
+                place_environment(request.cwd)
+                return TurnOutcome(True, '{"question": "which?", "id": "q-1"}', None)
+            return produced(request, commands) if request.role == "producer" else approve(request)
+        engine, status = self.start(script)
+        self.assertEqual("waiting_for_answer", status["stop_reason"])
+        self.assertEqual({"count": 3, "names": sorted(ENVIRONMENT_FILES)}, self.listed())
+        engine.halt()
+        read_only_empty(status["worktree"], "CLAUDE.md")  # placed while no engine ran
+        later = self.engine(script, durable=self.agents.durable)
+        self.assertTrue(later.handle({"request": "answer", "unit_id": "u1", "question_id": "q-1",
+                                      "answer": "the first"})["ok"])
+        self.assertEqual("done", self.run_to_stop(later)["stop_reason"])
+        self.assertEqual({"count": 4, "names": sorted([*ENVIRONMENT_FILES, "CLAUDE.md"])}, self.listed())
+
+    def test_the_record_names_at_most_its_cap_of_entries_and_counts_them_all(self):
+        def script(request, commands, cancelled):
+            if request.role == "reviewer":
+                return approve(request)
+            for index in range(40):
+                read_only_empty(request.cwd, f"entry-{index:02d}")
+            return produced(request, commands)
+        self.start(script)
+        listed = self.listed()
+        self.assertEqual((40, [f"entry-{index:02d}" for index in range(32)]), (listed["count"], listed["names"]))
 
     def test_a_name_the_worktree_commit_has_is_not_an_entry_when_the_base_lacks_it(self):
         base = git_out(self.repo, "rev-parse", "HEAD")

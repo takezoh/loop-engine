@@ -5,7 +5,8 @@
 Reads only the engine's records (contract, events, state, result). For each unit it
 shows how it stopped, how many turns each execution took, how long they ran, which turns
 continued the execution's session, what each turn's execution record contains, how many of
-the agent's requests for approval were refused, and which facts held. Use it to compare runs before
+the agent's requests for approval were refused, which facts held, and which environment entries
+were left out of each turn's judgment and of the patch. Use it to compare runs before
 and after a change to the engine, a Profile, the Knowledge or a prompt.
 """
 import argparse
@@ -42,6 +43,20 @@ def _events(path):
     return events
 
 
+def _names(listed):
+    """The environment entries a record lists, with how many more it did not name; None when not judged."""
+    if not isinstance(listed, dict):
+        return None
+    names = [name for name in listed.get("names") or [] if isinstance(name, str)]
+    count = listed.get("count") if isinstance(listed.get("count"), int) else len(names)
+    return {"names": names, "count": count}
+
+
+def _listed(entries):
+    more = entries["count"] - len(entries["names"])
+    return ", ".join(entries["names"]) + (f" and {more} more" if more > 0 else "")
+
+
 def load_unit(root, unit_id):
     """One unit as plain values, or None when the state home has no such unit."""
     base = unit_dir(root, unit_id)
@@ -66,7 +81,8 @@ def load_unit(root, unit_id):
                           "detail": event.get("detail"), "not_counted": event.get("not_counted"),
                           "seconds": _seconds(open_turn.get("at"), event.get("at")),
                           "session": open_turn.get("session"), "refused": record.get("refused") or 0,
-                          "actions": kinds, "text_chars": len(record.get("text") or "")})
+                          "actions": kinds, "text_chars": len(record.get("text") or ""),
+                          "environment_entries": _names(event.get("environment_entries"))})
     by_execution = {}
     refused = {}
     for turn in turns:
@@ -84,6 +100,8 @@ def load_unit(root, unit_id):
         "seconds": _seconds(events[0].get("at"), events[-1].get("at")) if events else None,
         "agents": agents, "facts": {name: fact["holds"] for name, fact in (stop.get("facts") or {}).items()},
         "notes": len(stop.get("notes") or []),
+        # left out of the patch although present in the worktree at the stop
+        "environment_entries": _names(stop.get("environment_entries")),
         "findings": [{key: finding.get(key) for key in ("severity", "criterion", "path", "check", "description")}
                      for finding in findings],
     }
@@ -122,6 +140,8 @@ def render(units, summary):
                 state = f"not counted ({turn['not_counted']})"
             if turn["refused"]:
                 state += f", {turn['refused']} requests refused"
+            if turn["environment_entries"] and turn["environment_entries"]["count"]:
+                state += f", left out: {_listed(turn['environment_entries'])}"
             lines.append(f"  {turn['turn']:>2} {turn['execution']:<16} {who.get('agent', '?')}/{who.get('model') or 'default'} "
                          f"{turn['session'] or '?'} session {turn['seconds']} s  {state}  [{acts or 'no record'}]")
         for execution, count in sorted(unit["refused_by_execution"].items()):
@@ -129,6 +149,9 @@ def render(units, summary):
         held = [name for name, holds in unit["facts"].items() if holds]
         missing = [name for name, holds in unit["facts"].items() if not holds]
         lines.append(f"  facts held: {', '.join(held) or '-'}" + (f" | not held: {', '.join(missing)}" if missing else ""))
+        entries = unit["environment_entries"]
+        if entries and entries["count"]:
+            lines.append(f"  environment entries in the worktree, not in the patch: {_listed(entries)}")
         for finding in unit["findings"]:
             where = finding.get("check") or finding.get("path") or ""
             lines.append(f"  finding [{finding.get('severity')}] {finding.get('criterion') or ''} {where} {finding.get('description') or ''}".rstrip())
