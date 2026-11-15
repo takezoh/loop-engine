@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 
 from .agents import TurnOutcome
@@ -38,7 +39,8 @@ class TransportAgents:
     A session token is the provider's durable session identity (the Codex
     thread, the ACP or Pi session). Within this process a token maps to the
     provider-session execution that holds the session; after a restart the
-    token alone binds it again.
+    token alone binds it again. A turn returns once the transport has released
+    its session; a later turn of the execution loads it again by the token.
     """
 
     def __init__(self, *, origin, state_dir):
@@ -144,13 +146,19 @@ class TransportAgents:
                                                  consumer=CONSUMER), snapshot)
         except Exception as error:
             view = {"outcome": "post_start_failed", "view": {"reason": f"{type(error).__name__}: {error}"}}
+        # The turn is over only once its session is released: until then a process of the agent,
+        # and its sandbox, may still be in the working directory.
+        try:
+            release = sessions.wait_release(execution)
+        except Exception as error:
+            release = {"unload_status": "failed", "cleanup": f"{type(error).__name__}: {error}"}
         token = view.get("provider_thread_id")
         if isinstance(token, str) and token:
             with self._lock:
                 self._held[(request.agent, token)] = execution
         else:
             token = None
-        return turn_outcome(view, token)
+        return released_outcome(turn_outcome(view, token), release)
 
     def _forget(self, agent, token, execution):
         from cross_host_transport.subsession.mcp_protocol import ActionRequest
@@ -180,11 +188,11 @@ class TransportAgents:
             self._held.clear()
         for provider in sessions:
             try:
-                provider.shutdown()
+                provider.shutdown()  # releases its sessions before it closes its hosts
             except Exception:
                 pass
         try:
-            self.ledger.terminate_owned()
+            self.ledger.terminate_owned()  # the last resort for a process that did not end
         except Exception:
             pass
 
@@ -216,6 +224,14 @@ def turn_outcome(view, session=None):
         detail = str(reason or view.get("reason") or view.get("provider_status") or view.get("outcome"))[:1000]
     return TurnOutcome(complete, text if isinstance(text, str) else None,
                        actions if isinstance(actions, dict) else None, detail, session, refused_count(actions))
+
+
+def released_outcome(outcome, release):
+    """The turn's outcome, or a non-completed one naming why its session was not released."""
+    if release.get("unload_status") == "completed":
+        return outcome
+    reason = release.get("cleanup") or release.get("unload_status")
+    return replace(outcome, completed=False, detail=f"agent-session-not-released: {reason}"[:1000], released=False)
 
 
 def build(environ):

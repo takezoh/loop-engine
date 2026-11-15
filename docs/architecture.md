@@ -41,10 +41,18 @@ executions:  id, agent, model, effort, instructions, reads, establishes, writes,
 - 異なる実行は session を共有しない。評価役は作る役の session を見ない。
 - port が「session を続けられない」と返したら、engine はその turn を 1 回だけ、指示の全文で新しい session として起動し直す。その失敗はほかの失敗した turn と同じに扱う。
 - token は `state.json` にあるので、engine が再起動しても同じ session を続ける。
-- 単位が続けられない止まり方で終わると、engine は保っていた session をすべて閉じる。続けられる止まり方では保つ。engine の停止は、起動したすべての agent の process を終える。
+- 単位が続けられない止まり方で終わると、engine は保っていた session をすべて閉じる。続けられる止まり方では保つ。engine の停止は、session をすべて解放してから、起動したすべての agent の process を終える。
 - agent 設定の検査、worktree より上の検査、取消は、続けた turn にも同じく当てる。事実の判定に使う実行記録は、その turn のものだけである。
 
-transport への接続(`composition.py`)では、token は provider の session の識別子(Codex の thread、ACP と Pi の session)である。transport は turn が終わるたびに session を unload し、続けるときに識別子で読み込み直す。
+transport への接続(`composition.py`)では、token は provider の session の識別子(Codex の thread、ACP と Pi の session)である。transport は turn が終わるたびに session を解放(unload)し、続けるときに識別子で読み込み直す。session を保つとは engine が token を `state.json` に持つことで、閉じるとは token を捨て、transport もその session を続ける対応を捨てることである。provider が保存した会話は消さない。
+
+## turn の終わりと worktree
+
+port は、turn の agent session が解放されてから turn を返す。解放されるまでは、agent の process とその sandbox が worktree を使っていることがある。engine が worktree を読む(agent 設定の digest、候補の差分、変更された path、tree の digest)のは、port が turn を返した後だけである。
+
+- 解放が provider の上限時間内に終わらない、または失敗したら、port は完了していない turn を返す(`released: false`、detail は `agent-session-not-released: <理由>`)。engine はその turn では worktree を何も判定せず、`unknown_result` で止まる。session の token は保つ。
+- 次の turn の前の検査は、そのとき worktree にあるものすべてに当てる。engine は worktree の中のものを除外も削除もしない。
+- engine の停止は、実行中の turn を止め、session を解放してから host の process を終える。process を signal で終えるのは、解放が上限時間内に終わらなかったときの最後の手段である。
 
 ## 承認の要求
 
@@ -114,9 +122,9 @@ agent は engine が指定した command を実行する。検査 program は結
 |---|---|
 | 判断の規則、判定の規則、契約の受付 | `tests/test_facts.py` |
 | 実際の repository と engine での流れ、止まり方、再開、取消 | `tests/test_unit_flow.py` |
-| session の継続、続きのメッセージ、続けられない session、session を閉じること、拒否の回数 | `tests/test_sessions.py` |
+| session の継続、続きのメッセージ、続けられない session、session を閉じること、解放されなかった turn、拒否の回数 | `tests/test_sessions.py` |
 | 要求の受付、要求 file、CLI、engine process の起動 | `tests/test_service.py` |
 | 検査 program | `tests/test_check_runner.py` |
 | 起動する process が git だけであること、純粋な module の範囲、repository の hook や filter が動かないこと | `tests/test_closed_paths.py` |
-| agent の port の契約(transport への接続と台本の偽物の両方に当てる) | `tests/test_transport_agents.py` |
+| agent の port の契約(transport への接続と台本の偽物の両方に当てる)、session の解放後に turn を返すこと、停止での解放と process の終了の順、解放後の worktree の判定 | `tests/test_transport_agents.py` |
 | 検証 tool | `tests/test_tools.py` |

@@ -130,6 +130,13 @@ class Unit:
             return state if self.halting() else facts.count_refused(state, execution["id"], outcome.refused)
         state = facts.count_refused(state, execution["id"], outcome.refused)
         state = facts.remember_session(state, execution["id"], outcome.session, prompts.digests(reports))
+        if not outcome.released:
+            # A process of the agent may still be using the worktree: nothing in it is judged for this turn.
+            state = facts.apply_turn(self.contract, state, execution["id"], {"completed": False}, read=None)
+            self._append({"type": "turn_finished", "execution": execution["id"], "turn": number,
+                          "completed": False, "detail": turn["detail"], "refused_requests": outcome.refused,
+                          "not_counted": None})
+            return state
         if not self._safe(started):
             return self._unsafe(state, execution["id"], "after")
         tree = tree_digest(worktree, self.ignore) if execution["writes"] else state["tree"]

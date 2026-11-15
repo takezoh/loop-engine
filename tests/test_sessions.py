@@ -3,7 +3,7 @@ import json
 import threading
 import unittest
 
-from engine_support import EngineCase, actions, approve, changes, produced
+from engine_support import EngineCase, actions, approve, changes, produced, write
 
 from loop_engine import composition, prompts, store
 from loop_engine.agents import TurnOutcome
@@ -166,6 +166,32 @@ class SessionTest(EngineCase):
         first, second, third = self.requests_of("producer")
         self.assertEqual([self.opened("producer")[0]] * 2, [second.session, third.session])
         self.assertIn("[checks] unit:candidate not run", third.prompt)
+
+    def test_a_turn_whose_session_was_not_released_judges_nothing_in_the_worktree(self):
+        def script(request, commands, cancelled):
+            if request.role == "producer":
+                return produced(request, commands)
+            if self.agents.nth["reviewer"] == 1:  # the agent is still in the worktree when the turn returns
+                write(request.cwd, "left.txt", "still being written\n")
+                write(request.cwd, ".mcp.json", "{}\n")
+                passed = approve(request)
+                return TurnOutcome(False, passed.text, passed.actions,
+                                   "agent-session-not-released: unload-not-finished", released=False)
+            return approve(request)
+        engine, status = self.start(script)
+        self.assertEqual("unknown_result", status["stop_reason"])
+        finished = [event for event in self.events() if event["type"] == "turn_finished"][-1]
+        self.assertEqual(("reviewer", False, "agent-session-not-released: unload-not-finished"),
+                         (finished["execution"], finished["completed"], finished["detail"]))
+        self.assertNotIn("agent_config_changed", [event["type"] for event in self.events()])
+        state = store.read_json(store.UnitStore(self.root, "u1").path("state.json"))
+        self.assertEqual(["out.txt"], state["changed"])
+        self.assertEqual(self.opened("reviewer"), [state["sessions"]["reviewer"]["token"]])
+        # What is still there when the next turn would start is judged in full.
+        engine.handle({"request": "retry", "unit_id": "u1"})
+        self.assertEqual("unsafe_agent_config", self.run_to_stop(engine)["stop_reason"])
+        self.assertEqual({"type": "agent_config_changed", "execution": "reviewer", "when": "before"},
+                         {key: value for key, value in self.events()[-3].items() if key != "at"})
 
     def test_cancel_interrupts_a_continued_turn_and_closes_its_session(self):
         entered = threading.Event()

@@ -9,9 +9,10 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
-from engine_support import SRC, ScriptedAgents
+from engine_support import RUNNER, SRC, EngineCase, ScriptedAgents, approve, produced
 
 TRANSPORT = os.path.join(os.path.dirname(os.path.dirname(SRC)), "cross-host-transport", "src")
 if TRANSPORT not in sys.path:
@@ -24,6 +25,8 @@ from cross_host_transport.subsession.turn_result import TurnCollector, TurnProgr
 
 from loop_engine import composition  # noqa: E402
 from loop_engine.agents import TurnOutcome, TurnRequest  # noqa: E402
+from loop_engine.git import Git  # noqa: E402
+from loop_engine.service import Engine  # noqa: E402
 
 ACTIONS = {"version": 1, "dropped": 0, "entries": [], "refused": [
     {"kind": "command", "description": "rm -rf build"}, {"kind": "input", "description": "pick one"}],
@@ -33,11 +36,15 @@ ACTIONS = {"version": 1, "dropped": 0, "entries": [], "refused": [
 class Host:
     closed = False
 
+    def __init__(self, log):
+        self.log = log
+
     def alive(self):
         return not self.closed
 
     def close(self):
         self.closed = True
+        self.log.append("host-closed")
 
 
 class Driver:
@@ -53,6 +60,15 @@ class Driver:
     def __init__(self):
         self.turns, self.mode, self.cancelled, self.hosts = [], "complete", threading.Event(), []
         self.sessions, self.released, self.cancels = set(), [], 0
+        self.log = []  # releases, host closes and process termination, in order
+        self.release_begun = threading.Event()
+        self.release_gate = None  # when set to an event, a release waits for it
+        self.release_delay = 0.0
+        self.leave = None  # a file a turn puts in its working directory, which its release removes
+        self.leaves = lambda turn: True  # which turns put it there
+        self.keep_left = False  # the release leaves that file in place
+        self.respond = None  # turn -> (text, actions), instead of the fixed approval
+        self._cwds = {}
 
     def probe(self, request):
         return CapabilityProbe("scripted", "g", CapabilityStatus.CONFIRMED, frozenset(), "scripted")
@@ -64,21 +80,26 @@ class Driver:
         if self.mode == "bind-error":
             raise RuntimeError("launcher exited 1")
         if slot.host is None:
-            self.hosts.append(Host())
+            self.hosts.append(Host(self.log))
             slot.adopt(self.hosts[-1])
         if turn.durable_id is not None and turn.durable_id not in self.sessions:
             raise RuntimeError("no session with this id")
         session = turn.durable_id or f"session-{len(self.sessions) + 1}"
         self.sessions.add(session)
         self.turns.append(turn)
+        self._cwds[session] = turn.cwd
+        if self.leave is not None and self.leaves(turn):
+            with open(os.path.join(turn.cwd, self.leave), "w", encoding="utf-8") as handle:
+                handle.write("held by the agent's sandbox\n")
         started(SessionHandle(session, session, None, None))
         collector = TurnCollector(f"{session}:turn")
         if self.mode == "hold":
             self.cancelled.wait(10)
             self.cancelled.clear()
             return TurnEnd(False, "cancelled", collector.seal_incomplete("turn_not_completed").to_wire())
-        collector.observe_text('done\n{"verdict": "approve", "findings": []}')
-        return TurnEnd(True, "completed", collector.seal_completed().to_wire(), detail={"actions": ACTIONS})
+        text, actions = self.respond(turn) if self.respond else ('done\n{"verdict": "approve", "findings": []}', ACTIONS)
+        collector.observe_text(text)
+        return TurnEnd(True, "completed", collector.seal_completed().to_wire(), detail={"actions": actions})
 
     def progress(self, session):
         return TurnProgress("", None)
@@ -88,7 +109,16 @@ class Driver:
         self.cancelled.set()
 
     def release(self, session, timeout):
+        self.release_begun.set()
+        if self.release_delay:
+            threading.Event().wait(self.release_delay)
+        if self.release_gate is not None and not self.release_gate.wait(10):
+            raise TimeoutError("release-timeout")
+        left = os.path.join(self._cwds.get(session.session_id, ""), self.leave or "")
+        if self.leave is not None and not self.keep_left and os.path.exists(left):
+            os.remove(left)
         self.released.append(session.session_id)
+        self.log.append("released")
 
 
 class AgentTurnsContract:
@@ -310,6 +340,88 @@ class TransportAgentsTest(AgentTurnsContract, unittest.TestCase):
         self.assertFalse(outcome.completed)
         self.assertEqual([], self.driver.turns)
 
+    def run_in_thread(self, request):
+        """Run a turn on its own thread; the list gets the outcome, and 'returned' in the driver's log."""
+        answers = []
+
+        def run():
+            answers.append(self.agents.run(request, threading.Event()))
+            self.driver.log.append("returned")
+        thread = threading.Thread(target=run)
+        thread.start()
+        return thread, answers
+
+    def test_a_turn_returns_only_after_its_session_is_released(self):
+        first = self.agents.run(self.request(), threading.Event())
+        for session in (None, first.session):  # a new session, then a continued one
+            self.driver.log.clear()
+            self.driver.release_begun.clear()
+            self.driver.release_gate = threading.Event()
+            request = TurnRequest("u1", "producer", 2, "codex", "model-a", "high", self.cwd, "go", session)
+            thread, answers = self.run_in_thread(request)
+            self.assertTrue(self.driver.release_begun.wait(5))
+            thread.join(0.2)
+            self.assertEqual([], answers, "the turn returned while its session was being released")
+            self.driver.release_gate.set()
+            thread.join(5)
+            self.assertEqual(["released", "returned"], self.driver.log)
+            self.assertTrue(answers[0].completed)
+            self.assertTrue(answers[0].released)
+
+    def test_a_cancelled_turn_also_returns_after_its_release(self):
+        self.driver.mode = "hold"
+        self.driver.release_delay = 0.2
+        cancelled = threading.Event()
+        threading.Timer(0.2, cancelled.set).start()
+        outcome = self.agents.run(self.request(), cancelled)
+        self.driver.log.append("returned")
+        self.assertEqual(["released", "returned"], self.driver.log)
+        self.assertFalse(outcome.completed)
+        self.assertTrue(outcome.released)
+
+    def test_a_release_that_does_not_complete_is_a_distinct_outcome_that_is_not_completed(self):
+        self.driver.traits = DriverTraits(shared_host=True, startup_timeout=5.0, startup_grace=0.0, unload_timeout=0.2)
+        first = self.agents.run(self.request(), threading.Event())
+        self.driver.release_gate = threading.Event()
+        self.addCleanup(self.driver.release_gate.set)
+        for session in (None, first.session):
+            outcome = self.agents.run(TurnRequest("u1", "producer", 2, "codex", "model-a", "high", self.cwd, "go",
+                                                  session), threading.Event())
+            self.assertEqual((False, False, False), (outcome.completed, outcome.released, outcome.session_lost))
+            self.assertEqual("agent-session-not-released: unload-not-finished", outcome.detail)
+            self.assertIsInstance(outcome.session, str)
+            self.driver.release_gate.set()
+            self.driver.release_gate = threading.Event()
+        self.driver.release_gate = None
+        failing = mock.patch.object(self.driver, "release", side_effect=OSError("unsubscribe failed"))
+        with failing:
+            outcome = self.agents.run(self.request(), threading.Event())
+        self.assertFalse(outcome.released)
+        self.assertEqual("agent-session-not-released: OSError:unsubscribe failed", outcome.detail)
+
+    def test_a_turn_continues_its_session_after_a_completed_release(self):
+        self.driver.release_delay = 0.1
+        first = self.agents.run(self.request(), threading.Event())
+        self.assertEqual(["released"], self.driver.log)
+        again = self.agents.run(TurnRequest("u1", "producer", 2, "codex", "model-a", "high", self.cwd, "go on",
+                                            first.session), threading.Event())
+        self.assertTrue(again.completed)
+        self.assertEqual(first.session, again.session)
+        self.assertEqual([None, first.session], [turn.durable_id for turn in self.driver.turns])
+        self.assertEqual(1, len(self.driver.hosts))  # continued on the host that is still running
+
+    def test_closing_releases_the_sessions_before_it_ends_any_process(self):
+        self.driver.mode = "hold"
+        self.driver.release_delay = 0.2
+        self.agents.ledger.terminate_owned = lambda: self.driver.log.append("terminated")
+        thread, answers = self.run_in_thread(self.request())
+        while not self.driver.turns:
+            thread.join(0.01)
+        self.agents.close()
+        thread.join(5)
+        closing = [entry for entry in self.driver.log if entry != "returned"]
+        self.assertEqual(["released", "host-closed", "terminated"], closing)
+
     def test_terminal_view_without_a_complete_message_is_incomplete(self):
         complete = {"outcome": "completed", "actions": ACTIONS, "turn_result": {
             "communication": {"text": "hi", "presence": "present"},
@@ -323,6 +435,48 @@ class TransportAgentsTest(AgentTurnsContract, unittest.TestCase):
             outcome = composition.turn_outcome({**complete, **change})
             self.assertFalse(outcome.completed, change)
             self.assertTrue(outcome.detail)
+
+
+class WorktreeAfterReleaseTest(EngineCase):
+    """The engine judges the worktree after the agent's session is released, and judges all of it."""
+
+    def run_unit(self, keep_left):
+        driver = Driver()
+        driver.leave, driver.keep_left, driver.release_delay = "held-by-the-sandbox", keep_left, 0.3
+        reviewer = lambda turn: turn.request.effort == "high"  # noqa: E731
+        driver.leaves = reviewer
+
+        def respond(turn):
+            request = SimpleNamespace(cwd=turn.cwd)
+            outcome = approve(request) if reviewer(turn) else produced(request, {})
+            return outcome.text, outcome.actions
+        driver.respond = respond
+        patcher = mock.patch.object(provider_drivers, "driver_for", lambda spec, *, origin, state_dir: driver)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        worktrees = os.path.join(self.home, "worktrees")
+        agents = composition.TransportAgents(origin=worktrees, state_dir=os.path.join(self.home, "agent-state"))
+        engine = Engine(self.root, git=Git(os.environ), agents=agents, templates=composition.load_templates(),
+                        runner=(sys.executable, RUNNER), worktrees=worktrees,
+                        clock=lambda: "2026-01-01T00:00:00+00:00")
+        self.addCleanup(engine.halt)
+        contract = self.with_agent(self.contract(checks=False), producer="codex", reviewer="codex")
+        self.assertTrue(engine.handle({"request": "start", "contract": contract})["ok"])
+        return self.run_to_stop(engine)
+
+    def finished(self):
+        return [(event["execution"], event["completed"], event["detail"])
+                for event in self.events() if event["type"] == "turn_finished"]
+
+    def test_a_file_the_sandbox_holds_only_until_the_release_is_not_a_change_of_a_read_only_turn(self):
+        status = self.run_unit(keep_left=False)
+        self.assertEqual("done", status["stop_reason"])
+        self.assertEqual([("producer", True, None), ("reviewer", True, None)], self.finished())
+
+    def test_a_file_still_there_after_the_release_is_a_change_of_a_read_only_turn(self):
+        status = self.run_unit(keep_left=True)
+        self.assertEqual("unknown_result", status["stop_reason"])
+        self.assertEqual(("reviewer", False, "a-turn-that-must-not-write-changed-the-worktree"), self.finished()[-1])
 
 
 if __name__ == "__main__":
