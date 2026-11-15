@@ -19,7 +19,6 @@ if TRANSPORT not in sys.path:
     sys.path.insert(0, TRANSPORT)
 
 from cross_host_transport.subsession import provider_catalog, provider_drivers  # noqa: E402
-from cross_host_transport.subsession.core import CapabilityProbe, CapabilityStatus  # noqa: E402
 from cross_host_transport.subsession.provider_port import DriverTraits, SessionHandle, TurnEnd  # noqa: E402
 from cross_host_transport.subsession.turn_result import TurnCollector, TurnProgress  # noqa: E402
 
@@ -69,9 +68,6 @@ class Driver:
         self.keep_left = False  # the release leaves that file in place
         self.respond = None  # turn -> (text, actions), instead of the fixed approval
         self._cwds = {}
-
-    def probe(self, request):
-        return CapabilityProbe("scripted", "g", CapabilityStatus.CONFIRMED, frozenset(), "scripted")
 
     def host_key(self, request):
         return "host"

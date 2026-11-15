@@ -20,7 +20,6 @@ from .store import home_root, worktrees_root
 HERE = os.path.dirname(os.path.abspath(__file__))
 CANCEL_GRACE_SECONDS = 30.0
 WAIT_SLICE_SECONDS = 0.5
-CONSUMER = "task-execution"
 
 
 def load_templates():
@@ -86,18 +85,18 @@ class TransportAgents:
 
     @staticmethod
     def _abort_unused(admission):
-        if admission is not None and not admission.spawned_by_adapter:
+        if admission is not None:
             try:
-                admission.abort()  # the turn joined a host that is already running, or never launched one
+                admission.release_unused()  # the turn joined a host that is already running, or never launched one
             except Exception:
                 pass
 
     def run(self, request, cancelled):
-        from cross_host_transport.subsession.mcp_protocol import ActionRequest
+        from cross_host_transport.subsession.provider_request import ActionRequest
 
         sessions = self._sessions_for(request.agent)
         operation = f"{request.unit_id}-{request.round}-{request.role}-{uuid.uuid4().hex[:12]}"
-        turn = dict(operation_id=operation, consumer=CONSUMER, provider=request.agent, model=request.model,
+        turn = dict(operation_id=operation, provider=request.agent, model=request.model,
                     effort=request.effort, cwd=request.cwd, prompt=request.prompt)
         admission = None
         if request.session is None:
@@ -135,15 +134,13 @@ class TransportAgents:
             if cancelled.is_set() and not interrupted:
                 interrupted = True
                 try:
-                    sessions.action(ActionRequest(action="cancel", operation_id=operation + "-cancel",
-                                                  consumer=CONSUMER), snapshot)
+                    sessions.action(ActionRequest(action="cancel", operation_id=operation + "-cancel"), snapshot)
                 except Exception:
                     pass
                 if not sessions.wait_turn(execution, CANCEL_GRACE_SECONDS):
                     break
         try:
-            view = sessions.action(ActionRequest(action="observe", operation_id=operation + "-observe",
-                                                 consumer=CONSUMER), snapshot)
+            view = sessions.action(ActionRequest(action="observe", operation_id=operation + "-observe"), snapshot)
         except Exception as error:
             view = {"outcome": "post_start_failed", "view": {"reason": f"{type(error).__name__}: {error}"}}
         # The turn is over only once its session is released: until then a process of the agent,
@@ -161,7 +158,7 @@ class TransportAgents:
         return released_outcome(turn_outcome(view, token), release)
 
     def _forget(self, agent, token, execution):
-        from cross_host_transport.subsession.mcp_protocol import ActionRequest
+        from cross_host_transport.subsession.provider_request import ActionRequest
 
         with self._lock:
             if self._held.get((agent, token)) == execution:
@@ -170,8 +167,8 @@ class TransportAgents:
         if sessions is None:
             return
         try:
-            sessions.action(ActionRequest(action="close", operation_id=f"{execution}-close-{uuid.uuid4().hex[:8]}",
-                                          consumer=CONSUMER), SimpleNamespace(execution_id=execution))
+            sessions.action(ActionRequest(action="close", operation_id=f"{execution}-close-{uuid.uuid4().hex[:8]}"),
+                            SimpleNamespace(execution_id=execution))
         except Exception:
             pass
 
