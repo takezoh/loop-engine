@@ -45,16 +45,16 @@ class TransportAgents:
 
     def __init__(self, *, origin, state_dir):
         from cross_host_transport.subsession.cell_membership import create_cell_membership
-        from cross_host_transport.subsession.cwd_authority import ChildLedger, CwdAuthority
+        from cross_host_transport.subsession.cwd_authority import ChildLedger
+        from cross_host_transport.subsession.directory_authority import create_cwd_authority
         from cross_host_transport.subsession.provider_catalog import provider_names
 
         os.makedirs(origin, exist_ok=True)
         self.origin, self.state_dir = origin, state_dir
         self.cell_id = uuid.uuid4().hex
         self.membership = create_cell_membership()
-        self.ledger = ChildLedger(cell_id=self.cell_id, max_children=16,
-                                  release_certainty=self.membership.release_certain)
-        self.authority = CwdAuthority.capture(origin)
+        self.ledger = ChildLedger(cell_id=self.cell_id, cell=self.membership, max_children=16)
+        self.authority = create_cwd_authority(origin)
         self.names = frozenset(provider_names())
         self._sessions = {}
         self._held = {}  # (agent, token) -> the provider-session execution holding it
