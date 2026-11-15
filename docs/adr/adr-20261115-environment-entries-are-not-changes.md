@@ -2,7 +2,7 @@
 id: adr-20261115-environment-entries-are-not-changes
 kind: adr
 title: 環境が作業 directory に置く空の読み取り専用 file は、役の変更として数えない
-status: proposed
+status: accepted
 created: '2026-11-15'
 decision_makers:
 - user
@@ -15,6 +15,7 @@ source_paths: []
 summary: worktree を作った commit にも元の commit にもない名前で、worktree の最上位にある、空で書き込めない通常 file
   は、候補・変更 path・範囲・書かない役の比較・patch.diff・検査の tree digest に含めない。engine は sandbox の path
   を知らず、worktree の中を変えない。
+updated: '2026-11-15'
 ---
 
 # 環境が作業 directory に置く空の読み取り専用 file は、役の変更として数えない
@@ -76,3 +77,8 @@ engine はこれらを役の変更として数えていた。実機の記録(202
 - 切り詰めて読み取り専用にした tracked file、空でなくなった entry、書き込めるようになった entry、worktree を作った commit だけにある名前は数える。
 - 空の directory はどの digest も変えず、空の `.pi` は agent 設定の digest を変えない。
 - entry の mode が `0000` のときと、書き込めない `0600` として見えるとき(書き込み可否を置き換えて模擬)に、検査 program と engine の digest が一致する。実際の読み取り専用 mount での確認は、実機の実行で行う。
+
+
+{% transition from="proposed" to="accepted" date="2026-11-15" %}
+ユーザーが 2026-11-15 に承認した。判断は「環境が作業 directory に entry を置くのは普通のことで、それを役の変更として数える engine の側がおかしい」。決定文 1〜5(最上位に限ること、2 つの commit で判定すること、数えなかった entry の名前を単位の記録に残すことを含めて提示)への返答は「承認する」。
+{% /transition %}
