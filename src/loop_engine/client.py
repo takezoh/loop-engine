@@ -15,9 +15,11 @@ from .platform_facts import CURRENT
 ENGINE_MAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__main__.py")
 POLL_SECONDS = 0.1
 RESPAWN_SECONDS = 2.0
+STDERR_TAIL_BYTES = 2000
 
 
 _started = []
+_stderr_paths = {}  # an engine this entry started -> the file its error output goes to
 
 
 class EngineUnavailable(RuntimeError):
@@ -28,6 +30,11 @@ def lock_path(root):
     return os.path.join(root, "engine.lock")
 
 
+def stderr_path(root):
+    """Where the detached engine's error output stays, so an engine that stops can say why."""
+    return os.path.join(root, "engine.stderr")
+
+
 def engine_command():
     """The one command that starts the engine: this installation's interpreter and engine main."""
     return [sys.executable, "-I", ENGINE_MAIN, "serve"]
@@ -35,7 +42,9 @@ def engine_command():
 
 def ensure_engine(root, environ):
     """Start the engine process unless one already holds the state home; return what was started."""
-    _started[:] = [process for process in _started if process.poll() is None]  # reap engines that exited
+    for process in [process for process in _started if process.poll() == 0]:  # reap engines that gave way
+        _started.remove(process)
+        _stderr_paths.pop(process, None)
     probe = store.ProcessLock(lock_path(root))
     try:
         if not probe.acquire():
@@ -43,13 +52,34 @@ def ensure_engine(root, environ):
     except store.LockFailed as error:
         raise EngineUnavailable(f"the engine's state home cannot be locked: {error}") from error
     probe.release()
-    process = subprocess.Popen(
-        engine_command(), env=dict(environ), cwd=os.path.dirname(ENGINE_MAIN),
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **CURRENT.detached,
-    )
+    with open(stderr_path(root), "wb") as stderr:
+        process = subprocess.Popen(
+            engine_command(), env=dict(environ), cwd=os.path.dirname(ENGINE_MAIN),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
+            **CURRENT.detached,
+        )
     _started.append(process)
+    _stderr_paths[process] = stderr_path(root)
     return process
+
+
+def stopped_before_answering():
+    """Why an engine this entry started has failed, or None. One that found another engine
+    serving the state home stops with status 0."""
+    for process in list(_started):
+        status = process.poll()
+        if status in (None, 0):
+            continue
+        _started.remove(process)
+        try:
+            with open(_stderr_paths.pop(process), "rb") as stderr:
+                stderr.seek(0, os.SEEK_END)
+                stderr.seek(max(0, stderr.tell() - STDERR_TAIL_BYTES))
+                tail = stderr.read().decode(errors="replace").strip()
+        except OSError as error:
+            tail = f"its error output cannot be read: {error}"
+        return f"the engine stopped with status {status} before it answered: {tail}"
+    return None
 
 
 def request(root, payload, *, environ, timeout=30.0):
@@ -63,6 +93,9 @@ def request(root, payload, *, environ, timeout=30.0):
         value = store.read_json(response)
         if value is not None:
             return value
+        failure = stopped_before_answering()
+        if failure is not None:
+            raise EngineUnavailable(failure)
         if time.monotonic() - checked >= RESPAWN_SECONDS:
             ensure_engine(root, environ)
             checked = time.monotonic()

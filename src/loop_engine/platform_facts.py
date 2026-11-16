@@ -23,6 +23,7 @@ class Platform:
     path_style: str  # how an absolute path looks: "posix" (/a/b) or "windows" (C:\a\b, \\server\share\a)
     null_device: str  # the file that reads as empty
     home: Optional[str]  # HOME for git when the environment has none; None leaves HOME unset
+    program_suffixes: tuple  # what a program's file name on PATH ends with after its name ("git" -> "git.exe")
     quote: Callable[[list], str]  # argv -> one command line, as the agent is told to run it
     detached: dict  # Popen keywords that start a child outside the caller's session or console
     place_new: Callable[[str, str], None]  # (temporary, path): see `link_new`
@@ -91,10 +92,12 @@ def byte_lock(handle, msvcrt=None):
     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
 
 
-POSIX = Platform(path_style="posix", null_device="/dev/null", home="/", quote=shlex.join,
+POSIX = Platform(path_style="posix", null_device="/dev/null", home="/", program_suffixes=("",), quote=shlex.join,
                  detached={"start_new_session": True}, place_new=link_new, lock=flock,
                  lock_held=frozenset({errno.EAGAIN, errno.EWOULDBLOCK}))
-WINDOWS = Platform(path_style="windows", null_device="nul", home=None, quote=windows_command_line,
+# Only an executable image: a batch file runs through cmd.exe, which parses its arguments again.
+WINDOWS = Platform(path_style="windows", null_device="nul", home=None, program_suffixes=(".exe",),
+                   quote=windows_command_line,
                    detached={"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS},
                    place_new=rename_new, lock=byte_lock,
                    lock_held=frozenset({errno.EACCES}))  # msvcrt.locking with LK_NBLCK on a locked byte

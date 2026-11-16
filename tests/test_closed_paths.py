@@ -97,6 +97,23 @@ class StructureTest(unittest.TestCase):
                 "tool", path_variable, outside=(os.path.join(directory, "repo"),)))
             self.assertIsNone(engine_git.resolve_executable("tool", ".:relative/bin"))
 
+    def test_executable_resolution_finds_the_program_by_the_platforms_suffix(self):
+        # Windows names a program on PATH git.exe, not git.
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            only_bare, only_suffixed = os.path.join(directory, "bare"), os.path.join(directory, "suffixed")
+            os.makedirs(only_bare)
+            os.makedirs(only_suffixed)
+            for folder, name in ((only_bare, "tool"), (only_suffixed, "tool.exe")):
+                write(folder, name, "#!/bin/sh\n")
+                os.chmod(os.path.join(folder, name), 0o755)
+            path_variable = os.pathsep.join([only_bare, only_suffixed])
+            self.assertEqual(os.path.realpath(os.path.join(only_suffixed, "tool.exe")),
+                             engine_git.resolve_executable("tool", path_variable, suffixes=(".exe",)))
+            self.assertEqual(os.path.realpath(os.path.join(only_bare, "tool")),
+                             engine_git.resolve_executable("tool", path_variable, suffixes=("",)))
+            self.assertIsNone(engine_git.resolve_executable("tool", only_suffixed, suffixes=("",)))
+
 
 class RepositoryProgramsTest(EngineCase):
     """A repository that tries every way git offers to run a program during the engine's git use."""

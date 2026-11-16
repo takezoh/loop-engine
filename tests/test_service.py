@@ -275,6 +275,17 @@ class EngineProcessTest(EngineCase):
         self.assertIn("own code", known["error"])
         self.assertEqual([], store.list_units(self.root))
 
+    def test_an_engine_that_stops_before_answering_is_reported_with_its_error_output(self):
+        # An engine that cannot start says why, instead of the entry waiting until its time runs out.
+        no_git = os.path.join(os.path.dirname(self.home), "no git")
+        os.makedirs(no_git)
+        environ = {**os.environ, "DEV_SKILLS_HOME": self.home, "PATH": no_git,
+                   "DEV_SKILLS_WORKTREES": os.path.join(self.home, "worktrees")}
+        started = time.monotonic()
+        with self.assertRaisesRegex(client.EngineUnavailable, r"(?s)stopped with status [1-9]\d* before it answered: .*git not found on PATH"):
+            client.request(self.root, {"request": "ping"}, environ=environ, timeout=60)
+        self.assertLess(time.monotonic() - started, 30)
+
 
 if __name__ == "__main__":
     unittest.main()

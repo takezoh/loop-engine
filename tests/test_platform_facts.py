@@ -59,6 +59,8 @@ class PlatformValuesTest(unittest.TestCase):
         self.assertEqual(("windows", "nul", None), (WINDOWS.path_style, WINDOWS.null_device, WINDOWS.home))
         self.assertEqual({"start_new_session": True}, POSIX.detached)
         self.assertEqual({"creationflags": 0x00000200 | 0x00000008}, WINDOWS.detached)
+        # A Windows program on PATH is its name plus .exe; a batch file would be parsed again by cmd.exe.
+        self.assertEqual((("",), (".exe",)), (POSIX.program_suffixes, WINDOWS.program_suffixes))
         self.assertIn(platform_facts.CURRENT, (POSIX, WINDOWS))
         for platform in (POSIX, WINDOWS):
             self.assertIn(platform.path_style, facts.PATH_STYLES)

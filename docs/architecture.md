@@ -172,7 +172,7 @@ worktree は 2 つの置き場所とは別の、agent の sandbox が書ける�
 | `invalid_result` | 17 | `retry` |
 | `stuck` | 18 | |
 
-要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。記録の置き場所の lock を取れない(権限、directory を作れない、lock のない filesystem)場合も 3 で、原因を stderr に示す。
+要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。記録の置き場所の lock を取れない(権限、directory を作れない、lock のない filesystem)場合も 3 で、原因を stderr に示す。entry が起動した engine が応答の前に失敗で止まった場合も 3 で、待ち時間の終わりを待たず、その終了 status と engine の error 出力の末尾を示す。切り離して起動する engine の error 出力は、記録の置き場所の `engine.stderr` に残る。
 
 ## 検査
 

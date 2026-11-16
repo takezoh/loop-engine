@@ -17,23 +17,25 @@ class GitError(RuntimeError):
     pass
 
 
-def resolve_executable(name, path_variable, outside=()):
-    """The first executable `name` on PATH, skipping relative entries and anything inside `outside`."""
+def resolve_executable(name, path_variable, outside=(), suffixes=("",)):
+    """The first executable `name` on PATH, as a file named `name` plus one of `suffixes`,
+    skipping relative entries and anything inside `outside`."""
     for directory in (path_variable or "").split(os.pathsep):
         if not os.path.isabs(directory):
             continue
-        candidate = os.path.realpath(os.path.join(directory, name))
-        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
-            continue
-        if any(os.path.commonpath([candidate, os.path.realpath(root)]) == os.path.realpath(root) for root in outside):
-            continue
-        return candidate
+        for suffix in suffixes:
+            candidate = os.path.realpath(os.path.join(directory, name + suffix))
+            if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+                continue
+            if any(os.path.commonpath([candidate, os.path.realpath(root)]) == os.path.realpath(root) for root in outside):
+                continue
+            return candidate
     return None
 
 
 class Git:
     def __init__(self, environ):
-        self.executable = resolve_executable("git", environ.get("PATH"))
+        self.executable = resolve_executable("git", environ.get("PATH"), suffixes=CURRENT.program_suffixes)
         if self.executable is None:
             raise GitError("git not found on PATH")
         home = environ.get("HOME", CURRENT.home)
