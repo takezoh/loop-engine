@@ -38,16 +38,17 @@ def timestamp():
 
 
 class Engine:
-    def __init__(self, root, *, git, agents, templates, runner, worktrees, platform, own_code=(), idle_seconds=30.0,
-                 clock=timestamp):
-        """`runner` is (python, the check program's file): the engine publishes the program under its
-        state home and names that copy in the commands it gives, so an agent's sandbox can read it.
+    def __init__(self, root, *, published, git, agents, templates, runner, worktrees, platform, own_code=(),
+                 idle_seconds=30.0, clock=timestamp):
+        """`root` holds the engine's records, which agents must not read; `published` is where the engine
+        places what agents read. `runner` is (python, the check program's file): the engine publishes the
+        program and names that copy in the commands it gives, so an agent's sandbox can read it.
         `platform` is the `platform_facts.Platform` of the machine the engine runs on.
         `own_code` lists the directories the engine's code runs from; a repository
         that contains one of them is refused, so the engine never drives its own code."""
-        self.root, self.git, self.agents = root, git, agents
+        self.root, self.published, self.git, self.agents = root, published, git, agents
         python, program = runner
-        self.runner = (python, publish_check_program(root, program))
+        self.runner = (python, publish_check_program(published, program))
         self.templates, self.own_code = templates, tuple(own_code)
         self.worktrees, self.platform = worktrees, platform
         self.idle_seconds, self.clock = idle_seconds, clock
@@ -62,7 +63,7 @@ class Engine:
     def _store(self, unit_id):
         with self._guard:
             if unit_id not in self._stores:
-                self._stores[unit_id] = UnitStore(self.root, unit_id)
+                self._stores[unit_id] = UnitStore(self.root, self.published, unit_id)
             return self._stores[unit_id]
 
     def _existing(self, unit_id):

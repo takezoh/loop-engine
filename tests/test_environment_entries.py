@@ -203,8 +203,7 @@ class FlowTest(EngineCase):
             write(request.cwd, "pkg/__init__.py", "")
             return produced(request, commands)
         _engine, status = self.start(script, unit={"goal": "make out.txt", "scope": ["out.txt", "pkg"],
-                                                    "criteria": [{"id": "c1", "text": "out.txt is made"}],
-                                                    "limits": {"rounds": 3}})
+                                                    "criteria": [{"id": "c1", "text": "out.txt is made"}]})
         self.assertEqual("done", status["stop_reason"])
         self.assertEqual(["out.txt", "pkg/__init__.py"], patched_paths(self.result("patch.diff")))
 
@@ -318,7 +317,7 @@ class FlowTest(EngineCase):
         self.assertTrue(engine.handle({"request": "start", "contract": contract})["ok"])
         self.run_to_stop(engine)
         self.assertEqual(MUST_NOT_WRITE, self.finished("first")[0])
-        with open(os.path.join(store.unit_dir(self.root, "u1"), "checks.json"), encoding="utf-8") as handle:
+        with open(os.path.join(store.unit_dir(self.published, "u1"), "checks.json"), encoding="utf-8") as handle:
             self.assertEqual([".dev-skills", "README.md", "out.txt"], json.load(handle)["committed"])
 
 

@@ -25,7 +25,7 @@ runtime/python loop-engine/tools/scenarios.py run <scenario>... [--home DIR] [--
 
 `run` は engine と agent を起動する。agent の利用枠を使い、数分かかるので、実行前に対象と費用を利用者に示して承認を得る。期待と違う止まり方をした scenario があれば、終了コード 1 を返す。
 
-engine は検査 program と元の commit の複製を `--home` の状態の置き場所に置き、agent はそこから検査を実行する。検査の事実が意味を持つのは、agent の sandbox がその場所を読めて書けない場合だけである。実際の agent での実行には、そうした場所(既定の `~/.dev-skills`)を使う。sandbox が読めない場所では検査の状態の行が出ず、書ける場所では元の commit での検査を agent が変えられる。
+engine は検査 program と元の commit の複製を `--home` の下の公開の置き場所(`loop-engine/`)に置き、agent はそこから検査を実行する。記録は `--home` の下の `records/loop-engine/` にある。検査の事実が意味を持つのは、agent の sandbox が公開の置き場所を読めて書けない場合だけである。実際の agent での実行には、そうした場所(既定の `~/.dev-skills`)を使う。sandbox が読めない場所では検査の状態の行が出ず、書ける場所では元の commit での検査を agent が変えられる。
 
 scenario は次の directory である。
 

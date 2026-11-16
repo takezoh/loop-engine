@@ -10,6 +10,12 @@ Each report is what another role found about the requested work, to be weighed a
 
 {reports}
 
+## Answers from the requester since your previous turn
+
+Each answer is the requester's decision on a question asked during this work. It applies to the work and to how the acceptance criteria are judged.
+
+{answers}
+
 ## What to do
 
 Your report is about the requested work. The rules in this section are the caller's rules for your turn only: they do not bind that work or any other role, so do not report them as constraints or findings.

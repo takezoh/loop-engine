@@ -10,6 +10,12 @@ Each report is what another role found about the requested work, to be weighed a
 
 {reports}
 
+## Answers from the requester since your previous turn
+
+Each answer is the requester's decision on a question asked during this work. It applies to the work and to how the acceptance criteria are judged.
+
+{answers}
+
 ## How this turn is judged
 
 Work only in the current directory and change only the paths the first message named. Do not commit, and do not change agent configuration ({agent_config}).
@@ -18,7 +24,7 @@ When you are finished changing files, run each of these commands exactly as writ
 
 {checks}
 
-A command without `--base` must end with `exit=0`. A command with `--base` runs your tests against the original code and must end with a non-zero exit: at least one of your tests has to fail without your change. Saying that checks passed does not count; only the record of these commands does.
+A command without `--base` must end with `exit=0`. A command with `--base` runs your tests against the original code and must end with a non-zero exit: at least one of your tests has to fail without your change. Saying that checks passed does not count; only the record of these commands does. A check that cannot pass for a reason your change cannot address, such as the environment or a failure the original code already has, is not settled by a report: end with the question below, naming the check and what you observed.
 
 End with a short report of what you changed and why. If you cannot proceed without a decision from the requester, end your reply with only this JSON object instead of a report, using a short lowercase id:
 

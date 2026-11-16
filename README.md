@@ -37,7 +37,7 @@ engine が agent を起動するので、agent の sandbox の中からは実行
 
 | 環境変数 | 意味 | 既定 |
 |---|---|---|
-| `DEV_SKILLS_HOME` | engine の状態の置き場所(この下の `loop-engine/`)。agent の sandbox が読めて書けない場所であること。検査 program と元の commit の複製もここに置く | `~/.dev-skills` |
+| `DEV_SKILLS_HOME` | engine の状態の置き場所。記録をこの下の `records/loop-engine/` に、agent が読む検査 program と元の commit の複製を `loop-engine/` に置く。agent の sandbox が `loop-engine/` を読めて書けず、`records/` を読めない場所であること | `~/.dev-skills` |
 | `DEV_SKILLS_WORKTREES` | 単位の worktree の置き場所。agent の sandbox が書ける場所であること | `~/.cache/dev-skills/worktrees` |
 
 ## 検証

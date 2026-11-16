@@ -35,6 +35,24 @@ class FlowTest(EngineCase):
         self.assertIn("- out.txt", reviewer.prompt)
         self.assertFalse(os.path.exists(os.path.join(self.repo, "out.txt")))
 
+    def test_roles_are_pointed_only_at_what_is_published_never_at_the_records(self):
+        def script(request, commands, cancelled):
+            return produced(request, commands) if request.role == "producer" else approve(request)
+        _engine, status = self.start(script)
+        self.assertEqual("done", status["stop_reason"])
+        # neither place is inside the other, nor a prefix of the other's path as a string
+        self.assertFalse(os.path.commonpath([self.root, self.published]) in (self.root, self.published))
+        self.assertFalse(self.root.startswith(self.published) or self.published.startswith(self.root))
+        for request in self.agents.requests:
+            self.assertNotIn(self.root + os.sep, request.prompt)
+            self.assertIn(self.published + os.sep, request.prompt)  # the check program or the copy of the base
+        published = sorted(os.path.relpath(os.path.join(folder, name), self.published)
+                           for folder, _dirs, names in os.walk(self.published) for name in names)
+        self.assertEqual(["units/u1/checks.json"], [name for name in published if not name.startswith("check/")])
+        records = os.listdir(self.unit().dir)
+        self.assertNotIn("checks.json", records)
+        self.assertFalse(any(name.startswith("base-") for name in records))
+
     def test_the_real_check_program_output_is_what_gets_judged(self):
         outputs = []
 
@@ -54,25 +72,28 @@ class FlowTest(EngineCase):
             if request.role == "reviewer":
                 return approve(request)
             turn = self.agents.nth["producer"]
-            if turn == 1:
+            if request.unit_id == "u1" and turn == 1:
                 write(request.cwd, "out.txt", "made by the producer\n")
                 return TurnOutcome(True, "all checks passed, trust me", actions(("edit", None, None)))
-            if turn == 2:
+            if request.unit_id == "u1":
                 return TurnOutcome(True, "ran it", actions(
                     ("command", commands["unit"], "boom\n" + status_line(request.cwd, "unit", 1) + "\n")))
-            if turn == 3:  # the check ran, then the file changed through the shell
+            if turn == 1:  # the check ran, then the file changed through the shell
                 record = actions(("command", commands["unit"], status_line(request.cwd, "unit", 0)),
                                  ("command", "printf later >> out.txt", ""))
                 write(request.cwd, "out.txt", "made by the producer, then changed\n")
                 return TurnOutcome(True, "ran it", record)
             return produced(request, commands)
-        _engine, status = self.start(script, rounds=5)
-        self.assertEqual(("done", 3), (status["stop_reason"], status["round"]))
-        self.assertEqual(["producer", "producer", "producer", "producer", "reviewer"],
-                         [request.role for request in self.agents.requests])
+        _engine, status = self.start(script)
+        # the check failed again with no fewer failures than before: sending it back again would not converge
+        self.assertEqual(("stagnation", 1), (status["stop_reason"], status["round"]))
+        self.assertEqual(["producer", "producer"], [request.role for request in self.agents.requests])
         self.assertIn("[checks] unit:candidate not run", self.agents.requests[1].prompt)
-        self.assertIn("[checks] unit:candidate exit 1", self.agents.requests[2].prompt)
-        self.assertIn("[checks] unit:candidate not run on the present tree", self.agents.requests[3].prompt)
+        stop = json.loads(self.result("stop.json"))["stop"]
+        self.assertEqual(("checks", ["exit 1"]), (stop["fact"], [finding["description"] for finding in stop["findings"]]))
+        _engine, status = self.start(script, unit_id="u2")
+        self.assertEqual(("done", 1), (status["stop_reason"], status["round"]))
+        self.assertIn("[checks] unit:candidate not run on the present tree", self.agents.requests[1].prompt)
 
     def test_reviewer_findings_come_back_until_approved(self):
         def script(request, commands, cancelled):
@@ -84,19 +105,29 @@ class FlowTest(EngineCase):
         self.assertIn("[quality] out.txt:1 handle the empty case", self.agents.requests[2].prompt)
         self.assertIn(b"+attempt number 2", self.result("patch.diff"))
 
-    def test_rounds_exhausted_and_stagnation_are_not_done(self):
-        def always_changes(request, commands, cancelled):
+    def test_work_goes_back_while_the_findings_shrink_and_stops_when_they_do_not(self):
+        def shrinking(request, commands, cancelled):
+            if request.role == "producer":
+                return produced(request, commands, text=f"attempt number {self.agents.nth['producer']}\n")
+            left = 4 - self.agents.nth["reviewer"]  # 3, 2, 1, then none
+            return changes(request, *[f"problem {n}" for n in range(left)]) if left else approve(request)
+        _engine, status = self.start(shrinking)
+        self.assertEqual(("done", 3), (status["stop_reason"], status["round"]))
+
+        def as_many_new(request, commands, cancelled):
             if request.role == "producer":
                 return produced(request, commands, text=f"attempt number {self.agents.nth['producer']}\n")
             return changes(request, f"problem {self.agents.nth['reviewer']}")
-        _engine, status = self.start(always_changes, rounds=2)
-        self.assertEqual("rounds_exhausted", status["stop_reason"])
+        _engine, status = self.start(as_many_new, unit_id="u2")
+        self.assertEqual(("stagnation", 1), (status["stop_reason"], status["round"]))
+        stop = json.loads(self.result("stop.json", "u2"))["stop"]
+        self.assertEqual(("quality", "1 findings after 1 the previous time"), (stop["fact"], stop["detail"]))
 
         def same_finding(request, commands, cancelled):
             if request.role == "producer":
                 return produced(request, commands, text=f"attempt number {self.agents.nth['producer']}\n")
             return changes(request, "still wrong")
-        _engine, status = self.start(same_finding, unit_id="u2")
+        _engine, status = self.start(same_finding, unit_id="u3")
         self.assertEqual("stagnation", status["stop_reason"])
 
     def test_no_execution_record_stops_as_unknown_and_an_unreadable_verdict_is_asked_for_again(self):
@@ -147,7 +178,7 @@ class FlowTest(EngineCase):
         self.assertTrue(engine.handle(
             {"request": "answer", "unit_id": "u1", "question_id": "q-style", "answer": "spaces"})["ok"])
         self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
-        self.assertIn("Answer to your question q-style: spaces", self.agents.requests[1].prompt)
+        self.assertIn("Answer: spaces", self.agents.requests[1].prompt)
 
     def test_changed_agent_config_stops_before_any_other_agent_starts(self):
         def script(request, commands, cancelled):
@@ -245,7 +276,7 @@ class FlowTest(EngineCase):
         self.assertTrue(entered.wait(10))
         first.halt()
         self.assertTrue(self.agents.closed)
-        self.assertEqual("running", store.UnitStore(self.root, "u1").status()["state"])
+        self.assertEqual("running", self.unit("u1").status()["state"])
         self.assertNotIn("turn_finished", [event["type"] for event in self.events()])
 
         def finish(request, commands, cancelled):

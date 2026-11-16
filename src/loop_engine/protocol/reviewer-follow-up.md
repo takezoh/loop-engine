@@ -10,6 +10,12 @@ Each report is what another role found about the requested work, to be weighed a
 
 {reports}
 
+## Answers from the requester since your previous turn
+
+Each answer is the requester's decision on a question asked during this work. It applies to the work and to how the acceptance criteria are judged.
+
+{answers}
+
 ## About your previous reply
 
 {feedback}
@@ -18,7 +24,7 @@ Each report is what another role found about the requested work, to be weighed a
 
 The rules in this section are the caller's rules for your turn only: they do not bind the work you judge or any other role, so do not cite them as constraints or findings.
 
-Do not change any file. Judge the files as they are now: read every changed file in the current directory again, because they may have changed since your previous reply. You may run commands; only the commands you run in this turn count as evidence. Judge each acceptance criterion separately. Do not state an overall approval; the caller computes it from your answer.
+Do not change any file. Judge the files as they are now. When your previous reply was not accepted, nothing has changed since it: correct what the reasons above name, and the files you read for it still count as examined. Otherwise read every changed file in the current directory again, because they may have changed since your previous reply. You may run commands; only the commands you run in this turn count as evidence. Judge each acceptance criterion separately. Do not state an overall approval; the caller computes it from your answer.
 
 End your reply with only this JSON object:
 

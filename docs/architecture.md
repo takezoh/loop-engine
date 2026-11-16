@@ -10,7 +10,7 @@ module、契約の field、記録の file、command の詳細を書く。全体�
 | `prompts.py` | 実行に渡す指示文(session の最初のメッセージと続きのメッセージ)の組み立て。値だけを扱う。書く役に変えさせない agent 設定の名前は、`worktree.py` が観測する一覧を値として受け取る |
 | `unit.py` | 1 単位を、保存された状態から次に止まるところまで進める |
 | `service.py` | engine process。単位ごとに thread を持ち、要求を受け付ける |
-| `store.py` | 単位の記録、要求と応答の file、process の lock、検査 program の公開。lock の取得は、取れた・別の process が持つ・取れない(原因を示す `LockFailed`)の 3 つを区別し、取れないことを別の engine が動いているとは扱わない |
+| `store.py` | 単位の記録、agent が読むものの公開(検査 program、単位の `checks.json`)、要求と応答の file、process の lock。lock の取得は、取れた・別の process が持つ・取れない(原因を示す `LockFailed`)の 3 つを区別し、取れないことを別の engine が動いているとは扱わない |
 | `git.py` | git の起動。hook、filter、外部 diff を無効にした引数を必ず付ける |
 | `worktree.py` | worktree の観測(agent 設定の digest、tree の digest、git の記録と比べた変更された path) |
 | `check_runner.py` | agent が sandbox の中で実行する固定の検査 program。tree の読み方(読めないものがあれば失敗する)、tree の digest、環境の entry の判定を持ち、`worktree.py` も同じものを使う |
@@ -34,7 +34,7 @@ platform の事実は `Platform` の値で、`CURRENT` が engine の動く mach
 
 ## 契約
 
-契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、事実と実行の構造には `check_structure`、`limits` には `check_limits` を使う。2 つは公開の純粋関数で、契約の一部だけを問える。契約を組み立てる側が engine の名前を写さずに使えるよう、`unit` の key(`UNIT_KEYS`、`UNIT_OPTIONAL`)、`limits` の key(`LIMIT_KEYS`)、run が加える項目(`FACT_RUN_KEYS`、`EXECUTION_RUN_KEYS`)、検査の `expect` の値(`CHECK_EXPECT`)と id・名前・commit の文字種(`ID_RE`、`CHECK_NAME_RE`、`COMMIT_RE`)も公開する。検査は次の上限と文字種を加える。
+契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、事実と実行の構造には `check_structure` を使う。`check_structure` は公開の純粋関数で、契約の一部だけを問える。契約を組み立てる側が engine の名前を写さずに使えるよう、`unit` の key(`UNIT_KEYS`、`UNIT_OPTIONAL`)、run が加える項目(`FACT_RUN_KEYS`、`EXECUTION_RUN_KEYS`)、検査の `expect` の値(`CHECK_EXPECT`)と id・名前・commit の文字種(`ID_RE`、`CHECK_NAME_RE`、`COMMIT_RE`)も公開する。検査は次の上限と文字種を加える。
 
 | 対象 | 上限・文字種 |
 |---|---|
@@ -43,7 +43,6 @@ platform の事実は `Platform` の値で、`CURRENT` が engine の動く mach
 | 検査の名前 | `^[a-z0-9][a-z0-9_-]{0,31}$` |
 | `goal`、受入条件の `text`、`instructions` | 空でなく NUL を含まない 200,000 byte 以下の文字列 |
 | `criteria`、`scope`、`facts`、`executions`、検査 | 各 32 件以下。`facts` と `executions` は 1 件以上 |
-| `limits.rounds` | 1..10 |
 | `unit.base` | 40 桁の commit id |
 | `repository`、`scope` の path | `repository` は engine が動く machine の形(`path_style`)で正規化した絶対 path、`scope` は `/` で区切り `.`・`..`・空の要素を持たない相対 path。Windows では各要素が file の名前にできるもの(`\`・`:`・`*?"<>|`・制御文字を含まず、`.` か空白で終わらず、拡張子の有無を問わず大文字小文字を問わず `CON`・`PRN`・`AUX`・`NUL`・`COM1`〜`COM9`・`LPT1`〜`LPT9` でない)に限る。`.dev-skills/checks.json` の `test_paths` と `ignore` も同じ |
 
@@ -54,7 +53,7 @@ platform の事実は `Platform` の値で、`CURRENT` が engine の動く mach
 実行ごとに 1 つの agent session を持つ。
 
 - 実行の最初の turn は新しい session を開始し、役の定型文に指示の全文を入れて送る。port は turn が動いた session の token を返し、engine は実行ごとに `state.json` に保存する。
-- 同じ実行が再び走るとき(差し戻し、回答、やり直し)は、その token で session を続け、役の続きの定型文(`protocol/<役>-follow-up.md`)を送る。続きのメッセージは、指摘・回答・やり直しの理由、その session がまだ受け取っていない報告、評価役には今の変更 file の一覧、と返答の形式を持つ。指示、目的、受入条件は送り直さない。
+- 同じ実行が再び走るとき(差し戻し、回答、やり直し)は、その token で session を続け、役の続きの定型文(`protocol/<役>-follow-up.md`)を送る。続きのメッセージは、指摘とやり直しの理由、その session がまだ受け取っていない報告と依頼者の回答、評価役には今の変更 file の一覧、と返答の形式を持つ。指示、目的、受入条件は送り直さない。
 - 定型文は、役に渡す報告を、ほかの役がこの作業について見出したことで証拠として量るものとして渡し、その役が自分の turn に受けた規則は読む役も作業も縛らないと示す。書かない役(報告役・評価役)の定型文は、返答の形を決める節の規則がその turn だけの規則で、報告や指摘の対象ではないと示す。役の返答が別の役へ届くのは、書かない役の報告と評価役の指摘だけで、書く役の報告はどの役にも渡さない(`prompts.inputs`)。
 - 異なる実行は session を共有しない。評価役は作る役の session を見ない。
 - port が「session を続けられない」と返したら、engine はその turn を 1 回だけ、指示の全文で新しい session として起動し直す。その失敗はほかの失敗した turn と同じに扱う。
@@ -77,7 +76,7 @@ transport の各操作の意味と driver ごとの wire 手順は transport の
 
 `prompts.py` が、実行ごとに `protocol/` の定型文から turn のメッセージを組み立てる。定型文は書く役(`writer`)、評価役(`reviewer`)、報告役(`reporter`)の 3 つで、`writes: true` の実行は書く役、`verdict` の事実を成立させる書かない実行は評価役、それ以外は報告役の定型文を使う(`prompts.kind`)。
 
-- 最初のメッセージは、定型文に実行の `instructions` をそのまま入れ、`## Goal` の節に `unit.goal`、受入条件の節に `criteria` を置き、与えられる報告と前回の指摘を加える。評価役には変更 file の一覧と元の commit の場所、書く役には範囲(`scope`)、検査の command、変えてはならない agent 設定の名前を加える。返答の形(報告、条件ごとの判定と指摘、質問)は定型文が決める。
+- 最初のメッセージは、定型文に実行の `instructions` をそのまま入れ、`## Goal` の節に `unit.goal`、受入条件の節に `criteria` を置き、与えられる報告、それまでの依頼者の回答、前回の指摘を加える。評価役には変更 file の一覧と元の commit の場所、書く役には範囲(`scope`)、検査の command、変えてはならない agent 設定の名前を加える。返答の形(報告、条件ごとの判定と指摘、質問)は定型文が決める。
 - 続きのメッセージの中身は [agent の session](#agent-の-session) にある。
 - engine は `instructions` の中身を解釈しない。呼出し元が役の振る舞いと判断の基準を `instructions` に書き、目的、受入条件、範囲、検査、返答の形は定型文が付ける。
 
@@ -110,21 +109,29 @@ agent が承認、permission、利用者の入力を求めたら、transport が
 
 ## 記録
 
-状態の置き場所(`DEV_SKILLS_HOME` の下の `loop-engine/`)に、単位ごとの directory を作る。
+記録の置き場所(`DEV_SKILLS_HOME` の下の `records/loop-engine/`)に、単位ごとの directory を作る。agent はこの場所を読まない。読めなくするのは環境の sandbox 設定である。
 
 | file | 内容 |
 |---|---|
 | `contract.json` / `admission.json` | 受け付けた契約と、受付時に固定した元の commit・検査の定義 |
-| `state.json` | 判断の状態と、実行ごとの session の token、拒否された要求の回数。engine が止まっても、ここから続ける |
+| `state.json` | 判断の状態(事実、評価、否定の指摘の数 `refuted`、依頼者の回答 `answers`、評価役が読んだ file `examined`)と、実行ごとの session の token と受け取った回答の数、拒否された要求の回数。engine が止まっても、ここから続ける |
 | `events.jsonl` | 開始、turn の開始(新しい session か続けた session か)と終了、続けられなかった session、要求、session を閉じたこと、停止の記録 |
-| `checks.json` | 検査 program が読む設定(worktree と元の commit の複製の path、検査の定義、無視する名前、2 つの commit の最上位の名前) |
-| `base-<推測できない値>/` | 元の commit の複製。元の commit での検査はこの複製に候補の test を入れて実行する。単位が続けられない止まり方で終わると消す |
 | `result/patch.diff` / `result/stop.json` | 元の commit との差分と、止まり方・事実の成否・指摘・実行ごとの拒否の回数・worktree にあって差分に入っていない環境の entry |
 | `result/turns/NN-<実行>.json` | 各 turn の返答、実行記録、session の token、拒否の件数 |
 
-状態の置き場所の `check/<sha256>/check_runner.py` は、engine が公開した検査 program である(次の「検査」の節)。
+記録の置き場所には、ほかに要求と応答(`inbox/`、`outbox/`)、`engine.lock`、transport の状態(`agents/`)がある。
 
-worktree は状態の置き場所とは別の、agent の sandbox が書ける場所(`DEV_SKILLS_WORKTREES`)に作る。元の commit の複製は worktree の横に置かず、単位の directory に置く。
+agent が読むものは、公開の置き場所(`DEV_SKILLS_HOME` の下の `loop-engine/`)に置く。
+
+| file | 内容 |
+|---|---|
+| `check/<sha256>/check_runner.py` | engine が公開した検査 program(次の「検査」の節) |
+| `units/<unit_id>/checks.json` | 検査 program が読む設定(worktree と元の commit の複製の path、検査の定義、無視する名前、2 つの commit の最上位の名前) |
+| `units/<unit_id>/base-<推測できない値>/` | 元の commit の複製。元の commit での検査はこの複製に候補の test を入れて実行し、評価役は元の版をここで読む。単位が続けられない止まり方で終わると消す |
+
+役に渡す path(検査の command、元の commit の場所)は公開の置き場所だけを指す。2 つの置き場所はどちらの path も他方の前方一致にならないので、一方を path の前方一致で許可または拒否する設定は他方に当たらない。
+
+worktree は 2 つの置き場所とは別の、agent の sandbox が書ける場所(`DEV_SKILLS_WORKTREES`)に作る。元の commit の複製は worktree の横に置かない。
 
 単位が続けられない止まり方(`waiting_for_answer`、`unknown_result`、`invalid_result` 以外)で終わると、engine は worktree と元の commit の複製を消す。変更は `result/patch.diff` に残る。
 
@@ -138,13 +145,25 @@ worktree は状態の置き場所とは別の、agent の sandbox が書ける�
 
 確認と agent の起動のあいだに別の agent が file を置く余地は残る。この場所を agent から書けなくする手段は、engine ではなく環境の sandbox 設定が持つ。
 
+## 差し戻しと回答
+
+- 否定された事実(評価、検査、範囲)は、対象を作った実行へ指摘を渡して戻す。戻すのは、指摘の数が同じ事実の前回の否定より少ないときだけである。数えるのは、評価では engine が計算した止める指摘、検査では落ちた検査、範囲では範囲外の path である。最初の否定は戻す。少なくなければ `stagnation` で止まり、`stop.json` の `stop` に事実、指摘、`detail`(今回と前回の数)を残す。事実ごとの前回の数は `state.json` の `refuted` にある。
+- 指摘を受けた作る役が候補を変えずに turn を終える、または報告役が同じ報告を返すと、`stagnation` で止まる(detail は `candidate unchanged` か `report unchanged`)。その指摘の事実を判定した後に回答があったときは止めず、事実を判定し直す。
+- 回答は `state.json` の `answers`(`id`、`question`、`answer`、`asked_by`)に順に残る。session は受け取った回答の数を持ち、続きのメッセージはまだ受け取っていない回答だけを運ぶ。評価の事実の根拠は回答の digest を `@answers` の key に持ち、回答が増えるとその評価は成立しなくなる。報告、検査、範囲の根拠には回答を含めない。
+- 差し戻した回数は `status.json` の `round` と `stop.json` の `rounds` に出す。止める条件には使わない。
+
+## 評価の返答の受付
+
+- 評価役の返答を数えないとき、engine は見つけた理由をすべて `; ` でつないで、続きのメッセージの指摘として返す。返答の形が読めない(最後の object がない、`criteria` が list でないなど)ときは、その理由だけを返す。
+- 変更 file を読んだ跡は、その turn の実行記録に加えて、同じ実行が同じ根拠で前の turn に読んだ file も数える(`state.json` の `examined`)。根拠が変わったら前の turn の分は数えない。読んだ跡のない file は、理由の中にすべて(32 個までと残りの数)挙げる。
+- 根拠の command は、その turn の実行記録にあるものだけを数える。file の引用は、今の file にあれば turn を問わない。
+
 ## 止まり方と終了コード
 
 | 止まり方 | 終了コード | 続け方 |
 |---|---|---|
 | `done` | 0 | |
 | `waiting_for_answer` | 10 | `answer` |
-| `rounds_exhausted` | 11 | |
 | `stagnation` | 12 | |
 | `unknown_result` | 13 | `retry` |
 | `cancelled` | 14 | |
@@ -153,7 +172,7 @@ worktree は状態の置き場所とは別の、agent の sandbox が書ける�
 | `invalid_result` | 17 | `retry` |
 | `stuck` | 18 | |
 
-要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。状態の置き場所の lock を取れない(権限、directory を作れない、lock のない filesystem)場合も 3 で、原因を stderr に示す。
+要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。記録の置き場所の lock を取れない(権限、directory を作れない、lock のない filesystem)場合も 3 で、原因を stderr に示す。
 
 ## 検査
 
@@ -165,9 +184,9 @@ project は `.dev-skills/checks.json` に検査を定義する。engine は元�
 
 検査が書き出す cache(`__pycache__` など)は `ignore` に書く。書かないと、検査の前後で tree の digest が変わり、検査が「現在の tree で実行されていない」と判定される。
 
-engine は起動するたびに、自分の `check_runner.py` を状態の置き場所の `check/<内容の sha256>/check_runner.py` に複製する。一時的な名前で同じ directory に書いてから、すでにある file を置き換えない方法(`place_new`)で最終の名前にするので、同時に起動した engine も、書きかけの file も、すでにある file を置き換えない。その path に内容の sha256 が directory 名と一致しない file(link を含む)があれば、engine は起動しない。起動した後も、command を渡す前に毎回内容を確かめ、一致しなければ単位を `unknown_result` で止め、agent を起動しない。
+engine は起動するたびに、自分の `check_runner.py` を公開の置き場所の `check/<内容の sha256>/check_runner.py` に複製する。一時的な名前で同じ directory に書いてから、すでにある file を置き換えない方法(`place_new`)で最終の名前にするので、同時に起動した engine も、書きかけの file も、すでにある file を置き換えない。その path に内容の sha256 が directory 名と一致しない file(link を含む)があれば、engine は起動しない。起動した後も、command を渡す前に毎回内容を確かめ、一致しなければ単位を `unknown_result` で止め、agent を起動しない。
 
-agent に渡す command は `<engine の Python> -I <状態の置き場所>/check/<sha256>/check_runner.py <単位の directory>/checks.json <検査の名前> [--base]` で、path は platform の `quote` で quote する。Python は engine を動かしている interpreter(`sys.executable`)である。engine は、状態の置き場所と engine の Python を agent の sandbox が読めて、状態の置き場所には書けないことを前提とし、それを確かめない。
+agent に渡す command は `<engine の Python> -I <公開の置き場所>/check/<sha256>/check_runner.py <公開の置き場所>/units/<unit_id>/checks.json <検査の名前> [--base]` で、path は platform の `quote` で quote する。Python は engine を動かしている interpreter(`sys.executable`)である。engine は、公開の置き場所と engine の Python を agent の sandbox が読めて、公開の置き場所には書けないこと、記録の置き場所を読めないことを前提とし、それを確かめない。
 
 agent は engine が指定した command を実行する。検査 program は結果の最後の行に、検査の名前、対象(候補か元の commit か)、候補の tree の digest、終了コードを出す。元の commit での検査では、複製した元の commit の tree の digest(`base=`)も出す。engine は実行記録のこの行だけで合否を判定する。tree の digest は、engine と検査 program が同じ関数で計算し、環境の entry を含めない。
 
@@ -182,8 +201,8 @@ agent は engine が指定した command を実行する。検査 program は結
 
 | 確かめること | テスト |
 |---|---|
-| 判断の規則、判定の規則、契約の受付、構造と `limits` だけの検査 | `tests/test_facts.py` |
-| 実際の repository と engine での流れ、止まり方、再開、取消 | `tests/test_unit_flow.py` |
+| 判断の規則、判定の規則、契約の受付、構造だけの検査、指摘が減る間だけ戻すこと、回答と評価の根拠、前の turn に読んだ file を数えること | `tests/test_facts.py` |
+| 実際の repository と engine での流れ、止まり方、再開、取消、役に渡す path が公開の置き場所だけを指すこと | `tests/test_unit_flow.py` |
 | session の継続、続きのメッセージ、続けられない session、session を閉じること、解放されなかった turn、拒否の回数 | `tests/test_sessions.py` |
 | 要求の受付、要求 file、CLI、engine process の起動 | `tests/test_service.py` |
 | 検査 program | `tests/test_check_runner.py` |

@@ -20,10 +20,7 @@
   "scope": [
    "stats.py",
    "tests"
-  ],
-  "limits": {
-   "rounds": 2
-  }
+  ]
  },
  "facts": [
   {

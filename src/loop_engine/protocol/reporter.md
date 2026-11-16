@@ -14,6 +14,12 @@ Each report is what another role found about the requested work, to be weighed a
 
 {reports}
 
+## Answers from the requester
+
+Each answer is the requester's decision on a question asked during this work. It applies to the work and to how the acceptance criteria are judged.
+
+{answers}
+
 ## Feedback from the previous round
 
 {feedback}

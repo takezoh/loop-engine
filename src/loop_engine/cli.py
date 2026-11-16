@@ -6,7 +6,7 @@ import sys
 
 from . import client, store
 
-EXIT = {"done": 0, "waiting_for_answer": 10, "rounds_exhausted": 11, "stagnation": 12,
+EXIT = {"done": 0, "waiting_for_answer": 10, "stagnation": 12,
         "unknown_result": 13, "cancelled": 14, "unsafe_agent_config": 15, "rejected": 16,
         "invalid_result": 17, "stuck": 18}
 EXIT_INVALID = 2

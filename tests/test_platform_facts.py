@@ -25,18 +25,20 @@ class CheckCommandTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = os.path.join(os.path.realpath(temporary.name), "state home", "loop-engine")
-        self.program = store.publish_check_program(self.root, RUNNER)
+        home = os.path.join(os.path.realpath(temporary.name), "state home")
+        self.root = os.path.join(home, "records", "loop-engine")
+        self.published = os.path.join(home, "loop-engine")
+        self.program = store.publish_check_program(self.published, RUNNER)
 
     def commands(self, platform, python):
-        unit = Unit(store.UnitStore(self.root, "u1"), {"facts": [CHECKS]}, {"ignore": []}, git=None, agents=None,
+        unit = Unit(store.UnitStore(self.root, self.published, "u1"), {"facts": [CHECKS]}, {"ignore": []}, git=None, agents=None,
                     templates=None, runner=(python, self.program), worktrees=None, quote=platform.quote,
                     clock=None, interrupt=None, halting=None)
         return unit._check_commands(IMPLEMENT)
 
     def test_the_check_command_is_quoted_for_the_platform_the_facts_name(self):
         python = "C:\\Program Files\\Python312\\python.exe"
-        checks = os.path.join(self.root, "units", "u1", "checks.json")
+        checks = os.path.join(self.published, "units", "u1", "checks.json")
         line = subprocess.list2cmdline([python, "-I", self.program, checks])
         self.assertEqual([line + " unit", line + " unit --base"], self.commands(WINDOWS, python))
         self.assertTrue(line.startswith('"C:\\Program Files\\Python312\\python.exe" -I "'), line)

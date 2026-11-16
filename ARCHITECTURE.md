@@ -12,7 +12,8 @@ flowchart LR
   subgraph HostG["host"]
     Engine["engine process<br/>service.py・unit.py"]
     Git["git<br/>hook・filter・外部 diff を無効にして起動"]
-    Home[("状態の置き場所<br/>DEV_SKILLS_HOME/loop-engine")]
+    Home[("記録の置き場所<br/>DEV_SKILLS_HOME/records/loop-engine<br/>agent は読めない")]
+    Pub[("公開の置き場所<br/>DEV_SKILLS_HOME/loop-engine<br/>agent は読めて書けない")]
     Trees[("worktree の置き場所<br/>DEV_SKILLS_WORKTREES")]
     Pkg[("導入済みの package<br/>engine と transport の code・定型文")]
     AgentHost["agent の host process<br/>codex・claude・pi<br/>利用者の設定のまま"]
@@ -25,6 +26,7 @@ flowchart LR
   Home -->|"status.json・stop.json・patch.diff"| Entry
   Entry -.->|"engine がなければ固定の command で起動"| Engine
   Engine -->|"要求を取り、記録を書く"| Home
+  Engine -->|"検査 program・checks.json・元の commit の複製を公開する"| Pub
   Pkg -->|"code と定型文"| Engine
   Engine -->|"固定の subcommand"| Git
   Git -->|"worktree の作成・元の commit の記録・差分"| Trees
@@ -32,7 +34,7 @@ flowchart LR
   AgentHost -->|"返答・実行記録・拒否した要求"| Engine
   AgentHost -->|"command を sandbox の中で実行"| Work
   Work -->|"読み書き"| Trees
-  Work -->|"検査 program と元の commit の複製を読む"| Home
+  Work -->|"検査 program と元の commit の複製を読む"| Pub
   Engine -->|"turn の後に読む"| Trees
   Engine -.->|"起動しない"| Never
 ```
@@ -48,7 +50,10 @@ engine の実装と変更が守る規則。各規則を決めた ADR を括弧�
 - **process の形**: engine は host で動く固定のコードで、呼出し元の入口(server、CLI)とは別の process である。1 つの状態の置き場所につき 1 つの process が複数の単位を実行し、単位ごとに thread を持ち、単位ごとに process を作らない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1)
 - **入口**: 入口は要求を file で渡し、engine の記録を読むだけで、進行・判定・記録の処理を持たない。engine process が動いていなければ、入口が固定の command(`python -I` で engine の main)で起動する。CI では CLI が単位の止まるまで待ち、止まり方を終了コードで受け取る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1)
 - **継続と再開**: 入口の接続や呼出し元の会話が終わっても、engine は実行中の単位を進める。engine が止まったら、次の起動で記録(`state.json`)から続ける。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1 と結果)
-- **状態の置き場所と書き手**: 状態は状態の置き場所(`DEV_SKILLS_HOME` の下の `loop-engine/`、既定 `~/.dev-skills`)に置き、書き手は engine の process だけである(`agents/` は engine の process の中の transport が書く)。契約、回答、やり直し、取消は入口から data として渡る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 6)
+- **状態の置き場所と書き手**: 状態は状態の置き場所(`DEV_SKILLS_HOME` の下、既定 `~/.dev-skills`)に置き、書き手は engine の process だけである(`agents/` は engine の process の中の transport が書く)。契約、回答、やり直し、取消は入口から data として渡る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 6)
+- **記録と公開物**: agent が読むもの(検査 program、単位の `checks.json`、元の commit の複製)は公開の置き場所(`loop-engine/`)に、それ以外の記録は記録の置き場所(`records/loop-engine/`)に置く。役に渡す path は公開の置き場所だけを指す。記録を agent から読めなくするのは環境の sandbox 設定である。([記録の決定](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md))
+- **止まる条件**: 否定された事実を作る実行へ戻すのは、指摘が同じ事実の前回の否定より少ないときだけで、少なくなければ `stagnation` で止まる。差し戻しの回数の上限は持たない。([収束の決定](docs/adr/adr-20261116-work-goes-back-while-it-converges.md))
+- **回答**: 依頼者の回答は単位の状態に残り、すべての実行が受け取る。評価の事実は判定したときの回答を根拠に持つ。([回答の決定](docs/adr/adr-20261116-answers-reach-every-execution.md))
 - **値だけの判断**: 判断(`facts.py`)と指示文の組み立て(`prompts.py`)は値だけを扱い、I/O、時計、乱数、process、global な実行文脈を持たない。状態は JSON として保存でき、読み直して続きから進められる。([事実による完了](docs/adr/adr-20261114-unit-completes-when-facts-hold.md) 項目 8。`prompts.py` を含めることは engine の ADR になく、`tests/test_closed_paths.py` が検査する)
 - **agent 設定**: worktree の agent 設定(`.claude/`、`.codex/`、`.pi/`、`.agents/`、`.mcp.json`)が worktree の作成時から変わっていたら、agent を起動せずに止める(`unsafe_agent_config`)。3 つの agent で同じに扱い、agent による例外を持たない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 5)
 - **独立した package**: engine は独立した package で、導入時の複製から起動する。作業 tree のコードを読み込まず、呼出し元のコードに依存しない。依存する package は transport だけで、transport に接続するのは `composition.py` だけである。engine の core は `agents.py` の port(turn の実行、session の終了、全体の停止)だけに依存する。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4、7)
@@ -62,7 +67,7 @@ engine の実装と変更が守る規則。各規則を決めた ADR を括弧�
 ```mermaid
 flowchart LR
   subgraph UnitG["unit"]
-    UG["goal・criteria・scope<br/>limits.rounds・base(省略可)"]
+    UG["goal・criteria・scope<br/>base(省略可)"]
   end
   subgraph FactsG["facts(id・required・by)"]
     FG["given<br/>初めから成立"]
@@ -90,19 +95,19 @@ flowchart LR
   UG -->|"scope: 範囲の判定"| FT
 ```
 
-契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義する。`facts.py` の `check_structure` が事実と実行の構造を、`check_limits` が `limits` を検査し、`validate` は契約全体をそれらと実行に要る値で検査して、合わない契約を受け付けない。`check_structure` が見るのは、`checks` の事実の `checks` と実行の `agent`・`model`・`effort`・`instructions` を除いた事実と実行である。契約を組み立てる側は、key の名前(`unit`・`limits` の key、run が加える項目)と検査の `expect` の値も `facts.py` の公開の定数から使い、写さない。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
+契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義する。`facts.py` の `check_structure` が事実と実行の構造を検査し、`validate` は契約全体をそれと実行に要る値で検査して、合わない契約を受け付けない。`check_structure` が見るのは、`checks` の事実の `checks` と実行の `agent`・`model`・`effort`・`instructions` を除いた事実と実行である。契約を組み立てる側は、key の名前(`unit` の key、run が加える項目)と検査の `expect` の値も `facts.py` の公開の定数から使い、写さない。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
 
 ### 契約の形
 
 ```
 unit_id, repository(repository の最上位の絶対 path。engine が動く machine の形)
-unit:        goal, criteria[{id, text}], scope[path], limits{rounds}
+unit:        goal, criteria[{id, text}], scope[path]
              任意: base(commit id)、allow_same_model(bool)、examine_min(0..1)
 facts:       {id, required, by} と by ごとの項目
 executions:  {id, agent, model, effort, instructions, reads, establishes, writes, independent_of}
 ```
 
-- `unit.goal` と `criteria` は全実行の指示に入る。評価役は `criteria` の条件ごとに判定する。`scope` は `git` の事実が判定する変更してよい path で、作る役にも示される。`scope` の path は、どの platform でも git の形(`/` で区切った repository の中の path)で書く。`limits.rounds` は差し戻しの上限である。
+- `unit.goal` と `criteria` は全実行の指示に入る。評価役は `criteria` の条件ごとに判定する。`scope` は `git` の事実が判定する変更してよい path で、作る役にも示される。`scope` の path は、どの platform でも git の形(`/` で区切った repository の中の path)で書く。
 - `unit.base` を指定すると、その commit から repository の現在の commit までの既存の変更を対象にする(現在の commit は `base` の子孫でなければならない)。省略すると現在の commit が元の commit になる。
 - `allow_same_model` は `independent_of` の検査を緩める。`examine_min` は、評価役の実行記録が読んだことを示さなければならない変更 file の割合で、既定は 1 である。
 
@@ -153,11 +158,9 @@ flowchart TD
   Refuted -->|"ない"| AllHeld{"必須の事実がすべて成立"}
   Refuted -->|"ある"| Maker{"対象を作る実行"}
   Maker -->|"ない"| Rejected["rejected<br/>指摘が結果"]
-  Maker -->|"ある"| Same{"前回と同じ指摘"}
-  Same -->|"はい"| Stagnation["stagnation"]
-  Same -->|"いいえ"| Rounds{"差し戻しが rounds に達した"}
-  Rounds -->|"はい"| Exhausted["rounds_exhausted"]
-  Rounds -->|"いいえ"| Back["対象を作った実行へ指摘を渡し<br/>その実行が成立させた事実を外す"]
+  Maker -->|"ある"| Fewer{"指摘が同じ事実の<br/>前回の否定より少ない<br/>(最初の否定を含む)"}
+  Fewer -->|"いいえ"| Stagnation["stagnation"]
+  Fewer -->|"はい"| Back["対象を作った実行へ指摘を渡し<br/>その実行が成立させた事実を外す"]
   Back --> AllHeld
   AllHeld -->|"はい"| Done["done"]
   AllHeld -->|"いいえ"| Pick{"読む事実がすべて成立し<br/>成立させる事実に未成立が残る実行"}
@@ -167,11 +170,11 @@ flowchart TD
   Turn -->|"完了しない・解放されない・読めない"| Unknown["unknown_result"]
   Turn -->|"質問で終わる"| Waiting["waiting_for_answer"]
   Turn -->|"確かめられない評価が 2 回"| Invalid["invalid_result"]
-  Turn -->|"指摘の後も候補・報告が同じ"| Stagnation
+  Turn -->|"指摘の後も候補・報告が同じ<br/>(その後に回答がない)"| Stagnation
   Turn -->|"turn を事実に適用"| Start
 ```
 
-事実は、判定したときの根拠(対象と読んだ事実の内容)が今と同じ間だけ成立し、根拠が変われば自動的に未成立に戻るので、engine は工程を持たずに次の実行を導く。続けられる止まり方は `waiting_for_answer`(回答)、`unknown_result` と `invalid_result`(やり直し)だけで、ほかは最終である([止まり方と終了コード](docs/architecture.md#止まり方と終了コード))。
+事実は、判定したときの根拠(対象と読んだ事実の内容。評価ではさらに依頼者の回答)が今と同じ間だけ成立し、根拠が変われば自動的に未成立に戻るので、engine は工程を持たずに次の実行を導く。否定の指摘は 1 件以上で、同じ事実の否定のたびに減らなければ止まるので、どの単位も有限回の差し戻しで止まる。続けられる止まり方は `waiting_for_answer`(回答)、`unknown_result` と `invalid_result`(やり直し)だけで、ほかは最終である([止まり方と終了コード](docs/architecture.md#止まり方と終了コード))。
 
 ## 1 turn
 
@@ -189,7 +192,7 @@ sequenceDiagram
     U->>S: unsafe_agent_config で止める
   end
   alt 実行の session がない
-    U->>P: 最初のメッセージ(定型文・指示・目的・受入条件・範囲・検査の command)
+    U->>P: 最初のメッセージ(定型文・指示・目的・受入条件・範囲・検査の command・回答)
   else 実行の session の token がある
     U->>P: 続きのメッセージ(指摘や回答・未送付の報告・変更 file・検査の command)
   end
@@ -236,8 +239,8 @@ flowchart LR
     C5 -->|"いいえ"| C7["否定: 作る実行へ戻す"]
   end
   subgraph VerdictG["verdict"]
-    V1["評価役の返答<br/>条件ごとの判定と指摘"] --> V2{"引用が今の file か報告にある<br/>根拠の command をこの turn で実行<br/>変更 file を読んだ"}
-    V2 -->|"いいえ"| V3["数えない<br/>2 回で invalid_result"]
+    V1["評価役の返答<br/>条件ごとの判定と指摘"] --> V2{"引用が今の file か報告にある<br/>根拠の command をこの turn で実行<br/>変更 file を読んだ(同じ根拠の前の turn を含む)"}
+    V2 -->|"いいえ"| V3["数えない。理由をすべて返す<br/>2 回で invalid_result"]
     V2 -->|"はい"| V4["評価役の判定として記録<br/>全評価役の判定が揃うのを待つ"]
     V4 --> V5{"block_at 以上の指摘<br/>または満たさない条件"}
     V5 -->|"ない"| V6["成立"]
@@ -295,17 +298,21 @@ flowchart LR
   Cal["呼出し元の入口"]
   Eng["engine"]
   Ag["agent(sandbox の中)"]
-  subgraph HomeG["状態の置き場所 DEV_SKILLS_HOME/loop-engine<br/>agent の sandbox から読めて書けない"]
+  subgraph HomeG["記録の置き場所 DEV_SKILLS_HOME/records/loop-engine<br/>agent の sandbox から読めない"]
     Inbox["inbox/"]
     Outbox["outbox/"]
     Lock["engine.lock"]
-    Check["check/sha256/check_runner.py"]
     AgentState["agents/(transport の状態)"]
     subgraph UnitDirG["units/unit_id/"]
       Rec["contract.json・admission.json<br/>state.json・events.jsonl・status.json"]
+      Res["result/<br/>patch.diff・stop.json・turns/"]
+    end
+  end
+  subgraph PubG["公開の置き場所 DEV_SKILLS_HOME/loop-engine<br/>agent の sandbox から読めて書けない"]
+    Check["check/sha256/check_runner.py"]
+    subgraph PubUnitG["units/unit_id/"]
       Cfg["checks.json"]
       Base["base-token/<br/>元の commit の複製"]
-      Res["result/<br/>patch.diff・stop.json・turns/"]
     end
   end
   subgraph TreesG["worktree の置き場所 DEV_SKILLS_WORKTREES<br/>agent の sandbox から書ける"]
@@ -335,7 +342,7 @@ flowchart LR
   Code -->|"読む"| Eng
 ```
 
-agent が書ける場所は worktree の置き場所だけで、判定に使うもの(検査 program、元の commit の複製、記録)はすべて agent が書けない状態の置き場所にある。この読み書きの区別を守るのは環境の sandbox 設定であり、engine は前提とするだけである。file の内容は [記録](docs/architecture.md#記録) にある。
+agent が書ける場所は worktree の置き場所だけで、判定に使うもの(検査 program、元の commit の複製、記録)はすべて agent が書けない場所にある。agent が読むのは公開の置き場所だけで、ほかの役の返答、実行記録、session を持つ記録の置き場所は読まない。この読み書きの区別を守るのは環境の sandbox 設定であり、engine は前提とするだけである。file の内容は [記録](docs/architecture.md#記録) にある。
 
 ## 信頼の境界
 
@@ -351,7 +358,7 @@ engine が確かめるもの:
 
 engine が確かめずに環境に頼るもの:
 
-- agent の sandbox が有効であること、状態の置き場所と engine の Python を読めて状態の置き場所に書けないこと。
+- agent の sandbox が有効であること、公開の置き場所と engine の Python を読めて公開の置き場所に書けないこと、記録の置き場所を読めないこと。
 - 確認と agent の起動の間に別の agent が worktree の置き場所へ file を置かないこと。
 - 検査 program が複製を写した後の、sandbox の中での test の振る舞い。
 - agent の実行記録は transport が provider から受け取ったものであり、engine はそれを agent の報告文の代わりに使う。
@@ -366,3 +373,6 @@ engine が確かめずに環境に頼るもの:
 | 評価の合否は engine が計算し、確かめられる結果だけを数える | [adr-20261114-verdict-computed-from-checkable-findings](docs/adr/adr-20261114-verdict-computed-from-checkable-findings.md) |
 | 実行は自分の session を続け、承認の要求は拒否して turn を続ける | [adr-20261114-agent-sessions-continue-and-approvals-are-refused](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) |
 | 環境が置く空の読み取り専用 file は役の変更として数えない | [adr-20261115-environment-entries-are-not-changes](docs/adr/adr-20261115-environment-entries-are-not-changes.md) |
+| 差し戻しは指摘が減る間だけ続け、回数の上限を持たない | [adr-20261116-work-goes-back-while-it-converges](docs/adr/adr-20261116-work-goes-back-while-it-converges.md) |
+| 依頼者の回答はすべての実行に渡し、評価はその回答に照らして判定する | [adr-20261116-answers-reach-every-execution](docs/adr/adr-20261116-answers-reach-every-execution.md) |
+| engine の記録を agent が読むものから分け、agent から読めない場所に置く | [adr-20261116-engine-records-apart-from-what-agents-read](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md) |

@@ -21,9 +21,6 @@
    "stats.py",
    "tests"
   ],
-  "limits": {
-   "rounds": 1
-  },
   "base": "{base}"
  },
  "facts": [

@@ -198,7 +198,7 @@ class ScriptedAgentsContractTest(AgentTurnsContract, unittest.TestCase):
         return TurnOutcome(True, "done", ACTIONS)
 
     def open_agents(self):
-        self.agents = ScriptedAgents(self._tmp.name, self.script)
+        self.agents = ScriptedAgents(self._tmp.name, self._tmp.name, self.script)
         self.agents.run = self._run_without_unit(self.agents.run)
         return self.agents
 
@@ -207,7 +207,7 @@ class ScriptedAgentsContractTest(AgentTurnsContract, unittest.TestCase):
         def without(request, cancelled):
             with mock.patch("engine_support.store.UnitStore") as unit, \
                     mock.patch("engine_support.facts.check_names", return_value=([], [])):
-                unit.return_value.path.return_value = "checks.json"
+                unit.return_value.published.return_value = "checks.json"
                 return run(request, cancelled)
         return without
 
@@ -453,7 +453,8 @@ class WorktreeAfterReleaseTest(EngineCase):
         self.addCleanup(patcher.stop)
         worktrees = os.path.join(self.home, "worktrees")
         agents = composition.TransportAgents(origin=worktrees, state_dir=os.path.join(self.home, "agent-state"))
-        engine = Engine(self.root, git=Git(os.environ), agents=agents, templates=composition.load_templates(),
+        engine = Engine(self.root, published=self.published, git=Git(os.environ), agents=agents,
+                        templates=composition.load_templates(),
                         runner=(sys.executable, RUNNER), worktrees=worktrees, platform=CURRENT,
                         clock=lambda: "2026-01-01T00:00:00+00:00")
         self.addCleanup(engine.halt)

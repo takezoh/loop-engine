@@ -65,8 +65,8 @@ class Unit:
 
         The two differ only when the contract names an earlier base: the unit then judges an existing change.
         The worktree is where agents write. The copy of the base revision, which a check on the base
-        revision runs the candidate's tests on, is in the unit's directory under the state home, which
-        only the engine writes.
+        revision runs the candidate's tests on and a reviewer reads, is in the unit's published directory,
+        which agents read and only the engine writes.
         """
         repository, base = self.contract["repository"], self.admission["base"]
         # The worktree root is writable by every agent, so the directory gets a name nobody can
@@ -76,7 +76,7 @@ class Unit:
         path = worktree_path(self.worktrees, self.git.common_dir(repository), name)
         expected = os.path.join(os.path.realpath(self.worktrees), os.path.basename(os.path.dirname(path)), name)
         git_dir = self.git.add_worktree(repository, path, self.admission["head"])
-        base_tree = self.store.path(f"base-{token}")
+        base_tree = self.store.published(f"base-{token}")
         self.git.add_worktree(repository, base_tree, base)
         if os.path.realpath(path) != expected:
             raise RuntimeError("the unit worktree is not where the engine created it")
@@ -84,8 +84,8 @@ class Unit:
         # What the environment may place in the worktree is told apart by names neither commit has.
         committed = sorted({*self.git.top_names(repository, base),
                             *self.git.top_names(repository, self.admission["head"])})
-        self.store.write_json("checks.json", {"cwd": path, "base": base_tree, "ignore": self.ignore,
-                                              "committed": committed, "checks": self.admission["checks"]})
+        self.store.publish_json("checks.json", {"cwd": path, "base": base_tree, "ignore": self.ignore,
+                                                "committed": committed, "checks": self.admission["checks"]})
         started = {"type": "unit_started", "base": base, "worktree": path, "base_tree": base_tree,
                    "git_dir": git_dir, "committed": committed, "agent_config": agent_config_digest(path, committed)}
         self._save(facts.new_state(tree_digest(path, self.ignore, committed), self._changed(started),
@@ -110,7 +110,7 @@ class Unit:
     def _runner(self):
         """The command prefix of every check: the published check program, verified before it is named."""
         return self.quote([self.runner[0], "-I", verified_check_program(self.runner[1]),
-                           self.store.path("checks.json")])
+                           self.store.published("checks.json")])
 
     def _check_commands(self, execution):
         by_id = {fact["id"]: fact for fact in self.contract["facts"]}
@@ -130,12 +130,13 @@ class Unit:
         def first_message():
             return prompts.compose(self.templates, self.contract, execution, action["feedback"],
                                    check_commands=checks, changed=state["changed"], base=started["base_tree"],
-                                   reports=reports, agent_config=AGENT_CONFIG)
+                                   reports=reports, answers=state["answers"], agent_config=AGENT_CONFIG)
 
         session = facts.session_of(state, execution["id"])
         prompt = first_message() if session is None else prompts.follow_up(
             self.templates, self.contract, execution, action["feedback"], check_commands=checks,
             changed=state["changed"], reports=reports, sent=facts.delivered(state, execution["id"]),
+            answers=state["answers"], answers_sent=facts.answers_delivered(state, execution["id"]),
             agent_config=AGENT_CONFIG)
         # What git would record, so caches a reviewer's own test run leaves behind do not count as a change.
         before = None if execution["writes"] else self._candidate(started)
@@ -148,7 +149,7 @@ class Unit:
             # The session cannot be continued: this turn runs once more, in a new session with the full message.
             self._append({"type": "session_not_continuable", "execution": execution["id"], "turn": number,
                           "detail": outcome.detail})
-            state = facts.remember_session(state, execution["id"], None, {})
+            state = facts.remember_session(state, execution["id"], None, {}, 0)
             session = None
             if not self._safe(started):
                 return self._unsafe(state, execution["id"], "before")
@@ -164,7 +165,8 @@ class Unit:
                 self.agents.end_session(execution["agent"], outcome.session)
             return state if self.halting() else facts.count_refused(state, execution["id"], outcome.refused)
         state = facts.count_refused(state, execution["id"], outcome.refused)
-        state = facts.remember_session(state, execution["id"], outcome.session, prompts.digests(reports))
+        state = facts.remember_session(state, execution["id"], outcome.session, prompts.digests(reports),
+                                       len(state["answers"]))
         if not outcome.released:
             # A process of the agent may still be using the worktree: nothing in it is judged for this turn.
             state = facts.apply_turn(self.contract, state, execution["id"],
@@ -286,7 +288,7 @@ class Unit:
         for path, owned in (
                 (worktree, os.path.dirname(os.path.dirname(worktree)) == root
                  and UNIT_DIRECTORY_RE.fullmatch(os.path.basename(worktree)) and os.path.realpath(worktree) == worktree),
-                (base_tree, os.path.dirname(base_tree) == self.store.dir)):
+                (base_tree, os.path.dirname(base_tree) == self.store.published_dir)):
             if not owned or os.path.islink(path):
                 removed = False
                 continue

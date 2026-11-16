@@ -49,8 +49,10 @@ class SessionTest(EngineCase):
         self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
         first, second = self.requests_of("producer")
         self.assertEqual(self.opened("producer"), [second.session])
-        self.assertIn("Answer to your question q-style: spaces", second.prompt)
+        self.assertIn("### q-style\n\nQuestion: tabs or spaces?\n\nAnswer: spaces", second.prompt)
         self.assertNotIn("You produce.", second.prompt)
+        reviewer = self.requests_of("reviewer")[0]  # an execution that did not ask is given the answer too
+        self.assertIn("### q-style\n\nQuestion: tabs or spaces?\n\nAnswer: spaces", reviewer.prompt)
 
     def test_a_reviewers_second_assessment_continues_its_own_session_not_the_writers(self):
         def script(request, commands, cancelled):
@@ -74,7 +76,7 @@ class SessionTest(EngineCase):
             if request.role == "producer":
                 return produced(request, commands, text=f"attempt number {self.agents.nth['producer']}\n")
             return changes(request, f"problem {self.agents.nth['reviewer']}")
-        self.start(script, rounds=3)
+        self.start(script)
         owners = {token: role for role, token in self.agents.opened}
         self.assertEqual(2, len(owners))
         for request in self.agents.requests:
@@ -120,7 +122,7 @@ class SessionTest(EngineCase):
         token = self.opened("producer")[0]
         durable = self.agents.durable
         engine.halt()
-        saved = store.read_json(store.UnitStore(self.root, "u1").path("state.json"))
+        saved = store.read_json(self.unit("u1").path("state.json"))
         self.assertEqual(token, saved["sessions"]["producer"]["token"])
 
         def finish(request, commands, cancelled):
@@ -140,7 +142,7 @@ class SessionTest(EngineCase):
         self.assertEqual("done", status["stop_reason"])
         self.assertEqual(sorted([("alpha", self.opened("producer")[0]), ("beta", self.opened("reviewer")[0])]),
                          sorted(self.agents.ended))
-        self.assertEqual({}, store.read_json(store.UnitStore(self.root, "u1").path("state.json"))["sessions"])
+        self.assertEqual({}, store.read_json(self.unit("u1").path("state.json"))["sessions"])
         engine.handle({"request": "start", "contract": self.contract(unit_id="ask")})
         self.assertEqual("waiting_for_answer", self.run_to_stop(engine, "ask")["stop_reason"])
         self.assertEqual(2, len(self.agents.ended))
@@ -186,7 +188,7 @@ class SessionTest(EngineCase):
                          (finished["execution"], finished["completed"], finished["detail"]))
         self.assertEqual(("agent-session-not-released: unload-not-finished",) * 2, self.stop_details())
         self.assertNotIn("agent_config_changed", [event["type"] for event in self.events()])
-        state = store.read_json(store.UnitStore(self.root, "u1").path("state.json"))
+        state = store.read_json(self.unit("u1").path("state.json"))
         self.assertEqual(["out.txt"], state["changed"])
         self.assertEqual(self.opened("reviewer"), [state["sessions"]["reviewer"]["token"]])
         # What is still there when the next turn would start is judged in full.
@@ -244,13 +246,14 @@ class FollowUpTest(unittest.TestCase):
         reports = {"notes": "unchanged notes", "draft": "a second draft"}
         sent = prompts.digests({"notes": "unchanged notes", "draft": "the first draft"})
         text = prompts.follow_up(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
-                                 reports=reports, sent=sent, agent_config=unit.AGENT_CONFIG)
+                                 reports=reports, sent=sent, answers=[], answers_sent=0,
+                                 agent_config=unit.AGENT_CONFIG)
         self.assertIn("a second draft", text)
         for old in ("unchanged notes", "the instructions", "the goal", "the criterion"):
             self.assertNotIn(old, text)
         self.assertIn('{"criteria": [', text)
         full = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[], base="/b",
-                               reports=reports, agent_config=unit.AGENT_CONFIG)
+                               reports=reports, answers=[], agent_config=unit.AGENT_CONFIG)
         self.assertIn("unchanged notes", full)
         self.assertIn("the instructions", full)
 
@@ -276,9 +279,9 @@ class TurnRulesTest(unittest.TestCase):
         templates = composition.load_templates()
         execution = next(e for e in self.CONTRACT["executions"] if e["id"] == execution_id)
         first = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[], base="/b",
-                                reports=reports, agent_config=unit.AGENT_CONFIG)
+                                reports=reports, answers=[], agent_config=unit.AGENT_CONFIG)
         later = prompts.follow_up(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
-                                  reports=reports, sent={}, agent_config=unit.AGENT_CONFIG)
+                                  reports=reports, sent={}, answers=[], answers_sent=0, agent_config=unit.AGENT_CONFIG)
         return first, later
 
     def test_a_role_that_does_not_write_is_told_its_turn_rules_are_not_its_subject(self):
@@ -316,14 +319,14 @@ class AgentConfigurationTest(unittest.TestCase):
         execution = self.CONTRACT["executions"][0]
         expected = "(" + ", ".join(f"`{name}`" for name in self.NAMES) + ")"
         first = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
-                                base="/b", reports={}, agent_config=unit.AGENT_CONFIG)
+                                base="/b", reports={}, answers=[], agent_config=unit.AGENT_CONFIG)
         later = prompts.follow_up(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
-                                  reports={}, sent={}, agent_config=unit.AGENT_CONFIG)
+                                  reports={}, sent={}, answers=[], answers_sent=0, agent_config=unit.AGENT_CONFIG)
         for text in (first, later):
             self.assertIn(f"do not change agent configuration {expected}.", text)
         moved = ((".x",), (".y.json",))
         text = prompts.compose(templates, self.CONTRACT, execution, [], check_commands=[], changed=[],
-                               base="/b", reports={}, agent_config=moved)
+                               base="/b", reports={}, answers=[], agent_config=moved)
         self.assertIn("(`.x/`, `.y.json`)", text)
         for name in self.NAMES:
             self.assertNotIn(name, text)

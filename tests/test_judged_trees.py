@@ -20,8 +20,8 @@ TEST = ("import os, sys, unittest\nsys.path.insert(0, os.path.dirname(os.path.di
         "from calc import add\n\nclass T(unittest.TestCase):\n    def test_it(self):\n        self.assertEqual({want}, add({args}))\n")
 
 
-def unit_checks(root, unit_id):
-    with open(store.UnitStore(root, unit_id).path("checks.json"), encoding="utf-8") as handle:
+def unit_checks(published, unit_id):
+    with open(os.path.join(store.unit_dir(published, unit_id), "checks.json"), encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -43,19 +43,18 @@ class BaseRecordTest(EngineCase):
         """A producer that writes outside the scope and the same file into the base copy it was told about."""
         if request.role == "reviewer":
             return approve(request)
-        base = unit_checks(self.root, request.unit_id)["base"]
+        base = unit_checks(self.published, request.unit_id)["base"]
         for tree in (request.cwd, base):
             write(tree, "other.txt", "outside the scope\n")
         return produced(request, commands)
 
     def test_writing_the_base_copy_does_not_hide_a_change_from_the_scope(self):
-        contract = self.with_scope_fact(self.contract(rounds=1))
+        contract = self.with_scope_fact(self.contract())
         _engine, status = self.start(self.tampering, unit=contract["unit"], facts=contract["facts"],
                                      executions=contract["executions"])
-        self.assertEqual("rounds_exhausted", status["stop_reason"])
-        stop = json.loads(self.result("stop.json"))
-        self.assertEqual(["other.txt"], [finding["path"] for finding in stop["stop"]["findings"]])
-        self.assertEqual(["producer"], [request.role for request in self.agents.requests])
+        self.assertEqual(("stagnation", "candidate unchanged"), (status["stop_reason"], status["detail"]))
+        self.assertEqual(["producer", "producer"], [request.role for request in self.agents.requests])
+        self.assertIn("[in-scope] other.txt changed outside the declared scope", self.agents.requests[1].prompt)
 
     def test_the_reviewer_is_told_of_a_change_the_base_copy_was_made_to_hide(self):
         _engine, status = self.start(self.tampering)
@@ -63,10 +62,11 @@ class BaseRecordTest(EngineCase):
         reviewer = next(request for request in self.agents.requests if request.role == "reviewer")
         self.assertIn("- other.txt", reviewer.prompt)
 
-    def test_the_base_copy_is_in_the_units_record_not_beside_the_worktree(self):
+    def test_the_base_copy_is_published_for_the_unit_apart_from_its_records_and_the_worktree(self):
         _engine, status = self.start(self.tampering)
-        base = unit_checks(self.root, "u1")["base"]
-        self.assertEqual(store.unit_dir(self.root, "u1"), os.path.dirname(base))
+        base = unit_checks(self.published, "u1")["base"]
+        self.assertEqual(store.unit_dir(self.published, "u1"), os.path.dirname(base))
+        self.assertFalse(base.startswith(self.root + os.sep))
         self.assertFalse(base.startswith(os.path.join(self.home, "worktrees")))
         self.assertFalse(os.path.exists(base))  # removed with the worktree once the unit ended
         self.assertFalse(os.path.exists(status["worktree"] + ".base"))
@@ -86,8 +86,8 @@ class FailsOnBaseTest(EngineCase):
         return contract
 
     def ran_both(self, request):
-        runner = CURRENT.quote([sys.executable, "-I", published_runner(self.root),
-                             store.UnitStore(self.root, request.unit_id).path("checks.json")])
+        runner = CURRENT.quote([sys.executable, "-I", published_runner(self.published),
+                                self.unit(request.unit_id).published("checks.json")])
         return actions(("edit", None, None), *[
             ("command", command, run_command(command, request.cwd))
             for command in (facts.expected_command(runner, "unit", "candidate"),
@@ -108,10 +108,12 @@ class FailsOnBaseTest(EngineCase):
             if request.role == "reviewer":
                 return approve(request)
             write(request.cwd, "calc.py", "def add(a, b):\n    return a - b  # unchanged behaviour\n")
-            write(unit_checks(self.root, request.unit_id)["base"], "calc.py", "raise SystemExit(3)\n")
+            write(unit_checks(self.published, request.unit_id)["base"], "calc.py", "raise SystemExit(3)\n")
             return TurnOutcome(True, "fixed", self.ran_both(request))
-        _engine, status = self.start(script, **self.fixing(self.contract(rounds=1)))
-        self.assertEqual("rounds_exhausted", status["stop_reason"])
+        _engine, status = self.start(script, **self.fixing(self.contract()))
+        # the same failure twice: the second refutation is no smaller than the first
+        self.assertEqual("stagnation", status["stop_reason"])
+        self.assertEqual(["producer", "producer"], [request.role for request in self.agents.requests])
         stop = json.loads(self.result("stop.json"))
         self.assertEqual([("unit:base", "not run on the base revision the engine placed")],
                          [(finding["check"], finding["description"]) for finding in stop["stop"]["findings"]])

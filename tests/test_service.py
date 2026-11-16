@@ -46,7 +46,7 @@ class AdmissionTest(EngineCase):
         self.assertIn("lint", self.refused(engine, self.with_check(self.contract(), "lint")))
         engine.handle({"request": "start", "contract": self.contract()})
         self.run_to_stop(engine)
-        with open(os.path.join(store.unit_dir(self.root, "u1"), "checks.json"), encoding="utf-8") as handle:
+        with open(os.path.join(store.unit_dir(self.published, "u1"), "checks.json"), encoding="utf-8") as handle:
             self.assertEqual(self.checks, json.load(handle)["checks"])
 
     def test_engine_refuses_the_repository_its_own_code_runs_from(self):
@@ -237,7 +237,8 @@ class ProcessLockTest(unittest.TestCase):
             handle.write("x")
         with self.assertRaisesRegex(client.EngineUnavailable, "cannot be locked: cannot open the lock file"):
             client.ensure_engine(blocker, dict(os.environ))
-        engine = Engine(os.path.join(self.directory, "state"), git=None, agents=None, templates={},
+        engine = Engine(os.path.join(self.directory, "state"), published=os.path.join(self.directory, "published"),
+                        git=None, agents=None, templates={},
                         runner=(sys.executable, RUNNER), worktrees=self.directory, platform=CURRENT)
         with self.assertRaises(store.LockFailed):
             engine.serve(client.lock_path(blocker))
@@ -262,8 +263,8 @@ class EngineProcessTest(EngineCase):
                          client.request(self.root, {"request": "ping"}, environ=environ))
         self.assertEqual(1, len(client._started) - len(before))
         self.assertIsNone(client.ensure_engine(self.root, environ))
-        # the engine this entry started publishes the check program into the state home it was given
-        with open(published_runner(self.root), "rb") as published, open(RUNNER, "rb") as source:
+        # the engine this entry started publishes the check program beside the state home it was given
+        with open(published_runner(self.published), "rb") as published, open(RUNNER, "rb") as source:
             self.assertEqual(source.read(), published.read())
         unknown = client.request(self.root, {"request": "start", "contract": self.with_agent(
             self.contract(), producer="gamma")}, environ=environ)

@@ -3,8 +3,10 @@
 The contract is data. `facts` say what must hold and how each is judged; `executions`
 say which agent turn reads and establishes which facts. No order is written: `decide`
 derives the next execution, and a fact stops holding when what it was judged against
-changes. Decisions: adr-20261114-unit-completes-when-facts-hold and
-adr-20261114-verdict-computed-from-checkable-findings (both accepted).
+changes. Work goes back to its maker only while each refutation of a fact leaves fewer
+findings than the one before. Decisions: adr-20261114-unit-completes-when-facts-hold,
+adr-20261114-verdict-computed-from-checkable-findings,
+adr-20261116-work-goes-back-while-it-converges and adr-20261116-answers-reach-every-execution.
 """
 import hashlib
 import json
@@ -21,13 +23,13 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 CHECK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,95}$")
 MAX_TEXT_BYTES = 200_000
-MAX_ROUNDS = 10
 MAX_ITEMS = 32
 CONTRACT_KEYS = frozenset({"unit_id", "repository", "unit", "facts", "executions"})
-UNIT_KEYS = frozenset({"goal", "criteria", "scope", "limits"})
+UNIT_KEYS = frozenset({"goal", "criteria", "scope"})
 UNIT_OPTIONAL = frozenset({"allow_same_model", "examine_min", "base"})
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-LIMIT_KEYS = frozenset({"rounds"})
+# The key under which a judgment's basis holds the requester's answers; no fact id has this form.
+ANSWERS = "@answers"
 # What a check must show: it passes on the candidate, or the candidate's tests fail on the base revision.
 CHECK_EXPECT = ("pass", "fails_on_base")
 # How an absolute path of the machine looks; the platform's facts name one (`platform_facts`).
@@ -107,13 +109,6 @@ def repository_path(path, path_style):
         raise ValueError(f"unknown path style {path_style!r}")
     return (isinstance(path, str) and "\x00" not in path and not path.startswith("/")
             and all(_name(part, path_style) for part in path.split("/")))
-
-
-def check_limits(limits):
-    """Pure: the limits of a unit, or raise `InvalidContract`."""
-    if (not isinstance(limits, dict) or set(limits) != LIMIT_KEYS or isinstance(limits["rounds"], bool)
-            or not isinstance(limits["rounds"], int) or not 1 <= limits["rounds"] <= MAX_ROUNDS):
-        raise InvalidContract(f"limits.rounds must be 1..{MAX_ROUNDS}")
 
 
 def check_structure(facts, executions):
@@ -208,7 +203,7 @@ def _shape(contract, path_style):
         raise InvalidContract("repository must be a normalized absolute path")
     unit = contract["unit"]
     if not isinstance(unit, dict) or not UNIT_KEYS <= set(unit) or set(unit) - UNIT_KEYS - UNIT_OPTIONAL:
-        raise InvalidContract("unit keys must be goal, criteria, scope, limits")
+        raise InvalidContract("unit keys must be goal, criteria, scope")
     _text(unit["goal"], "unit.goal")
     criteria = unit["criteria"]
     if (not isinstance(criteria, list) or len(criteria) > MAX_ITEMS
@@ -223,7 +218,6 @@ def _shape(contract, path_style):
             not isinstance(p, str) or p.startswith("/") or not repository_path(p.rstrip("/"), path_style)
             for p in scope)):
         raise InvalidContract("unit.scope must be relative paths inside the repository")
-    check_limits(unit["limits"])
     if "base" in unit and (not isinstance(unit["base"], str) or not COMMIT_RE.fullmatch(unit["base"])):
         raise InvalidContract("unit.base must be a full commit id")  # what an existing change is compared with
     if not isinstance(unit.get("allow_same_model", False), bool):
@@ -328,8 +322,8 @@ def deps(contract, fid):
 def new_state(tree, changed=(), base_tree=None):
     """`base_tree` is the digest of the copy of the base revision the engine placed for checks on it."""
     return {"tree": tree, "changed": sorted(changed), "base_tree": base_tree, "facts": {}, "votes": {},
-            "invalid": {}, "feedback": {}, "last_findings": {}, "reported": {}, "rounds": 0, "stop": None,
-            "notes": [], "log": [], "sessions": {}, "refused": {}}
+            "invalid": {}, "examined": {}, "feedback": {}, "refuted": {}, "reported": {}, "answers": [],
+            "rounds": 0, "stop": None, "notes": [], "log": [], "sessions": {}, "refused": {}}
 
 
 def content(contract, state, fid):
@@ -342,7 +336,18 @@ def content(contract, state, fid):
 
 
 def basis(contract, state, fid):
-    return {dep: content(contract, state, dep) for dep in deps(contract, fid)}
+    """What a fact is judged against: the content of the facts it depends on, and for a judgment also
+    the requester's answers, which every execution is given and which decide how the work is judged."""
+    found = {dep: content(contract, state, dep) for dep in deps(contract, fid)}
+    if _fact(contract, fid)["by"] == "verdict":
+        found[ANSWERS] = sha(state["answers"])
+    return found
+
+
+def _answered_since(state, fid):
+    """Whether the requester answered after the fact was judged, so a judgment of the same subject may differ."""
+    judged = (state["facts"].get(fid) or {}).get("basis") or {}
+    return ANSWERS in judged and judged[ANSWERS] != sha(state["answers"])
 
 
 def held(contract, state, fid):
@@ -422,26 +427,28 @@ def question(text):
     return value
 
 
-def unexamined(record, paths):
-    """The given paths that appear nowhere in what the agent read or ran."""
+def examined_paths(record, paths):
+    """The given paths that appear in what the agent read or ran."""
     seen = set()
     for entry in record.get("entries", []):
         haystack = " ".join([*(entry.get("paths") or []), entry.get("command") or ""])
         for path in paths:
             if path in haystack or path.rsplit("/", 1)[-1] in haystack:
                 seen.add(path)
-    return [path for path in paths if path not in seen]
-
-
-def examined(record, paths):
-    """The share of the given paths that appear in what the agent read or ran."""
-    return 1 - len(unexamined(record, paths)) / len(paths) if paths else 1.0
+    return sorted(seen)
 
 
 def _seen(value, limit=60):
     """A value from a reply as a reason names it: its JSON text, cut to `limit` characters."""
     text = json.dumps(value, ensure_ascii=False)
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _listed(items):
+    """Names as a reason lists them: at most `MAX_ITEMS`, then how many more there are."""
+    items = list(items)
+    more = f" and {len(items) - MAX_ITEMS} more" if len(items) > MAX_ITEMS else ""
+    return ", ".join(items[:MAX_ITEMS]) + more
 
 
 def _cited(citation, read, report=None):
@@ -456,75 +463,87 @@ def _cited(citation, read, report=None):
     return quote in " ".join(text.split())
 
 
-def judge_verdict(unit, fact, text, record, read, subject_paths, report=None):
-    """('invalid', reason) or ('ok'|'refuted', findings, notes). The reviewer never states approval.
+def _shape_of_reply(value):
+    """Why the object a reply ends with cannot be read as judgments and findings, or None."""
+    if set(value) != {"criteria", "findings"}:
+        keys = ", ".join(_seen(key, 40) for key in sorted(value)[:MAX_ITEMS]) or "none"
+        return (f"the object your reply ends with has the keys {keys}; the reply must end with one object "
+                "whose keys are criteria and findings, and every list and object before findings must be closed")
+    criteria, findings = value["criteria"], value["findings"]
+    if not isinstance(criteria, list):
+        return f"criteria must be a list of judgments, not {_seen(criteria)}"
+    for index, judgment in enumerate(criteria, 1):
+        if not isinstance(judgment, dict):
+            return f"judgment {index} of criteria must be an object, not {_seen(judgment)}"
+        evidence = judgment.get("evidence")
+        if evidence is not None and not isinstance(evidence, list):
+            return f"criterion {judgment.get('id')}: evidence must be a list, not {_seen(evidence)}"
+        for number, item in enumerate(evidence or [], 1):
+            if not isinstance(item, dict):
+                return f"criterion {judgment.get('id')}: evidence item {number} must be an object, not {_seen(item)}"
+    if not isinstance(findings, list):
+        return f"findings must be a list, not {_seen(findings)}"
+    for index, finding in enumerate(findings, 1):
+        if not isinstance(finding, dict):
+            return f"finding {index} must be an object, not {_seen(finding)}"
+    return None
 
-    `report` is the text under judgment when the subject is a report and not files.
+
+def judge_verdict(unit, fact, text, record, read, subject_paths, report=None, examined_before=()):
+    """('invalid', reasons) or ('ok'|'refuted', findings, notes). The reviewer never states approval.
+
+    `report` is the text under judgment when the subject is a report and not files. `examined_before`
+    are the changed paths the same execution's earlier turns showed examined on the same basis. Every
+    reason a reply cannot be counted is returned together, so one more turn can correct all of them.
     """
     value = tail_json(text)
     if value is None:
         return ("invalid", "reply must end with the criteria/findings object")
-    if set(value) != {"criteria", "findings"}:
-        keys = ", ".join(_seen(key, 40) for key in sorted(value)[:MAX_ITEMS]) or "none"
-        return ("invalid", f"the object your reply ends with has the keys {keys}; the reply must end with one object "
-                           "whose keys are criteria and findings, and every list and object before findings must be closed")
+    shape = _shape_of_reply(value)
+    if shape is not None:
+        return ("invalid", shape)
     criteria, findings = value["criteria"], value["findings"]
+    reasons = []
     wanted = [c["id"] for c in unit["criteria"]]
-    if not isinstance(criteria, list):
-        return ("invalid", f"criteria must be a list of judgments, not {_seen(criteria)}")
-    for index, judgment in enumerate(criteria, 1):
-        if not isinstance(judgment, dict):
-            return ("invalid", f"judgment {index} of criteria must be an object, not {_seen(judgment)}")
     judged = sorted(str(c.get("id")) for c in criteria)
     if judged != sorted(wanted):
-        return ("invalid", f"every criterion needs exactly one judgment: the criteria are {', '.join(sorted(wanted))}; "
-                           f"your judgments name {_seen(judged, 200)}")
-    if not isinstance(findings, list):
-        return ("invalid", f"findings must be a list, not {_seen(findings)}")
+        reasons.append(f"every criterion needs exactly one judgment: the criteria are {', '.join(sorted(wanted))}; "
+                       f"your judgments name {_seen(judged, 200)}")
     for index, finding in enumerate(findings, 1):
-        if not isinstance(finding, dict):
-            return ("invalid", f"finding {index} must be an object, not {_seen(finding)}")
         if finding.get("severity") not in SEVERITY:
-            return ("invalid", f"findings need a severity of {', '.join(SEVERITY)}: finding {index} has "
-                               f"{_seen(finding.get('severity'))}")
-    commands = {e["command"] for e in record.get("entries", []) if e["kind"] == "command" and e["command"]}
-    for finding in findings:
+            reasons.append(f"findings need a severity of {', '.join(SEVERITY)}: finding {index} has "
+                           f"{_seen(finding.get('severity'))}")
         if not _cited(finding, read, report):
-            return ("invalid", f"finding does not quote the present file or report: {finding.get('path')}:{finding.get('line')}")
-    for judgment in criteria:
-        evidence = judgment.get("evidence")
-        evidence = [] if evidence is None else evidence
-        if not isinstance(evidence, list):
-            return ("invalid", f"criterion {judgment['id']}: evidence must be a list, not {_seen(evidence)}")
-        for index, item in enumerate(evidence, 1):
-            if not isinstance(item, dict):
-                return ("invalid", f"criterion {judgment['id']}: evidence item {index} must be an object, "
-                                   f"not {_seen(item)}")
+            reasons.append(f"finding {index} does not quote the present file or report: "
+                           f"{finding.get('path')}:{finding.get('line')}")
+    commands = {e["command"] for e in record.get("entries", []) if e["kind"] == "command" and e["command"]}
     for judgment in criteria:
         evidence = judgment.get("evidence") or []
         if judgment.get("met") is True:
             if not evidence:
-                return ("invalid", f"criterion {judgment['id']} is called met without evidence")
+                reasons.append(f"criterion {judgment.get('id')} is called met without evidence")
             for item in evidence:
                 if "command" in item:  # agents report a command without its redirections; containment is enough
                     told = " ".join(str(item["command"]).split())
                     if len(told) < 3 or not any(told in " ".join(c.split()) for c in commands):
-                        return ("invalid", f"evidence for {judgment['id']}: the command {told!r} is not among the "
-                                           "commands you ran in this turn; copy the cited text exactly from one "
-                                           "of them, one line or part of it and nothing added")
+                        reasons.append(f"evidence for {judgment.get('id')}: the command {told!r} is not among the "
+                                       "commands you ran in this turn; copy the cited text exactly from one of them, "
+                                       "one line or part of it and nothing added, or run it again")
                 elif not _cited(item, read, report):
-                    return ("invalid", f"evidence for {judgment['id']}: the quote is not at "
-                                       f"{item.get('path')}:{item.get('line')} of the present file")
+                    reasons.append(f"evidence for {judgment.get('id')}: the quote is not at "
+                                   f"{item.get('path')}:{item.get('line')} of the present file")
         elif judgment.get("met") is False:
-            if not any(f.get("criterion") == judgment["id"] for f in findings):
-                return ("invalid", f"criterion {judgment['id']} is called unmet without a finding")
+            if not any(f.get("criterion") == judgment.get("id") for f in findings):
+                reasons.append(f"criterion {judgment.get('id')} is called unmet without a finding")
         else:
-            return ("invalid", f"criterion {judgment['id']}: met must be true or false, not {_seen(judgment.get('met'))}")
-    if examined(record, subject_paths) < unit.get("examine_min", 1.0):
-        missing = unexamined(record, subject_paths)
-        return ("invalid", "the record does not show the changed files being examined: "
-                           f"{len(missing)} of {len(subject_paths)} appear nowhere in what you read or ran, among them "
-                           + ", ".join(missing[:5]))
+            reasons.append(f"criterion {judgment.get('id')}: met must be true or false, not {_seen(judgment.get('met'))}")
+    seen = set(examined_before) | set(examined_paths(record, subject_paths))
+    missing = [path for path in subject_paths if path not in seen]
+    if subject_paths and 1 - len(missing) / len(subject_paths) < unit.get("examine_min", 1.0):
+        reasons.append(f"the record does not show these changed files being examined ({len(missing)} of "
+                       f"{len(subject_paths)}); read them: {_listed(missing)}")
+    if reasons:
+        return ("invalid", "; ".join(reasons))
     level = SEVERITY[fact["block_at"]]
     blocking = [f for f in findings if SEVERITY[f["severity"]] >= level]
     unmet = [j["id"] for j in criteria if j["met"] is False]
@@ -544,10 +563,6 @@ def judge_git(unit, state):
 def _record(contract, state, fid, ok, body, findings=()):
     state["facts"][fid] = {"ok": ok, "basis": basis(contract, state, fid), "content": sha(body),
                            "findings": list(findings)}
-
-
-def _key(finding):
-    return (finding.get("path"), finding.get("criterion"), " ".join(str(finding.get("description", "")).split()))
 
 
 def settle(contract, state):
@@ -577,15 +592,15 @@ def settle(contract, state):
         if not makers:
             state["stop"] = {"reason": "rejected", "fact": fid, "findings": record["findings"]}
             return
-        keys = sorted(map(str, map(_key, record["findings"])))
-        if state["last_findings"].get(fid) == keys:
-            state["stop"] = {"reason": "stagnation", "fact": fid, "findings": record["findings"]}
+        # Work is sent back only while it converges: each refutation of a fact must leave fewer findings
+        # than the fact's previous refutation. Findings are at least one, so this ends every unit.
+        before = state["refuted"].get(fid)
+        if before is not None and len(record["findings"]) >= before:
+            state["stop"] = {"reason": "stagnation", "fact": fid, "findings": record["findings"],
+                             "detail": f"{len(record['findings'])} findings after {before} the previous time"}
             return
-        state["last_findings"][fid] = keys
+        state["refuted"][fid] = len(record["findings"])
         state["rounds"] += 1
-        if state["rounds"] >= unit["limits"]["rounds"]:
-            state["stop"] = {"reason": "rounds_exhausted", "fact": fid, "findings": record["findings"]}
-            return
         for maker in makers:
             state["feedback"].setdefault(maker["id"], []).extend(
                 {"fact": fid, **finding} for finding in record["findings"])
@@ -643,10 +658,12 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
         state["stop"] = {"reason": "waiting_for_answer", "execution": execution_id, "question": asked}
         return state
     feedback = state["feedback"].pop(execution_id, None) or []
-    had_feedback = bool(feedback)
+    # A finding asks for a change unless the requester answered after its fact was judged: the answer
+    # alone may settle it, and the fact is then judged again.
+    pending = [f for f in feedback if "fact" in f and not _answered_since(state, f["fact"])]
     if ex["writes"]:
         # failed checks can be answered by running them again; any other finding asks for a change
-        needs_change = any(_fact(contract, f["fact"])["by"] != "checks" for f in feedback if "fact" in f)
+        needs_change = any(_fact(contract, f["fact"])["by"] != "checks" for f in pending)
         if needs_change and outcome["tree"] == state["tree"]:
             state["stop"] = {"reason": "stagnation", "execution": execution_id, "detail": "candidate unchanged"}
             return state
@@ -655,7 +672,7 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
         fact = _fact(contract, fid)
         if fact["by"] == "report":
             body = state["tree"] if ex["writes"] else outcome.get("text", "")
-            if had_feedback and not ex["writes"] and sha(body) == state["reported"].get(fid):
+            if pending and not ex["writes"] and sha(body) == state["reported"].get(fid):
                 state["stop"] = {"reason": "stagnation", "execution": execution_id, "detail": "report unchanged"}
                 return state
             state["reported"][fid] = sha(body)
@@ -671,7 +688,13 @@ def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER")
             key, now = f"{fid}/{execution_id}", sha(basis(contract, state, fid))
             subject = state["facts"].get(fact["subject"]) or {}
             report = subject.get("text") if "tree" not in subject else None  # files are quoted from the tree
-            result = judge_verdict(contract["unit"], fact, outcome.get("text"), record, read, state["changed"], report)
+            earlier = state["examined"].get(key) or {}
+            before = earlier.get("paths", []) if earlier.get("basis") == now else []
+            result = judge_verdict(contract["unit"], fact, outcome.get("text"), record, read, state["changed"], report,
+                                   examined_before=before)
+            # what this execution has shown examined of the present subject, for a turn that corrects this reply
+            state["examined"][key] = {"basis": now, "paths": sorted(
+                set(before) | set(examined_paths(record, state["changed"])))}
             if result[0] == "invalid":
                 count = state["invalid"].get(key, 0) + 1
                 state["invalid"][key] = count
@@ -702,13 +725,20 @@ def delivered(state, execution_id):
     return dict(entry["reports"]) if entry else {}
 
 
-def remember_session(state, execution_id, token, reports):
-    """Keep the session a turn ran in and what it has now been given; None forgets it."""
+def answers_delivered(state, execution_id):
+    """How many of the requester's answers, in order, the execution's session has been sent."""
+    entry = state["sessions"].get(execution_id)
+    return entry["answers"] if entry else 0
+
+
+def remember_session(state, execution_id, token, reports, answers):
+    """Keep the session a turn ran in and what it has now been given (reports, and the number of
+    answers); None forgets it."""
     state = json.loads(json.dumps(state))
     if token is None:
         state["sessions"].pop(execution_id, None)
     else:
-        state["sessions"][execution_id] = {"token": token, "reports": dict(reports)}
+        state["sessions"][execution_id] = {"token": token, "reports": dict(reports), "answers": answers}
     return state
 
 
@@ -732,13 +762,16 @@ def count_refused(state, execution_id, count):
 # ---- requests from outside the unit --------------------------------------------------------
 
 def answer(state, question_id, text):
-    """Give the answer to the execution that asked; None when the unit is not waiting for this question."""
+    """Record the requester's answer for every execution; None when the unit is not waiting for this question.
+
+    Each execution is given every answer, and a judgment holds only for the answers it was given.
+    """
     stop = state["stop"] or {}
     if stop.get("reason") != "waiting_for_answer" or stop["question"].get("id") != question_id:
         return None
     state = json.loads(json.dumps(state))
-    state["feedback"].setdefault(stop["execution"], []).append(
-        {"severity": "minor", "answer": question_id, "description": f"Answer to your question {question_id}: {text}"})
+    state["answers"].append({"id": question_id, "question": stop["question"]["question"], "answer": text,
+                             "asked_by": stop["execution"]})
     state["stop"] = None
     return state
 

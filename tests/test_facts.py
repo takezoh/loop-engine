@@ -22,7 +22,7 @@ def ex(eid, agent, model, reads, establishes, writes=False, independent_of=()):
 
 def unit(**extra):
     return {"goal": "make add return the sum", "criteria": [{"id": "c1", "text": "add returns the sum"}],
-            "scope": ["src", "tests"], "limits": {"rounds": 3}, **extra}
+            "scope": ["src", "tests"], **extra}
 
 
 def contract(unit_value, facts, executions):
@@ -242,7 +242,10 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual("stagnation", stop["reason"])  # the same finding came back
         changing = [review([{**MAJOR, "description": f"problem {i}"}], met=False) for i in range(6)]
         sim, stop = self.run_sim(implementation(), {**base, "implement": variants, "review-a": changing})
-        self.assertEqual("rounds_exhausted", stop["reason"])
+        # as many findings as the previous refutation: the work is not converging
+        self.assertEqual(("stagnation", "quality", "1 findings after 1 the previous time"),
+                         (stop["reason"], stop["fact"], stop["detail"]))
+        self.assertEqual(2, sim.state["log"].count("implement"))
         sim, stop = self.run_sim(implementation(), {**base, "implement": [
             lambda t: 'x\n{"question": "which rounding?", "id": "q-round"}']})
         self.assertEqual("waiting_for_answer", stop["reason"])
@@ -309,12 +312,15 @@ class DecisionTest(unittest.TestCase):
         sim, _stop = self.run_sim(investigate(), {"pursue": [lambda t: "cause: A, shown by the log"], "assess": [OK]})
         assess = sim.contract["executions"][1]
         self.assertEqual({"account": "cause: A, shown by the log"}, prompts.inputs(sim.contract, sim.state, assess))
-        templates = {"reviewer": "{instructions}|{goal}|{criteria}|{changed}|{base}|{reports}|{feedback}|{scope}|{checks}"}
+        templates = {"reviewer": "{instructions}|{goal}|{criteria}|{changed}|{base}|{reports}|{answers}|{feedback}|"
+                                 "{scope}|{checks}"}
         text = prompts.compose(templates, sim.contract, assess, [{"fact": "assessed", "path": "a.py", "line": 3,
                                                                  "description": "wrong"}],
                                check_commands=[], changed=["a.py"], base="/base", reports={"account": "cause: A"},
-                               agent_config=((".x",), ()))
-        self.assertIn("- c1: add returns the sum|- a.py|/base|### account\n\ncause: A|- [assessed] a.py:3 wrong", text)
+                               answers=[{"id": "q-1", "question": "which log?", "answer": "the trace",
+                                         "asked_by": "pursue"}], agent_config=((".x",), ()))
+        self.assertIn("- c1: add returns the sum|- a.py|/base|### account\n\ncause: A|"
+                      "### q-1\n\nQuestion: which log?\n\nAnswer: the trace|- [assessed] a.py:3 wrong", text)
 
     def test_contract_rejects_a_reviewer_on_the_producers_model(self):
         value = implementation()
@@ -363,9 +369,6 @@ class DecisionTest(unittest.TestCase):
         refused(lambda f, e: f[2].update(subject="nothing"), "fact in-scope: subject 'nothing' is not a fact of the unit")
         refused(lambda f, e: e[2].update(independent_of=["nobody"]),
                 "execution review-a: unknown execution nobody in independent_of")
-        with self.assertRaises(InvalidContract):
-            facts.check_limits({"rounds": facts.MAX_ROUNDS + 1})
-        facts.check_limits({"rounds": facts.MAX_ROUNDS})
 
     def test_checks_file_must_define_every_named_check(self):
         raw = {"checks": {"unit": {"argv": ["python", "-m", "unittest"], "test_paths": ["tests"]}}, "ignore": ["__pycache__"]}
@@ -386,8 +389,10 @@ class DecisionTest(unittest.TestCase):
         self.assertIsNone(facts.answer(sim.state, "q-other", "x"))
         self.assertIsNone(facts.retry(sim.state))
         sim.state = facts.answer(sim.state, "q-round", "half to even")
+        self.assertEqual([{"id": "q-round", "question": "which rounding?", "answer": "half to even",
+                           "asked_by": "implement"}], sim.state["answers"])
         self.assertEqual("done", sim.run()["reason"])
-        self.assertIn("half to even", sim.feedback_seen["implement"][1][0]["description"])
+        self.assertEqual([], sim.feedback_seen["implement"][1])  # every execution is given the answers instead
 
         def lost(turn):
             turn.completed = False
@@ -398,6 +403,110 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual({"candidate", "checks", "in-scope", "quality", "authority"},
                          {k for k, v in facts.summary(sim.contract, sim.state)["facts"].items() if v["holds"]})
         self.assertEqual("cancelled", decide(sim.contract, facts.cancel(sim.state))[1]["reason"])
+
+
+class ConvergenceTest(unittest.TestCase):
+    """Work goes back while each refutation of a fact leaves fewer findings than the one before."""
+
+    def run_sim(self, contract, scripts):
+        sim = Sim(contract, scripts)
+        return sim, sim.run()
+
+    def test_a_shrinking_list_of_findings_keeps_going_until_none_is_left(self):
+        three = [{**MAJOR, "description": f"problem {i}"} for i in range(3)]
+        variants = [implement(f"def add(a, b):\n    return a + b + {i}\n") for i in range(4)]
+        sim, stop = self.run_sim(implementation(("review-a",)), {
+            "survey": [survey], "implement": variants,
+            "review-a": [review(three, met=False), review(three[:2], met=False), review(three[:1], met=False), OK]})
+        self.assertEqual(("done", 3), (stop["reason"], sim.state["rounds"]))
+        self.assertEqual({"quality": 1}, sim.state["refuted"])
+
+    def test_more_findings_than_the_previous_refutation_stop_the_unit(self):
+        variants = [implement(f"def add(a, b):\n    return a + b + {i}\n") for i in range(4)]
+        two = [{**MAJOR, "description": f"problem {i}"} for i in range(2)]
+        sim, stop = self.run_sim(implementation(("review-a",)), {
+            "survey": [survey], "implement": variants,
+            "review-a": [review(two[:1], met=False), review(two, met=False)]})
+        self.assertEqual(("stagnation", "2 findings after 1 the previous time"), (stop["reason"], stop["detail"]))
+        self.assertEqual(["problem 0", "problem 1"], [f["description"] for f in stop["findings"]])
+
+    def test_each_fact_is_compared_with_its_own_previous_refutation(self):
+        # checks fail once, then the reviewer refutes once: neither repeats, so the unit goes on to done
+        variants = [implement(unit_exit=1), implement("def add(a, b):\n    return b + a\n"), implement()]
+        sim, stop = self.run_sim(implementation(("review-a",)), {
+            "survey": [survey], "implement": variants, "review-a": [review([MAJOR], met=False), OK]})
+        self.assertEqual(("done", {"checks": 1, "quality": 1}), (stop["reason"], sim.state["refuted"]))
+
+
+class AnswerTest(unittest.TestCase):
+    """The requester's answers reach every execution, and a judgment holds only for the answers it was given."""
+
+    def test_an_answer_voids_a_judgment_made_before_it_and_the_same_candidate_is_judged_again(self):
+        asking = lambda t: 'the reviewer wants a choice\n{"question": "may the plan defer the choice?", "id": "q-defer"}'
+        sim = Sim(implementation(("review-a",)), {
+            "survey": [survey], "implement": [implement(), asking, implement()],
+            "review-a": [review([MAJOR], met=False), OK]})
+        self.assertEqual("waiting_for_answer", sim.run()["reason"])
+        self.assertFalse(held(sim.contract, sim.state, "quality"))
+        refuted = sim.state["facts"]["quality"]["basis"]
+        sim.state = facts.answer(sim.state, "q-defer", "yes, defer it")
+        self.assertNotEqual(refuted, facts.basis(sim.contract, sim.state, "quality"))
+        stop = sim.run()
+        # the producer returned the same candidate after the answer: not stagnation, the reviewer judged it again
+        self.assertEqual("done", stop["reason"])
+        self.assertEqual(["survey", "implement", "review-a", "implement", "implement", "review-a"], sim.state["log"])
+
+    def test_without_an_answer_the_same_candidate_after_findings_is_stagnation(self):
+        sim = Sim(implementation(("review-a",)), {"survey": [survey], "implement": [implement()],
+                                                  "review-a": [review([MAJOR], met=False)]})
+        self.assertEqual(("stagnation", "candidate unchanged"), (lambda s: (s["reason"], s["detail"]))(sim.run()))
+
+    def test_reports_and_files_judged_before_an_answer_still_hold(self):
+        sim = Sim(implementation(("review-a",)), {"survey": [survey], "implement": [implement()], "review-a": [OK]})
+        self.assertEqual("done", sim.run()["reason"])
+        state = json.loads(json.dumps(sim.state))
+        state["answers"].append({"id": "q-x", "question": "?", "answer": "!", "asked_by": "implement"})
+        self.assertEqual((True, True, True, False), tuple(held(sim.contract, state, fid) for fid in
+                                                          ("authority", "candidate", "checks", "quality")))
+
+
+# Names that do not contain one another: a record shows a file examined when its name appears in it.
+ADDER = implement(path="src/adder.py")
+
+
+class CorrectedReplyTest(unittest.TestCase):
+    """A reply that was not counted is corrected in the next turn without examining everything again."""
+
+    @staticmethod
+    def reading(*paths):
+        def run(turn):
+            turn.read(*paths)
+            return json.dumps({"criteria": [{"id": "c1", "met": True, "evidence": [cite(turn.sim)]}], "findings": []})
+        return run
+
+    def test_files_examined_for_a_reply_not_counted_still_count_on_the_same_subject(self):
+        sim = Sim(implementation(("review-a",)), {"survey": [survey], "implement": [ADDER],
+                                                  "review-a": [self.reading("src/adder.py"),
+                                                               self.reading("tests/test_calc.py")]})
+        self.assertEqual("done", sim.run()["reason"])
+        self.assertEqual(["survey", "implement", "review-a", "review-a"], sim.state["log"])
+        self.assertIn("read them: tests/test_calc.py", sim.feedback_seen["review-a"][1][0]["description"])
+
+    def test_files_examined_before_the_subject_changed_do_not_count(self):
+        sim = Sim(implementation(("review-a",)), {"survey": [survey], "implement": [ADDER],
+                                                  "review-a": [self.reading("src/adder.py")]})
+        with self.assertRaises(AssertionError):
+            sim.run(max_turns=3)  # survey, implement, and a reply not counted
+        self.assertEqual(["src/adder.py"], sim.state["examined"]["quality/review-a"]["paths"])
+        state = json.loads(json.dumps(sim.state))
+        state["tree"] = "changed-since"  # the candidate the reply was about is no longer the present one
+        turn = Turn(sim, [])
+        turn.read("tests/test_calc.py")
+        text = json.dumps({"criteria": [{"id": "c1", "met": True, "evidence": [cite(sim)]}], "findings": []})
+        state = apply_turn(sim.contract, state, "review-a", {
+            "completed": True, "text": text, "record": {"entries": turn.entries}, "tree": state["tree"],
+            "changed": sim.changed()}, read=sim.files.get)
+        self.assertIn("read them: src/adder.py", state["feedback"]["review-a"][0]["description"])
 
 
 class PlatformFactsTest(unittest.TestCase):
@@ -502,12 +611,12 @@ class VerdictReasonTest(unittest.TestCase):
                          '["c1", "c3"]', self.reason(reply([{"id": "c1", **met}, {"id": "c3", **met}])))
         self.assertEqual('findings must be a list, not {"severity": "major"}', self.reason(
             json.dumps({"criteria": [{"id": "c1", **met}, {"id": "c2", **met}], "findings": {"severity": "major"}})))
-        self.assertEqual('findings need a severity of minor, major, blocker: finding 1 has "high"', self.reason(
+        self.assertEqual('findings need a severity of minor, major, blocker: finding 1 has "high"; finding 1 does not '
+                         'quote the present file or report: None:None', self.reason(
             reply([{"id": "c1", **met}, {"id": "c2", **met}], [{"severity": "high", "quote": "line one is here"}])))
         self.assertEqual('criterion c2: met must be true or false, not "partly"',
                          self.reason(reply([{"id": "c1", **met}, {"id": "c2", "met": "partly"}])))
-        self.assertEqual("the record does not show the changed files being examined: 1 of 2 appear nowhere in what "
-                         "you read or ran, among them src/b.py",
+        self.assertEqual("the record does not show these changed files being examined (1 of 2); read them: src/b.py",
                          self.reason(reply([{"id": "c1", **met}, {"id": "c2", **met}]),
                                      {"entries": [{"kind": "read", "paths": ["src/a.py"], "command": None}]},
                                      ["src/a.py", "src/b.py"]))
@@ -537,11 +646,12 @@ class VerdictReasonTest(unittest.TestCase):
         accepted = facts.judge_verdict(self.UNIT, self.FACT, reply("python3 -m unittest tests.test_stats -v"),
                                        record, lambda path: "", [])
         self.assertEqual("ok", accepted[0])
-        self.assertEqual(
-            "evidence for c1: the command 'python3 -m unittest tests.test_stats -v (run against original stats.py)' "
-            "is not among the commands you ran in this turn; copy the cited text exactly from one of them, one line "
-            "or part of it and nothing added",
-            self.reason(reply("python3 -m unittest tests.test_stats -v (run against original stats.py)"), record))
+        reasons = self.reason(reply("python3 -m unittest tests.test_stats -v (run against original stats.py)"), record)
+        for criterion in ("c1", "c2"):  # every reason in one answer
+            self.assertIn(
+                f"evidence for {criterion}: the command 'python3 -m unittest tests.test_stats -v (run against original "
+                "stats.py)' is not among the commands you ran in this turn; copy the cited text exactly from one of "
+                "them, one line or part of it and nothing added, or run it again", reasons)
 
 
 if __name__ == "__main__":

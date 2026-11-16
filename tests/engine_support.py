@@ -24,10 +24,10 @@ from loop_engine.service import Engine  # noqa: E402
 RUNNER = os.path.join(SRC, "loop_engine", "check_runner.py")
 
 
-def published_runner(root):
-    """Where an engine over the state home `root` publishes the check program agents run."""
+def published_runner(published):
+    """Where an engine publishing into `published` places the check program agents run."""
     with open(RUNNER, "rb") as handle:
-        return store.check_program_path(root, hashlib.sha256(handle.read()).hexdigest())
+        return store.check_program_path(published, hashlib.sha256(handle.read()).hexdigest())
 
 
 def git(cwd, *args):
@@ -127,8 +127,8 @@ class ScriptedAgents:
     continued, so no turn runs.
     """
 
-    def __init__(self, root, script, durable=None):
-        self.root, self.script, self.requests, self.closed = root, script, [], False
+    def __init__(self, root, published, script, durable=None):
+        self.root, self.published, self.script, self.requests, self.closed = root, published, script, [], False
         self.nth = {}  # how many turns each execution has had, the present one included
         self.durable = durable if durable is not None else set()
         self.lost, self.ended, self.opened = set(), [], []
@@ -141,9 +141,9 @@ class ScriptedAgents:
         if request.session is not None and (request.session not in self.durable or request.session in self.lost):
             return TurnOutcome(False, None, None, "session-not-continuable: scripted", session_lost=True)
         self.nth[request.role] = self.nth.get(request.role, 0) + 1
-        unit = store.UnitStore(self.root, request.unit_id)
-        runner = CURRENT.quote([sys.executable, "-I", published_runner(self.root), unit.path("checks.json")])
-        CHECKS_FILES[request.cwd] = unit.path("checks.json")
+        unit = store.UnitStore(self.root, self.published, request.unit_id)
+        runner = CURRENT.quote([sys.executable, "-I", published_runner(self.published), unit.published("checks.json")])
+        CHECKS_FILES[request.cwd] = unit.published("checks.json")
         commands = {}
         for name in facts.check_names(unit.contract())[0]:
             commands[name] = facts.expected_command(runner, name, "candidate")
@@ -191,11 +191,12 @@ class EngineCase(unittest.TestCase):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "base")
         self.root = store.home_root({"DEV_SKILLS_HOME": self.home})
+        self.published = store.published_root({"DEV_SKILLS_HOME": self.home})
 
     def seed(self):
         """Hook for tests that need more files in the base commit."""
 
-    def contract(self, unit_id="u1", rounds=3, checks=True, **changes_):
+    def contract(self, unit_id="u1", checks=True, **changes_):
         """A producer that writes and a reviewer that judges; `checks=False` leaves the check fact out."""
         def execution(eid, agent, model, effort, instructions, reads, establishes, writes):
             return {"id": eid, "agent": agent, "model": model, "effort": effort, "instructions": instructions,
@@ -205,7 +206,7 @@ class EngineCase(unittest.TestCase):
         value = {
             "unit_id": unit_id, "repository": self.repo,
             "unit": {"goal": "make out.txt", "criteria": [{"id": "c1", "text": "out.txt is made"}],
-                     "scope": ["out.txt"], "limits": {"rounds": rounds}},
+                     "scope": ["out.txt"]},
             "facts": [
                 {"id": "candidate", "required": True, "by": "report"},
                 *([{"id": "checks", "required": True, "by": "checks", "subject": "candidate",
@@ -231,8 +232,8 @@ class EngineCase(unittest.TestCase):
         return contract
 
     def engine(self, script, durable=None, **options):
-        self.agents = ScriptedAgents(self.root, script, durable)
-        engine = Engine(self.root, git=Git(os.environ), agents=self.agents,
+        self.agents = ScriptedAgents(self.root, self.published, script, durable)
+        engine = Engine(self.root, published=self.published, git=Git(os.environ), agents=self.agents,
                         templates=composition.load_templates(), runner=(sys.executable, RUNNER),
                         worktrees=os.path.join(self.home, "worktrees"), platform=CURRENT,
                         clock=lambda: "2026-01-01T00:00:00+00:00", **options)
@@ -243,7 +244,7 @@ class EngineCase(unittest.TestCase):
         thread = engine._threads[unit_id]
         thread.join(timeout)
         self.assertFalse(thread.is_alive(), "unit did not stop")
-        return store.UnitStore(self.root, unit_id).status()
+        return self.unit(unit_id).status()
 
     def start(self, script, **contract_changes):
         engine = self.engine(script)
@@ -252,8 +253,11 @@ class EngineCase(unittest.TestCase):
         self.assertTrue(response["ok"], response)
         return engine, self.run_to_stop(engine, contract["unit_id"])
 
+    def unit(self, unit_id="u1"):
+        return store.UnitStore(self.root, self.published, unit_id)
+
     def events(self, unit_id="u1"):
-        return store.UnitStore(self.root, unit_id).events()
+        return self.unit(unit_id).events()
 
     def result(self, name, unit_id="u1"):
         with open(os.path.join(store.unit_dir(self.root, unit_id), "result", name), "rb") as handle:
@@ -262,7 +266,7 @@ class EngineCase(unittest.TestCase):
     def stop_details(self, unit_id="u1"):
         """Why the unit stopped, as stop.json's stop and the status each name it."""
         return (json.loads(self.result("stop.json", unit_id))["stop"].get("detail"),
-                store.UnitStore(self.root, unit_id).status().get("detail"))
+                self.unit(unit_id).status().get("detail"))
 
 
 def run_command(command, cwd):

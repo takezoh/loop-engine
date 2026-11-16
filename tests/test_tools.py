@@ -27,24 +27,24 @@ class UnitReportTest(EngineCase):
                 return changes(request, "still wrong") if self.agents.nth["reviewer"] == 1 else approve(request)
             return changes(request, f"problem {self.agents.nth['reviewer']}")
         engine, _status = self.start(script)
-        engine.handle({"request": "start", "contract": self.contract(unit_id="u2", rounds=1)})
+        engine.handle({"request": "start", "contract": self.contract(unit_id="u2")})
         self.run_to_stop(engine, "u2")
         units = [unit_report.load_unit(self.root, name) for name in ("u1", "u2")]
         self.assertIsNone(unit_report.load_unit(self.root, "absent"))
-        done, exhausted = units
+        done, stagnant = units
         self.assertEqual(("done", 1, {"producer": 2, "reviewer": 2}),
                          (done["stop_reason"], done["rounds"], done["turns_by_execution"]))
         self.assertEqual({"candidate": True, "checks": True, "quality": True}, done["facts"])
         self.assertEqual({"edit": 1, "command": 1}, done["turns"][0]["actions"])
         self.assertEqual({"agent": "beta", "model": None, "effort": "high"}, done["agents"]["reviewer"])
-        self.assertEqual("rounds_exhausted", exhausted["stop_reason"])
-        self.assertEqual(["c1"], [finding["criterion"] for finding in exhausted["findings"]])
+        self.assertEqual("stagnation", stagnant["stop_reason"])
+        self.assertEqual(["c1"], [finding["criterion"] for finding in stagnant["findings"]])
         summary = unit_report.summarize(units)
-        self.assertEqual(({"done": 1, "rounds_exhausted": 1}, 6, 2),
+        self.assertEqual(({"done": 1, "stagnation": 1}, 8, 4),
                          (summary["stops"], summary["turns_total"], summary["turns_repeated"]))
         self.assertEqual(0, summary["results_not_counted"])
         self.assertEqual(["new", "new", "continued", "continued"], [turn["session"] for turn in done["turns"]])
-        self.assertEqual(2, summary["turns_continued"])  # u1's second producer and reviewer turns
+        self.assertEqual(4, summary["turns_continued"])  # each unit's second producer and reviewer turns
 
         def vague(request, commands, cancelled):
             from loop_engine.agents import TurnOutcome

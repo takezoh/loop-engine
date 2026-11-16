@@ -64,10 +64,12 @@ def changed_reports(reports, sent):
     return {fid: text for fid, text in reports.items() if sent.get(fid) != now[fid]}
 
 
-def follow_up(templates, contract, execution, feedback, *, check_commands, changed, reports, sent, agent_config):
+def follow_up(templates, contract, execution, feedback, *, check_commands, changed, reports, sent, answers,
+              answers_sent, agent_config):
     """The message that continues an execution's session: feedback, what changed, and how to answer.
 
     `sent` is what the session was already given (`digests`); only reports it has not seen go in.
+    `answers_sent` is how many of the requester's `answers` it was given; only the later ones go in.
     """
     return templates[kind(contract, execution) + "-follow-up"].format(
         agent_config=_agent_config(agent_config),
@@ -75,6 +77,7 @@ def follow_up(templates, contract, execution, feedback, *, check_commands, chang
         checks="\n".join(check_commands) if check_commands else "(no checks are configured for this turn)",
         changed=_bullets(changed),
         reports=_reports(changed_reports(reports, sent)),
+        answers=_answers(answers[answers_sent:]),
     )
 
 
@@ -82,7 +85,13 @@ def _reports(reports):
     return "\n\n".join(f"### {fid}\n\n{text.strip()}" for fid, text in reports.items()) or "(none)"
 
 
-def compose(templates, contract, execution, feedback, *, check_commands, changed, base, reports, agent_config):
+def _answers(answers):
+    return "\n\n".join(f"### {item['id']}\n\nQuestion: {item['question'].strip()}\n\nAnswer: {item['answer'].strip()}"
+                       for item in answers) or "(none)"
+
+
+def compose(templates, contract, execution, feedback, *, check_commands, changed, base, reports, answers,
+            agent_config):
     """`templates` maps writer | reviewer | reporter -> text with named fields."""
     unit = contract["unit"]
     return templates[kind(contract, execution)].format(
@@ -96,4 +105,5 @@ def compose(templates, contract, execution, feedback, *, check_commands, changed
         changed=_bullets(changed),
         base=base,
         reports=_reports(reports),
+        answers=_answers(answers),
     )

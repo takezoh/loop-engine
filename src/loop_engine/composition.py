@@ -16,7 +16,7 @@ from .agents import TurnOutcome
 from .git import Git
 from .platform_facts import CURRENT
 from .service import Engine
-from .store import home_root, worktrees_root
+from .store import home_root, published_root, worktrees_root
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CANCEL_GRACE_SECONDS = 30.0
@@ -242,7 +242,7 @@ def build(environ):
     own_code = (os.path.dirname(os.path.dirname(HERE)),
                 os.path.join(installation, "packages", "cross-host-transport"))
     engine = Engine(
-        root, git=Git(environ), agents=agents, templates=load_templates(),
+        root, published=published_root(environ), git=Git(environ), agents=agents, templates=load_templates(),
         runner=(sys.executable, os.path.join(HERE, "check_runner.py")), worktrees=worktrees, platform=CURRENT,
         own_code=own_code,
     )

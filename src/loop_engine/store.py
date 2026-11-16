@@ -1,6 +1,11 @@
-"""The engine's state home: every file under it is written by the engine process only.
+"""The engine's records and what it publishes for agents; every file under both is written by the
+engine process only.
 
-Entries (CLI, MCP) read status and results from here and never write. A unit's
+The records are contracts, states, events, turn records, results, requests and the agents' sessions.
+Entries (CLI, MCP) read status and results from them and never write; agents must not read them,
+because a role judged independently of another must not see that role's account or record. They
+live apart from what agents read (the check program, each unit's check configuration and its copy of
+the base revision), which stays in the engine's directory of the dev-skills state home. A unit's
 events are the source of truth; status and results are derived views.
 """
 import hashlib
@@ -14,12 +19,25 @@ from .facts import ID_RE
 from .platform_facts import CURRENT
 
 ROOT_NAME = "loop-engine"
+RECORDS_NAME = "records"
+
+
+def _home(environ):
+    return os.path.abspath(environ.get("DEV_SKILLS_HOME") or os.path.join(os.path.expanduser("~"), ".dev-skills"))
 
 
 def home_root(environ):
-    """The engine root under the dev-skills state home."""
-    home = environ.get("DEV_SKILLS_HOME") or os.path.join(os.path.expanduser("~"), ".dev-skills")
-    return os.path.join(os.path.abspath(home), ROOT_NAME)
+    """The engine's records: `<home>/records/loop-engine`. Agents must not read it.
+
+    Neither this path nor the published one begins with the other, so a sandbox rule that grants
+    agents `<home>/loop-engine` or denies them `<home>/records` cannot reach the other by a prefix.
+    """
+    return os.path.join(_home(environ), RECORDS_NAME, ROOT_NAME)
+
+
+def published_root(environ):
+    """What the engine publishes for agents to read: `<home>/loop-engine`."""
+    return os.path.join(_home(environ), ROOT_NAME)
 
 
 def worktrees_root(environ):
@@ -78,15 +96,21 @@ def list_units(root):
 
 
 class UnitStore:
-    """One unit's directory. A lock serializes the engine's own threads."""
+    """One unit's records, and what the engine publishes for the unit's agents to read. A lock serializes
+    the engine's own threads."""
 
-    def __init__(self, root, unit_id):
+    def __init__(self, root, published, unit_id):
         self.root, self.unit_id = root, unit_id
         self.dir = unit_dir(root, unit_id)
+        self.published_dir = unit_dir(published, unit_id)
         self._lock = Lock()
 
     def path(self, *names):
         return os.path.join(self.dir, *names)
+
+    def published(self, *names):
+        """A path under the unit's published directory: what its agents read."""
+        return os.path.join(self.published_dir, *names)
 
     def exists(self):
         return os.path.isfile(self.path("contract.json"))
@@ -94,6 +118,7 @@ class UnitStore:
     def create(self, contract, admission):
         """Record an accepted unit: the caller's contract and what the engine fixed on accepting it."""
         os.makedirs(self.path("result", "turns"), mode=0o755, exist_ok=True)
+        os.makedirs(self.published_dir, mode=0o755, exist_ok=True)
         _write_atomic(self.path("admission.json"), _dump(admission))
         _write_atomic(self.path("contract.json"), _dump(contract))
 
@@ -140,12 +165,16 @@ class UnitStore:
         with self._lock:
             _write_atomic(self.path(name), _dump(value))
 
+    def publish_json(self, name, value):
+        with self._lock:
+            _write_atomic(self.published(name), _dump(value))
+
     def write_result(self, name, data):
         with self._lock:
             _write_atomic(self.path("result", name), data if isinstance(data, bytes) else _dump(data))
 
 
-# -- the check program agents run: a copy under the state home, named by its content --
+# -- the check program agents run: a copy in the published directory, named by its content --
 
 CHECK_PROGRAM = "check_runner.py"
 
@@ -154,8 +183,8 @@ class CheckProgramChanged(RuntimeError):
     """The published check program is not the content its directory names: no command names it."""
 
 
-def check_program_path(root, digest):
-    return os.path.join(root, "check", digest, CHECK_PROGRAM)
+def check_program_path(published, digest):
+    return os.path.join(published, "check", digest, CHECK_PROGRAM)
 
 
 def _content_digest(path):
@@ -184,10 +213,10 @@ def verified_check_program(path):
     return path
 
 
-def publish_check_program(root, source):
-    """Copy the check program to `<root>/check/<sha256>/check_runner.py` and return that path.
+def publish_check_program(published, source):
+    """Copy the check program to `<published>/check/<sha256>/check_runner.py` and return that path.
 
-    Agents run the copy: their sandbox can read the state home, not the engine's code location.
+    Agents run the copy: their sandbox can read the published directory, not the engine's code location.
     Publishing is idempotent and safe against a concurrent engine: the content is written under a
     temporary name in the same directory and given the final name in a way that never replaces a file
     already there (`Platform.place_new`). A file already there must hold the same content; it is never
@@ -195,7 +224,7 @@ def publish_check_program(root, source):
     """
     with open(source, "rb") as handle:
         data = handle.read()
-    path = check_program_path(root, hashlib.sha256(data).hexdigest())
+    path = check_program_path(published, hashlib.sha256(data).hexdigest())
     directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o755, exist_ok=True)
     if not os.path.lexists(path):
