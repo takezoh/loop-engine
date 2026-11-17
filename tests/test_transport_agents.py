@@ -14,15 +14,12 @@ from unittest import mock
 
 from engine_support import RUNNER, SRC, EngineCase, ScriptedAgents, approve, produced
 
-TRANSPORT = os.path.join(os.path.dirname(os.path.dirname(SRC)), "packages", "cross-host-transport", "src")
-if TRANSPORT not in sys.path:
-    sys.path.insert(0, TRANSPORT)
-
-from cross_host_transport.subsession import provider_catalog, provider_drivers  # noqa: E402
-from cross_host_transport.subsession.provider_port import DriverTraits, SessionHandle, TurnEnd  # noqa: E402
-from cross_host_transport.subsession.turn_result import TurnCollector, TurnProgress  # noqa: E402
+from provider_transport import provider_catalog, provider_drivers  # noqa: E402
+from provider_transport.provider_port import DriverTraits, SessionHandle, TurnEnd  # noqa: E402
+from provider_transport.turn_result import TurnCollector, TurnProgress  # noqa: E402
 
 from loop_engine import composition  # noqa: E402
+from transport.test_protocol_drivers import ProtocolDriverContract  # noqa: E402
 from loop_engine.agents import TurnOutcome, TurnRequest  # noqa: E402
 from loop_engine.git import Git  # noqa: E402
 from loop_engine.platform_facts import CURRENT  # noqa: E402
@@ -127,6 +124,13 @@ class AgentTurnsContract:
     def close_agents(self, agents):
         agents.close()
 
+    def open_host(self):
+        """The implementation under contract, for the port registry."""
+        return self.open_agents()
+
+    def close_host(self, agents):
+        self.close_agents(agents)
+
     def hold_next_turn(self):
         """Keep the next turn running until it is cancelled."""
         raise NotImplementedError
@@ -181,6 +185,22 @@ class AgentTurnsContract:
         self.close_agents(agents)
 
 
+class ScriptedDriverContractTests(ProtocolDriverContract, unittest.TestCase):
+    """The scripted driver keeps the contract of the drivers it stands in for."""
+
+    def setUp(self):
+        self.driver = Driver()
+
+    def make_driver(self):
+        return self.driver
+
+    def hold_next_turn(self):
+        self.driver.mode = "hold"
+
+    def fail_next_bind(self):
+        self.driver.mode = "bind-error"
+
+
 class ScriptedAgentsContractTest(AgentTurnsContract, unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -231,8 +251,11 @@ class TransportAgentsTest(AgentTurnsContract, unittest.TestCase):
         self.driver = Driver()
         self.requested = []
 
-        def driver_for(spec, *, origin, state_dir):
+        self.excluded = []
+
+        def driver_for(spec, *, origin, state_dir, exclude=None):
             self.requested.append((spec, str(origin)))
+            self.excluded.append(exclude)
             return self.driver
         for target, value in ((provider_drivers, "driver_for"), ):
             patcher = mock.patch.object(target, value, driver_for)
@@ -320,6 +343,16 @@ class TransportAgentsTest(AgentTurnsContract, unittest.TestCase):
         self.assertEqual(1, len(self.requested))
         self.assertEqual(2, len(self.driver.turns))
         self.assertEqual(1, len(self.driver.hosts))
+
+    def test_the_skills_a_contract_excludes_reach_the_driver_and_each_exclusion_has_its_own_sessions(self):
+        from dataclasses import replace
+        skills = {"plugin": "p", "names": ["a", "b"]}
+        self.agents.run(self.request(), threading.Event())
+        self.agents.run(replace(self.request(), excluded_skills=skills), threading.Event())
+        self.agents.run(replace(self.request(), excluded_skills=dict(skills)), threading.Event())
+        self.assertEqual([None, skills], self.excluded)
+        self.assertEqual([(), ("-c", 'skills.config=[{name="p:a",enabled=false},{name="p:b",enabled=false}]')],
+                         [spec.isolation_argv for spec, _origin in self.requested])
 
     def test_a_turn_that_cannot_start_is_incomplete_not_an_error(self):
         self.driver.mode = "bind-error"
@@ -453,7 +486,7 @@ class WorktreeAfterReleaseTest(EngineCase):
             outcome = approve(request) if reviewer(turn) else produced(request, {})
             return outcome.text, outcome.actions
         driver.respond = respond
-        patcher = mock.patch.object(provider_drivers, "driver_for", lambda spec, *, origin, state_dir: driver)
+        patcher = mock.patch.object(provider_drivers, "driver_for", lambda spec, *, origin, state_dir, exclude=None: driver)
         patcher.start()
         self.addCleanup(patcher.stop)
         worktrees = os.path.join(self.home, "worktrees")

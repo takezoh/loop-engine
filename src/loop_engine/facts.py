@@ -26,7 +26,9 @@ MAX_TEXT_BYTES = 200_000
 MAX_ITEMS = 32
 CONTRACT_KEYS = frozenset({"unit_id", "repository", "unit", "facts", "executions"})
 UNIT_KEYS = frozenset({"goal", "criteria", "scope"})
-UNIT_OPTIONAL = frozenset({"allow_same_model", "examine_min", "base"})
+UNIT_OPTIONAL = frozenset({"allow_same_model", "examine_min", "base", "excluded_skills"})
+# A plugin or a skill an agent is told not to load. The names reach an agent command line.
+SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 # The key under which a judgment's basis holds the requester's answers; no fact id has this form.
 ANSWERS = "@answers"
@@ -222,6 +224,14 @@ def _shape(contract, path_style):
         raise InvalidContract("unit.base must be a full commit id")  # what an existing change is compared with
     if not isinstance(unit.get("allow_same_model", False), bool):
         raise InvalidContract("unit.allow_same_model must be a boolean")
+    excluded = unit.get("excluded_skills")
+    if "excluded_skills" in unit and (
+            not isinstance(excluded, dict) or set(excluded) != {"plugin", "names"}
+            or not isinstance(excluded["plugin"], str) or not SKILL_NAME_RE.fullmatch(excluded["plugin"])
+            or not isinstance(excluded["names"], list) or not 0 < len(excluded["names"]) <= MAX_ITEMS
+            or any(not isinstance(name, str) or not SKILL_NAME_RE.fullmatch(name) for name in excluded["names"])
+            or len(set(excluded["names"])) != len(excluded["names"])):
+        raise InvalidContract("unit.excluded_skills must be {plugin, names} of admitted names")
     share = unit.get("examine_min", 1.0)
     if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 <= share <= 1:
         raise InvalidContract("unit.examine_min must be 0..1")
@@ -640,6 +650,33 @@ def decide(contract, state):
     waiting = [fid for fid in required if not held(contract, state, fid)]
     state["stop"] = {"reason": "stuck", "facts": waiting}
     return state, {"do": "stop", **state["stop"]}
+
+
+def turn_completion(contract, execution_id, turn, *, wrote):
+    """(completed, detail) of a turn the agent finished and whose worktree was read in full.
+
+    `turn` is what the agent port returned: completed, detail, text, actions. `wrote` tells whether
+    what git records of the worktree differs from before the turn. A turn that establishes a checks or
+    verdict fact proves nothing without a record of what the agent did, unless it ends with a
+    question; a turn of an execution that must not write proves nothing once it changed the worktree.
+    """
+    ex = next(e for e in contract["executions"] if e["id"] == execution_id)
+    by = {fact["id"]: fact["by"] for fact in contract["facts"]}
+    if not turn.get("completed"):
+        return False, turn.get("detail")
+    judged = any(by[fid] in ("checks", "verdict") for fid in ex["establishes"])
+    if judged and not isinstance(turn.get("actions"), dict) and question(turn.get("text")) is None:
+        return False, "no-execution-record"
+    if wrote and not ex["writes"]:
+        return False, "a-turn-that-must-not-write-changed-the-worktree"
+    return True, turn.get("detail")
+
+
+def unsafe_agent_config(state, execution_id):
+    """Stop the unit: the worktree's agent configuration changed, or something was put above the worktree."""
+    state = json.loads(json.dumps(state))
+    state["stop"] = {"reason": "unsafe_agent_config", "execution": execution_id}
+    return state
 
 
 def apply_turn(contract, state, execution_id, outcome, *, read, runner="RUNNER"):

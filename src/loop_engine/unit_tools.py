@@ -9,6 +9,7 @@ offers its own start tool and hands the contract to `UnitTools.start`.
 import os
 import re
 from pathlib import Path
+from typing import Protocol
 
 from . import store
 
@@ -50,6 +51,29 @@ INSTRUCTIONS = ("Use unit_start to run a unit from its contract, unit_wait or un
 
 class Refused(ValueError):
     """A request this entry or the engine does not accept."""
+
+
+class EngineClient(Protocol):
+    """What the unit tools need from the engine's entry client. `loop_engine.client` reaches a real
+    engine; `loop_engine.testing.FakeEngineClient` stands in for it in a caller's tests."""
+
+    def request(self, root, payload, *, environ):
+        """Send one request and return the engine's response: `{"ok": True, "result": ...}` or
+        `{"ok": False, "error": "<why>"}`."""
+        ...
+
+    def status(self, root, unit_id):
+        """The unit's recorded status, or None for a unit nobody started."""
+        ...
+
+    def wait(self, root, unit_id, *, after_revision, timeout, environ):
+        """The status once the unit stopped or moved past `after_revision`, else its present status."""
+        ...
+
+    def result(self, root, unit_id, name):
+        """The bytes of `stop.json` or `patch.diff`, or None while there is none; `ValueError` for any
+        other name."""
+        ...
 
 
 def misfit(declared, value, where="arguments"):

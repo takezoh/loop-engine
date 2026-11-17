@@ -35,6 +35,7 @@ The engine has no preferred caller. Anything that writes a contract and reads th
 | Let rework continue only while it helps | A refuted fact goes back to the execution that made its subject only while each refutation leaves fewer findings than the one before. There is no round limit to tune |
 | Decide a question an agent cannot | A turn can end with a question. The unit waits, and the answer reaches every execution; reviews judged before it are judged again |
 | Keep one session's units apart from another's | The unit tools serve the session's directory: a start is accepted only for a repository inside it, and a unit another connection started does not exist for it |
+| Keep an agent inside a unit from loading chosen skills | The contract can name skills of one plugin to exclude. Everything else of the user's settings, plugins and skills loads as usual |
 | Leave and come back | The engine process is separate from the entry. It continues from `state.json` after it restarts, and each execution continues its own agent session |
 | Read what happened | Each unit has a status, a stop record with facts and findings, the patch against the base revision, and the reply and execution record of every turn |
 

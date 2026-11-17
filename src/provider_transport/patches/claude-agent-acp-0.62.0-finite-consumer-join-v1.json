@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "package": "@agentclientprotocol/claude-agent-acp",
+  "version": "0.62.0",
+  "target": "dist/acp-agent.js",
+  "replacements": [
+    {
+      "before": "        try {\n            while (true) {\n                pendingNext ??= session.query",
+      "after": "        try {\n            while (true) {\n                if (session.closing) {\n                    void pendingNext?.catch(() => { });\n                    return;\n                }\n                pendingNext ??= session.query"
+    },
+    {
+      "before": "                    if (!this.sessions[params.sessionId]) {\n                        void nextMessage.catch(() => { });\n                        return;\n                    }",
+      "after": "                    if (session.closing || !this.sessions[params.sessionId]) {\n                        void nextMessage.catch(() => { });\n                        return;\n                    }"
+    },
+    {
+      "before": "    async teardownSession(sessionId) {\n        const session = this.sessions[sessionId];\n        if (!session) {\n            return;\n        }\n        await this.cancel({ sessionId });\n        // cancel() arms the force-cancel floor and interrupts gracefully, but a\n        // wedged consumer only wakes when `cancelController` aborts — closeQueryStream\n        // below doesn't touch it. Since we're tearing the session down anyway, wake\n        // the consumer now so the in-flight prompt() resolves immediately instead of\n        // after the floor, and clear the timer so it can't outlive the deleted\n        // session (it isn't unref'd and would otherwise keep the event loop alive\n        // until it fires).\n        disarmForceCancel(session);\n        session.cancelController?.abort();\n        this.closeQueryStream(session);\n        // Abort the SDK abort signal only on explicit destroy. closeQueryStream\n        // leaves it alone (it may be a client-owned controller — see its doc), but\n        // here the client has asked us to close the session, so signalling abort is\n        // appropriate; query.close() above has already torn the subprocess down.\n        session.abortController.abort();\n        delete this.sessions[sessionId];\n    }",
+      "after": "    async teardownSession(sessionId) {\n        const session = this.sessions[sessionId];\n        if (!session) {\n            return;\n        }\n        if (session.closePromise) {\n            await session.closePromise;\n            return;\n        }\n        session.closePromise = (async () => {\n            const consumer = session.consumer;\n            if (session.activeTurn || session.turnQueue?.length) {\n                await this.cancel({ sessionId });\n            }\n            // Wake the captured consumer without destroying its query resources.\n            // runConsumer observes `closing`, swallows the abandoned next() rejection,\n            // and terminates before this continuation releases the stream.\n            disarmForceCancel(session);\n            session.closing = true;\n            session.cancelController?.abort();\n            if (consumer) {\n                await consumer;\n            }\n            this.closeQueryStream(session);\n            session.abortController.abort();\n            delete this.sessions[sessionId];\n        })();\n        await session.closePromise;\n    }"
+    }
+  ]
+}

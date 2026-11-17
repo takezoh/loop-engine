@@ -5,6 +5,7 @@ sees agents through `agents.AgentTurns`; here that port runs each turn through
 the transport's provider sessions and protocol drivers, with the catalog's
 commands and the user's own agent settings.
 """
+import json
 import os
 import sys
 import threading
@@ -44,10 +45,10 @@ class TransportAgents:
     """
 
     def __init__(self, *, origin, state_dir):
-        from cross_host_transport.subsession.cell_membership import create_cell_membership
-        from cross_host_transport.subsession.cwd_authority import ChildLedger
-        from cross_host_transport.subsession.directory_authority import create_cwd_authority
-        from cross_host_transport.subsession.provider_catalog import provider_names
+        from provider_transport.cell_membership import create_cell_membership
+        from provider_transport.cwd_authority import ChildLedger
+        from provider_transport.directory_authority import create_cwd_authority
+        from provider_transport.provider_catalog import provider_names
 
         os.makedirs(origin, exist_ok=True)
         self.origin, self.state_dir = origin, state_dir
@@ -56,27 +57,30 @@ class TransportAgents:
         self.ledger = ChildLedger(cell_id=self.cell_id, cell=self.membership, max_children=16)
         self.authority = create_cwd_authority(origin)
         self.names = frozenset(provider_names())
-        self._sessions = {}
-        self._held = {}  # (agent, token) -> the provider-session execution holding it
+        self._sessions = {}  # (agent, the skills excluded) -> the provider sessions started that way
+        self._held = {}  # (agent, token) -> (the key of its provider sessions, the execution holding it)
         self._lock = threading.Lock()
 
     def known(self, agent):
         return agent in self.names
 
-    def _sessions_for(self, agent):
+    def _sessions_for(self, agent, exclude):
         from pathlib import Path
-        from cross_host_transport.subsession.provider_catalog import load_provider
-        from cross_host_transport.subsession.provider_drivers import driver_for
-        from cross_host_transport.subsession.provider_sessions import ProviderSessions
+        from provider_transport.provider_catalog import load_provider
+        from provider_transport.provider_drivers import driver_for
+        from provider_transport.provider_sessions import ProviderSessions
 
+        # Skills are excluded where a provider's host starts, so each exclusion has its own hosts.
+        key = (agent, None if exclude is None else json.dumps(exclude, sort_keys=True))
         with self._lock:
-            if agent not in self._sessions:
-                driver = driver_for(load_provider(agent), origin=Path(self.origin), state_dir=Path(self.state_dir))
-                self._sessions[agent] = ProviderSessions(driver, cell_id=self.cell_id)
-            return self._sessions[agent]
+            if key not in self._sessions:
+                driver = driver_for(load_provider(agent, exclude=exclude), origin=Path(self.origin),
+                                    state_dir=Path(self.state_dir), exclude=exclude)
+                self._sessions[key] = ProviderSessions(driver, cell_id=self.cell_id)
+            return key, self._sessions[key]
 
     def _admission(self, cwd):
-        from cross_host_transport.subsession.cwd_authority import SpawnAdmission
+        from provider_transport.cwd_authority import SpawnAdmission
 
         return SpawnAdmission(
             reservation=self.ledger.reserve(), cwd_lease=self.authority.admit(cwd),
@@ -93,9 +97,9 @@ class TransportAgents:
                 pass
 
     def run(self, request, cancelled):
-        from cross_host_transport.subsession.provider_request import ActionRequest
+        from provider_transport.provider_request import ActionRequest
 
-        sessions = self._sessions_for(request.agent)
+        key, sessions = self._sessions_for(request.agent, request.excluded_skills)
         operation = f"{request.unit_id}-{request.round}-{request.role}-{uuid.uuid4().hex[:12]}"
         turn = dict(operation_id=operation, provider=request.agent, model=request.model,
                     effort=request.effort, cwd=request.cwd, prompt=request.prompt)
@@ -112,7 +116,7 @@ class TransportAgents:
                 return TurnOutcome(False, None, None, f"agent-start-failed: {type(error).__name__}: {error}"[:1000])
         else:
             with self._lock:
-                execution = self._held.get((request.agent, request.session))
+                execution = self._held.get((request.agent, request.session), (None, None))[1]
             if execution is None:  # this process has not held the session: bind it by its token
                 execution = operation
                 sessions.recover_binding(execution, request.session)
@@ -125,7 +129,7 @@ class TransportAgents:
                 self._abort_unused(admission)
                 receipt = {"outcome": "session_lost", "reason": f"{type(error).__name__}: {error}"}
             if receipt.get("outcome") not in ("running", "completed", "post_start_failed", "cleanup_failed"):
-                self._forget(request.agent, request.session, execution)
+                self._forget(request.agent, request.session, key, execution)
                 detail = str(receipt.get("reason") or receipt.get("provider_status") or receipt.get("outcome"))
                 return TurnOutcome(False, None, None, f"session-not-continuable: {detail}"[:1000],
                                    session_lost=True)
@@ -153,18 +157,18 @@ class TransportAgents:
         token = view.get("provider_thread_id")
         if isinstance(token, str) and token:
             with self._lock:
-                self._held[(request.agent, token)] = execution
+                self._held[(request.agent, token)] = (key, execution)
         else:
             token = None
         return released_outcome(turn_outcome(view, token), release)
 
-    def _forget(self, agent, token, execution):
-        from cross_host_transport.subsession.provider_request import ActionRequest
+    def _forget(self, agent, token, key, execution):
+        from provider_transport.provider_request import ActionRequest
 
         with self._lock:
-            if self._held.get((agent, token)) == execution:
+            if self._held.get((agent, token)) == (key, execution):
                 del self._held[(agent, token)]
-            sessions = self._sessions.get(agent)
+            sessions = self._sessions.get(key)
         if sessions is None:
             return
         try:
@@ -175,9 +179,9 @@ class TransportAgents:
 
     def end_session(self, agent, session):
         with self._lock:
-            execution = self._held.get((agent, session))
-        if execution is not None:
-            self._forget(agent, session, execution)
+            held = self._held.get((agent, session))
+        if held is not None:
+            self._forget(agent, session, *held)
 
     def close(self):
         with self._lock:
@@ -242,7 +246,7 @@ def unit_entry(environ, connection):
     """
     from pathlib import Path
 
-    from cross_host_transport.port import EXECUTION_ROLE_VARIABLE
+    from provider_transport.admitted_process import EXECUTION_ROLE_VARIABLE
 
     from . import client
     from .unit_tools import UnitTools
@@ -255,15 +259,45 @@ def unit_entry(environ, connection):
     return tools
 
 
+INSTALL_WAIT_SECONDS = 120.0
+
+
+def install_agents(environ):
+    """Install what the catalog's agents need besides their own commands, the Claude ACP adapter, into
+    the transport's runtime directory, and return that directory. One install runs at a time."""
+    import time
+
+    from provider_transport import claude_adapter
+
+    from .store import ProcessLock
+    target = str(claude_adapter.runtime_dir(environ))
+    lock, deadline = ProcessLock(os.path.join(target, "install.lock")), time.monotonic() + INSTALL_WAIT_SECONDS
+    while not lock.acquire():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"another install holds {target}")
+        time.sleep(0.1)
+    try:
+        claude_adapter.install(claude_adapter.runtime_dir(environ))
+    finally:
+        lock.release()
+    return target
+
+
+def check_agents(environ):
+    """Raise unless what `install_agents` places is there as pinned; return the runtime directory."""
+    from provider_transport import claude_adapter
+    target = claude_adapter.runtime_dir(environ)
+    claude_adapter.verify(target)
+    return str(target)
+
+
 def build(environ):
     """The engine of this installation and the path of its process lock."""
     root = home_root(environ)
     os.makedirs(root, mode=0o700, exist_ok=True)
     worktrees = worktrees_root(environ)
     agents = TransportAgents(origin=worktrees, state_dir=os.path.join(root, "agents"))
-    installation = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
-    own_code = (os.path.dirname(os.path.dirname(HERE)),
-                os.path.join(installation, "packages", "cross-host-transport"))
+    own_code = (os.path.dirname(os.path.dirname(HERE)),)  # the engine and the provider transport
     engine = Engine(
         root, published=published_root(environ), git=Git(environ), agents=agents, templates=load_templates(),
         runner=(sys.executable, os.path.join(HERE, "check_runner.py")), worktrees=worktrees, platform=CURRENT,

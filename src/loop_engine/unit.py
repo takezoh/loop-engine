@@ -194,13 +194,9 @@ class Unit:
             return state
         if not execution["writes"]:
             tree = state["tree"]
-        completed, detail = bool(turn["completed"]), turn["detail"]
-        by = {fact["id"]: fact["by"] for fact in self.contract["facts"]}
-        judged = any(by[fid] in ("checks", "verdict") for fid in execution["establishes"])
-        if completed and judged and not isinstance(turn["actions"], dict) and facts.question(turn["text"]) is None:
-            completed, detail = False, "no-execution-record"  # nothing the turn did can be checked
-        if completed and not execution["writes"] and self._candidate(started) != before:
-            completed, detail = False, "a-turn-that-must-not-write-changed-the-worktree"
+        # What git records is compared only for a turn that must not write and says it completed.
+        wrote = bool(turn["completed"]) and not execution["writes"] and self._candidate(started) != before
+        completed, detail = facts.turn_completion(self.contract, execution["id"], turn, wrote=wrote)
         state = facts.apply_turn(self.contract, state, execution["id"], {
             "completed": completed, "detail": detail, "text": turn["text"],
             "record": turn["actions"] or {"entries": []}, "tree": tree, "changed": changed,
@@ -217,6 +213,7 @@ class Unit:
         return TurnRequest(
             unit_id=self.store.unit_id, role=execution["id"], round=number, agent=execution["agent"],
             model=execution["model"], effort=execution["effort"], cwd=worktree, prompt=prompt, session=session,
+            excluded_skills=self.contract["unit"].get("excluded_skills"),
         )
 
     def _patch(self, started):
@@ -235,8 +232,7 @@ class Unit:
 
     def _unsafe(self, state, execution, when):
         self._append({"type": "agent_config_changed", "execution": execution, "when": when})
-        state["stop"] = {"reason": "unsafe_agent_config", "execution": execution}
-        return state
+        return facts.unsafe_agent_config(state, execution)
 
     def _stop(self, state, action):
         started = self._started()

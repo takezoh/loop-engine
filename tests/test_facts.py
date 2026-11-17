@@ -405,6 +405,38 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual("cancelled", decide(sim.contract, facts.cancel(sim.state))[1]["reason"])
 
 
+class TurnCompletionTest(unittest.TestCase):
+    """Whether a finished turn counts, decided from the turn and one observation of the worktree."""
+
+    def completion(self, execution, turn, wrote=False):
+        return facts.turn_completion(implementation(), execution, turn, wrote=wrote)
+
+    def test_a_turn_the_agent_did_not_complete_keeps_its_own_detail(self):
+        self.assertEqual((False, "cancelled"), self.completion("implement", {"completed": False, "detail": "cancelled"}))
+
+    def test_a_judged_turn_without_an_execution_record_proves_nothing_unless_it_asks(self):
+        done = {"completed": True, "detail": None, "text": "done", "actions": None}
+        for execution in ("implement", "review-a"):  # one establishes checks, the other a verdict
+            with self.subTest(execution=execution):
+                self.assertEqual((False, "no-execution-record"), self.completion(execution, done))
+                self.assertEqual((True, None), self.completion(execution, {**done, "actions": {"entries": []}}))
+                asked = {**done, "text": 'x\n{"question": "which?", "id": "q-1"}'}
+                self.assertEqual((True, None), self.completion(execution, asked))
+        self.assertEqual((True, None), self.completion("survey", done))  # a report is not judged from a record
+
+    def test_a_turn_that_must_not_write_proves_nothing_once_it_changed_the_worktree(self):
+        done = {"completed": True, "detail": None, "text": "done", "actions": {"entries": []}}
+        self.assertEqual((False, "a-turn-that-must-not-write-changed-the-worktree"),
+                         self.completion("review-a", done, wrote=True))
+        self.assertEqual((True, None), self.completion("implement", done, wrote=True))
+
+    def test_changed_agent_configuration_stops_the_unit_and_leaves_the_given_state_as_it_was(self):
+        state = new_state("tree")
+        stopped = facts.unsafe_agent_config(state, "implement")
+        self.assertEqual({"reason": "unsafe_agent_config", "execution": "implement"}, stopped["stop"])
+        self.assertIsNone(state["stop"])
+
+
 class ConvergenceTest(unittest.TestCase):
     """Work goes back while each refutation of a fact leaves fewer findings than the one before."""
 
@@ -572,6 +604,16 @@ class TrailingNewlineTest(unittest.TestCase):
         self.refused(lambda v: v["unit"].update(base="0" * 40 + "\n"))
         self.refused(lambda v: v["facts"][0].update(id="authority\n"))
         validate(json.loads(json.dumps(implementation())) | {"unit": unit(base="0" * 40)}, "posix")
+
+    def test_the_skills_a_contract_excludes_are_one_plugin_and_admitted_names(self):
+        skills = {"plugin": "dev", "names": ["design", "test-harness"]}
+        validate(json.loads(json.dumps(implementation())) | {"unit": unit(excluded_skills=skills)}, "posix")
+        for bad in (None, [], {"plugin": "dev"}, {**skills, "extra": 1}, {**skills, "plugin": ""},
+                    {**skills, "plugin": "dev\n"}, {**skills, "names": []}, {**skills, "names": "design"},
+                    {**skills, "names": ["a,b"]}, {**skills, "names": ["a", "a"]}, {**skills, "names": ["-c"]},
+                    {**skills, "names": ["a b"]}, {**skills, "names": [3]}):
+            with self.subTest(bad=bad):
+                self.refused(lambda v, bad=bad: v["unit"].update(excluded_skills=bad))
 
     def test_a_question_id_with_a_trailing_newline_is_no_question(self):
         self.assertIsNotNone(facts.question('x\n{"question": "which?", "id": "q-1"}'))

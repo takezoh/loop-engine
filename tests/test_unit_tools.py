@@ -5,39 +5,20 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
-from engine_support import SRC
+from engine_support import SRC, EngineCase, approve, produced
 
-TRANSPORT = os.path.join(os.path.dirname(os.path.dirname(SRC)), "packages", "cross-host-transport", "src")
-if TRANSPORT not in sys.path:
-    sys.path.insert(0, TRANSPORT)
+from provider_transport.admitted_process import EXECUTION_ROLE_VARIABLE  # noqa: E402
 
-from cross_host_transport.port import EXECUTION_ROLE_VARIABLE  # noqa: E402
-
-from loop_engine import composition, mcp_stdio, store, unit_tools  # noqa: E402
+from loop_engine import client, composition, mcp_stdio, store, unit_tools  # noqa: E402
+from loop_engine.testing import FakeEngineClient  # noqa: E402
 from loop_engine.unit_tools import Refused, UnitTools  # noqa: E402
 
 MAIN = os.path.join(SRC, "loop_engine", "__main__.py")
-
-
-class FakeClient:
-    def __init__(self):
-        self.sent, self.reply = [], {"ok": True, "result": {"state": "running", "revision": 0}}
-
-    def request(self, root, payload, *, environ):
-        self.sent.append((root, payload))
-        return self.reply
-
-    def status(self, root, unit_id):
-        return {"unit_id": unit_id, "state": "stopped", "stop_reason": "done"}
-
-    def wait(self, root, unit_id, *, after_revision, timeout, environ):
-        return {"unit_id": unit_id, "waited": timeout, "after": after_revision}
-
-    def result(self, root, unit_id, name):
-        return None if unit_id == "running" else b"x" * (unit_tools.MAX_RESULT_BYTES + 5)
 
 
 class ConnectionCase(unittest.TestCase):
@@ -51,12 +32,18 @@ class ConnectionCase(unittest.TestCase):
         self.repository = str(self.connection / "repo")
         os.makedirs(self.repository)
         self.root = str(self.top / "home" / "records")
-        for unit_id, repository in (("u1", self.repository), ("running", self.repository), ("theirs", str(self.top))):
+        # "gone" is recorded as this connection's, and the engine no longer knows it.
+        for unit_id, repository in (("u1", self.repository), ("running", self.repository),
+                                    ("gone", self.repository), ("theirs", str(self.top))):
             directory = store.unit_dir(self.root, unit_id)
             os.makedirs(directory)
             with open(os.path.join(directory, "contract.json"), "w", encoding="utf-8") as handle:
                 json.dump({"unit_id": unit_id, "repository": repository}, handle)
-        self.client = FakeClient()
+        self.client = FakeEngineClient()
+        for unit_id in ("u1", "running"):
+            self.client.request(self.root, {"request": "start", "contract": {"unit_id": unit_id}}, environ={})
+        self.client.stop("u1", "done", patch=b"x" * (unit_tools.MAX_RESULT_BYTES + 5))
+        self.client.sent.clear()
         self.tools = UnitTools(self.connection, self.root, client=self.client, environ={})
 
     def contract(self, **changes):
@@ -93,14 +80,14 @@ class UnitToolsTest(ConnectionCase):
         self.assertEqual([{"request": "answer", "unit_id": "u1", "question_id": "q-1", "answer": "yes"},
                           {"request": "retry", "unit_id": "u1"}, {"request": "cancel", "unit_id": "u1"}],
                          [payload for _root, payload in self.client.sent])
-        self.client.reply = {"ok": False, "error": "no such unit"}
         with self.assertRaisesRegex(Refused, "no such unit"):
-            self.tools.invoke("unit_retry", {"unit_id": "u1"})
+            self.tools.invoke("unit_retry", {"unit_id": "gone"})
 
     def test_status_wait_and_result_only_read_records(self):
         self.assertEqual("done", self.tools.invoke("unit_status", {"unit_id": "u1"})["stop_reason"])
-        self.assertEqual({"unit_id": "u1", "waited": 1.5, "after": 3},
-                         self.tools.invoke("unit_wait", {"unit_id": "u1", "after_revision": 3, "timeout_ms": 1500}))
+        self.assertEqual("stopped",
+                         self.tools.invoke("unit_wait", {"unit_id": "u1", "after_revision": 3, "timeout_ms": 1500})["state"])
+        self.assertEqual([("u1", 3, 1.5)], self.client.waits)
         result = self.tools.invoke("unit_result", {"unit_id": "u1", "name": "patch.diff"})
         self.assertEqual((True, unit_tools.MAX_RESULT_BYTES), (result["truncated"], len(result["text"])))
         with self.assertRaises(Refused):
@@ -146,6 +133,99 @@ class UnitToolsTest(ConnectionCase):
     def test_the_entry_does_not_open_when_the_records_lie_inside_the_connection(self):
         with self.assertRaisesRegex(PermissionError, "outside the connection"):
             composition.unit_entry({"LOOP_ENGINE_HOME": str(self.connection / "state")}, self.connection)
+
+
+def finishing(request, commands, cancelled):
+    """A writer that makes a file and runs its checks, and reviewers that approve."""
+    if "review" in request.role:
+        return approve(request)
+    return produced(request, commands)
+
+
+class EngineClientContract:
+    """What the unit tools rely on from an `EngineClient`."""
+
+    def open_host(self):
+        """The implementation under contract, for the port registry."""
+        raise NotImplementedError
+
+    def close_host(self, host):
+        pass
+
+    def finish(self, unit_id):
+        """Let the started unit reach its stop."""
+
+    def call(self, host, payload):
+        return host.request(self.root, payload, environ=self.environ())
+
+    def test_a_unit_nobody_started_has_no_status_and_no_result_and_its_requests_are_refused(self):
+        host = self.open_host()
+        self.assertIsNone(host.status(self.root, "absent"))
+        self.assertIsNone(host.result(self.root, "absent", "stop.json"))
+        self.assertIsNone(host.wait(self.root, "absent", after_revision=None, timeout=0, environ=self.environ()))
+        for kind in ("retry", "cancel"):
+            response = self.call(host, {"request": kind, "unit_id": "absent"})
+            self.assertEqual((False, str), (response["ok"], type(response["error"])), kind)
+
+    def test_a_started_unit_has_a_status_and_once_it_stopped_its_two_results(self):
+        host = self.open_host()
+        response = self.call(host, {"request": "start", "contract": self.contract()})
+        self.assertIs(True, response["ok"], response)
+        self.assertIn(response["result"]["state"], ("running", "stopped"))
+        self.finish("u1")
+        status = host.wait(self.root, "u1", after_revision=None, timeout=60, environ=self.environ())
+        self.assertEqual("stopped", status["state"])
+        self.assertEqual(status["stop_reason"], host.status(self.root, "u1")["stop_reason"])
+        self.assertEqual(status["stop_reason"], json.loads(host.result(self.root, "u1", "stop.json"))["stop_reason"])
+        self.assertIsInstance(host.result(self.root, "u1", "patch.diff"), bytes)
+
+    def test_a_result_has_one_of_two_names_and_a_request_one_of_the_known_kinds(self):
+        host = self.open_host()
+        with self.assertRaises(ValueError):
+            host.result(self.root, "u1", "../../contract.json")
+        response = self.call(host, {"request": "exec", "argv": ["sh"]})
+        self.assertEqual((False, str), (response["ok"], type(response["error"])))
+
+
+class FakeEngineClientContractTest(EngineClientContract, unittest.TestCase):
+    root = "records"
+
+    def setUp(self):
+        self.host = FakeEngineClient()
+
+    def open_host(self):
+        return self.host
+
+    def environ(self):
+        return {}
+
+    def contract(self):
+        return {"unit_id": "u1"}
+
+    def finish(self, unit_id):
+        self.host.stop(unit_id, "done")
+
+
+class EntryClientContractTest(EngineClientContract, EngineCase):
+    """The entry's client, over an engine serving its state home with scripted agents."""
+
+    def open_host(self):
+        engine = self.engine(finishing, idle_seconds=60.0)
+        thread = threading.Thread(target=lambda: engine.serve(client.lock_path(self.root)), daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 30)
+        self.addCleanup(engine._halting.set)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:  # requests go to this engine once it holds the state home
+            probe = store.ProcessLock(client.lock_path(self.root))
+            if not probe.acquire():
+                break
+            probe.release()
+            time.sleep(0.01)
+        return client
+
+    def environ(self):
+        return {**os.environ, "LOOP_ENGINE_HOME": self.home, "LOOP_ENGINE_WORKTREES": os.path.join(self.home, "worktrees")}
 
 
 class McpStdioTest(ConnectionCase):
@@ -197,7 +277,8 @@ class McpStdioTest(ConnectionCase):
         self.assertEqual({1, None, 2}, {answer["id"] for answer in answers})
         self.assertEqual(mcp_stdio.PARSE_ERROR, next(a for a in answers if a["id"] is None)["error"]["code"])
         waited = next(a for a in answers if a["id"] == 2)["result"]
-        self.assertEqual(0.005, json.loads(waited["content"][0]["text"])["waited"])
+        self.assertEqual("stopped", json.loads(waited["content"][0]["text"])["state"])
+        self.assertEqual([("u1", None, 0.005)], self.client.waits)
 
     def run_entry(self, environ, text):
         base = {key: value for key, value in os.environ.items() if key != EXECUTION_ROLE_VARIABLE}

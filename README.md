@@ -51,7 +51,8 @@ The contract's shape is in [Unit declaration](ARCHITECTURE.md#unit-declaration);
 | Requirement | Why |
 |---|---|
 | git, and at least one of the agents claude, codex or pi, installed and configured for the user | They are the only processes the engine starts. Agents start with the user's own settings |
-| The `cross-host-transport` package at `packages/cross-host-transport` in the directory that contains the engine's root | The engine starts agents through it. It is the engine's only package dependency; everything else is the Python standard library |
+| For `claude`: Node.js 22 or later and npm, and `python -I src/loop_engine/__main__.py install` run once | `claude` starts through a pinned adapter package that the engine installs and verifies. `codex` and `pi` need nothing installed by the engine |
+| Python, and nothing else | The engine and its provider transport use only the standard library |
 | An agent sandbox that can read but not write `LOOP_ENGINE_HOME/published/`, cannot read `LOOP_ENGINE_HOME/records/`, and can write `LOOP_ENGINE_WORKTREES` | Agents read the check program and the copy of the base revision there. What a judgment relies on must not be writable by the agent being judged. The engine assumes this and does not verify it |
 | Checks defined in `.loop-engine/checks.json` at the base revision, when the contract names checks | The engine reads check definitions only from the base revision, never from the tree an agent can write |
 | Linux or native Windows | The platforms the engine runs on |
@@ -60,6 +61,7 @@ The contract's shape is in [Unit declaration](ARCHITECTURE.md#unit-declaration);
 |---|---|---|
 | `LOOP_ENGINE_HOME` | The engine's state home. Records go under `records/`; the check program and the copy of the base revision that agents read go under `published/` | `~/.loop-engine` |
 | `LOOP_ENGINE_WORKTREES` | Where unit worktrees are made | `~/.cache/loop-engine/worktrees` |
+| `LOOP_ENGINE_RUNTIME_DIR` | Where the engine installs the Claude ACP adapter | `~/.local/share/loop-engine` |
 
 ## Callers
 
@@ -70,6 +72,7 @@ The engine knows nothing about who calls it. A caller is anything that writes a 
 - [Product](PRODUCT.md): the outcome, what a caller can rely on, how a unit stops, and what is not established
 - [Architecture](ARCHITECTURE.md): boundaries, design principles and how a unit is carried
 - [Technical reference](docs/architecture.md): contract limits, checks, exit codes, records and the engine's internals
+- [Provider transport](docs/transport.md): how agents are started, observed and stopped, and the Claude adapter
 - [Development and verification](docs/development.md): layout, tests, tools and which document owns what
 - [Development guidance](AGENTS.md): the rules a change to the engine keeps
 - [Decisions](docs/adr/): why each rule exists and what was considered

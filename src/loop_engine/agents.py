@@ -12,7 +12,8 @@ from typing import Mapping, Protocol
 class TurnRequest:
     """One turn to run: which unit and role it serves, the agent to use and what to tell it.
 
-    `session` is the token of the session to continue, or None for a new session.
+    `session` is the token of the session to continue, or None for a new session. `excluded_skills`
+    is the contract's `{"plugin", "names"}` of skills the agent must not load, or None.
     """
 
     unit_id: str
@@ -24,6 +25,7 @@ class TurnRequest:
     cwd: str
     prompt: str
     session: "str | None" = None
+    excluded_skills: "dict | None" = None
 
 
 @dataclass(frozen=True)

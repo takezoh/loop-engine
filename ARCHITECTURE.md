@@ -15,7 +15,7 @@ flowchart LR
     Home[("Records root<br/>LOOP_ENGINE_HOME/records<br/>agents cannot read it")]
     Pub[("Published root<br/>LOOP_ENGINE_HOME/published<br/>agents can read it and cannot write it")]
     Trees[("Worktrees root<br/>LOOP_ENGINE_WORKTREES")]
-    Pkg[("Installed packages<br/>code and protocol texts of the engine and the transport")]
+    Pkg[("Installed packages<br/>the engine and the provider transport:<br/>code, protocol texts, catalog")]
     AgentHost["Agent host process<br/>codex, claude, pi<br/>with the user's own settings"]
     subgraph SandboxG["the environment's sandbox (outside the engine)"]
       Work["Commands the agent runs<br/>the project's code and checks"]
@@ -55,11 +55,13 @@ The rules that the engine's implementation and every change to it keep. The ADR 
 - **Records and what is published**: What agents read (the check program, the unit's `checks.json`, the copy of the base revision) goes to the published root (`published/`); every other record goes to the records root (`records/`). Paths handed to a role point only into the published root. What makes the records unreadable to agents is the environment's sandbox settings. ([records decision](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md); [engine names](docs/adr/adr-20261117-engine-names-its-own-home-and-check-file.md), item 2)
 - **When work stops going back**: A refuted fact goes back to the execution that makes its subject only when the findings are fewer than at the previous refutation of the same fact. Otherwise the unit stops with `stagnation`. There is no limit on the number of rounds. ([convergence decision](docs/adr/adr-20261116-work-goes-back-while-it-converges.md))
 - **Answers**: The requester's answers stay in the unit's state and every execution receives them. A verdict fact has the answers at the time of its judgment in its basis. ([answers decision](docs/adr/adr-20261116-answers-reach-every-execution.md))
-- **Decisions on values only**: The decision logic (`facts.py`) and prompt assembly (`prompts.py`) work on values only, with no I/O, clock, randomness, process or global execution context. State can be saved as JSON, read back and carried on from there. ([completion by facts](docs/adr/adr-20261114-unit-completes-when-facts-hold.md), item 8; [pure prompts and unconfirmed results](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md), item 1. `tests/test_closed_paths.py` checks both modules)
+- **Decisions on values only**: The decision logic (`facts.py`) and prompt assembly (`prompts.py`) work on values only, with no I/O, clock, randomness, process or global execution context. The modules that act (`unit.py`, `service.py`, the entries) observe and record; what a turn's result means, which execution runs next and why a unit stops are decided in `facts.py`. State can be saved as JSON, read back and carried on from there. ([completion by facts](docs/adr/adr-20261114-unit-completes-when-facts-hold.md), item 8; [pure prompts and unconfirmed results](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md), item 1. `tests/test_closed_paths.py` checks both modules)
 - **Agent configuration**: When the agent configuration in the worktree (`.claude/`, `.codex/`, `.pi/`, `.agents/`, `.mcp.json`) has changed since the worktree was made, the engine stops without starting an agent (`unsafe_agent_config`). The three agents are treated alike, with no exception per agent. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 5)
-- **An independent package**: The engine is an independent package and starts from the installed copy. It does not load code from a working tree and does not depend on the caller's code. Its only package dependency is the transport, and only `composition.py` connects to the transport. The engine's core depends only on the port in `agents.py` (run a turn, close a session, stop everything). ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), items 4 and 7)
+- **Two packages, no other code**: The repository holds two packages, the engine (`loop_engine`) and the provider transport (`provider_transport`), and beyond them uses only the Python standard library. The engine starts from the installed copy, does not load code from a working tree and does not depend on a caller's code. Only `composition.py` connects to the transport, and the transport imports nothing of the engine. The engine's core depends only on the port in `agents.py` (run a turn, close a session, stop everything). ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), items 4 and 7; [transport decision](docs/adr/adr-20261117-provider-transport-is-the-engines-package.md), item 1)
+- **What an agent loads**: An agent starts with the user's settings, plugins and skills. The one thing a contract may take away is named skills of one plugin (`unit.excluded_skills`); the engine checks the form and the transport excludes them in each provider's own form. The transport's catalog names no caller's skills. ([transport decision](docs/adr/adr-20261117-provider-transport-is-the-engines-package.md), items 2 and 3)
+- **What the agents need installed**: Besides the agents' own commands, the engine installs one thing, the Claude ACP adapter, into the transport's runtime directory, and its launcher verifies it before every start. ([transport decision](docs/adr/adr-20261117-provider-transport-is-the-engines-package.md), item 4)
 - **Supported agents**: claude, codex and pi. They are started through the common handling of the transport's providers and a driver per protocol (codex-app-server, acp-v1, pi-rpc). ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 4 and its "Requirements the user stated")
-- **Ports and fakes**: Effects that differ by platform or agent live in adapters of a port. The agent port gets the same contract test (`tests/test_transport_agents.py`) for both the connection to the transport and the scripted fake. ([ports decision](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md), item 2)
+- **Ports and fakes**: Effects that differ by platform or agent live in adapters of a port, and every adapter and every fake of a port runs that port's contract tests. The engine has two ports of its own, agent turns (`agents.py`: the connection to the transport, and a scripted fake) and the entry's client (`unit_tools.py`: the client that reaches a real engine, and a fake); the transport has three, the protocol driver, the process cell and the working-directory authority. `tests/test_port_contracts.py` lists each port's implementations with the test class that runs the contract on it and fails when a class implements a port without being listed. The fakes a caller's tests need ship with the packages (`loop_engine/testing.py`, `provider_transport/testing/`). ([ports decision](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md), item 2)
 - **Platform facts**: The engine runs on Linux and native Windows. Facts that differ by platform (the form of an absolute path, the null device, the quoting of the check command line handed to agents, starting a child process detached from the caller) are values, and effects that differ by platform (creating a file without replacing an existing one, the process lock) are adapters per platform. Only `platform_facts.py` chooses among them by `os.name`. The decision logic (`facts.py`, `prompts.py`, judging lock contention) does not look at the platform and receives the facts as values. The Windows adapters get the same contract test (`tests/test_platform_facts.py`) as the POSIX adapters and the fakes, against a fake OS API. git, saving state and time have no port. ([ports decision](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md), items 1 and 3 to 5)
 - **Results that cannot be confirmed**: A unit whose turn result cannot be confirmed stops with a reason (`unknown_result`, `invalid_result`) and does not retry by itself. Only the caller's `retry` request runs it again. Restarting, once and in a new session, a turn whose session cannot be continued is outside this rule. ([pure prompts and unconfirmed results](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md), items 2 to 4)
 
@@ -103,13 +105,15 @@ A contract has no order of executions. It has only facts, executions and the ref
 ```
 unit_id, repository (absolute path of the repository's top level, in the form of the machine the engine runs on)
 unit:        goal, criteria[{id, text}], scope[path]
-             optional: base (commit id), allow_same_model (bool), examine_min (0..1)
+             optional: base (commit id), allow_same_model (bool), examine_min (0..1),
+                       excluded_skills ({plugin, names[]})
 facts:       {id, required, by} and the items of each `by`
 executions:  {id, agent, model, effort, instructions, reads, establishes, writes, independent_of}
 ```
 
 - `unit.goal` and `criteria` go into the prompt of every execution. A reviewer judges each condition of `criteria`. `scope` is the set of paths that may change, which the `git` fact judges, and it is also shown to the writer. A `scope` path is written in git's form (a path inside the repository separated by `/`) on every platform.
 - With `unit.base`, the unit covers the existing change from that commit to the repository's current commit (the current commit must be a descendant of `base`). Without it, the current commit is the base revision.
+- `excluded_skills` names skills of one plugin that the unit's agents must not load. The engine does not interpret the names.
 - `allow_same_model` relaxes the `independent_of` check. `examine_min` is the share of changed files that a reviewer's execution record must show as read; the default is 1.
 
 ### Fact kinds
@@ -320,7 +324,7 @@ flowchart LR
     WT["repository digest/unit_id-token/"]
   end
   subgraph PkgG["Installed packages"]
-    Code["the engine: src/loop_engine/<br/>the transport: cross-host-transport"]
+    Code["the engine: src/loop_engine/<br/>the transport: src/provider_transport/"]
   end
   Cal -->|"writes"| Inbox
   Inbox -->|"reads and removes"| Eng
@@ -385,4 +389,5 @@ The engine's tests run real git repositories and a real engine process, with age
 | The engine's records are kept apart from what agents read, where agents cannot read them | [adr-20261116-engine-records-apart-from-what-agents-read](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md) |
 | Only effects that differ by platform or agent sit behind ports, and decisions receive those facts as values | [adr-20261117-platform-and-agent-differences-behind-ports](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md) |
 | The state home, its environment variables and the check file carry the engine's own name, and the earlier names are not read | [adr-20261117-engine-names-its-own-home-and-check-file](docs/adr/adr-20261117-engine-names-its-own-home-and-check-file.md) |
+| The provider transport is the engine's own package, a contract names the skills to exclude, and the engine installs the Claude adapter | [adr-20261117-provider-transport-is-the-engines-package](docs/adr/adr-20261117-provider-transport-is-the-engines-package.md) |
 | The engine provides the unit tools, the boundary of a connection and a stdio MCP entry, and a caller adds only its own start | [adr-20261117-engine-provides-the-unit-tools-and-mcp-entry](docs/adr/adr-20261117-engine-provides-the-unit-tools-and-mcp-entry.md) |

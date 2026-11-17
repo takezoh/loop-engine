@@ -7,6 +7,7 @@ The details behind [ARCHITECTURE.md](../ARCHITECTURE.md): contract limits, check
 | write a contract or define checks for a project | [Contract](#contract), [Checks](#checks) |
 | give a session the unit tools, or mount them in a server of your own | [MCP entry](#mcp-entry) |
 | handle a unit's result | [Stop reasons and exit codes](#stop-reasons-and-exit-codes), [Records](#records), [Sending work back and answers](#sending-work-back-and-answers), [Accepting a reviewer's reply](#accepting-a-reviewers-reply) |
+| install what the agents need | [Installing and checking](#installing-and-checking) |
 | change the engine | [Modules](#modules), [Agent sessions](#agent-sessions), [Prompts](#prompts), [End of a turn and the worktree](#end-of-a-turn-and-the-worktree), [Environment entries](#environment-entries), [Approval requests](#approval-requests), [Base revision](#base-revision) |
 
 ## Contract
@@ -21,6 +22,7 @@ The structure of a contract (fact kinds, execution rules, references) is in [Uni
 | `goal`, the `text` of an acceptance criterion, `instructions` | A non-empty string without NUL, of at most 200,000 bytes |
 | `criteria`, `scope`, `facts`, `executions`, checks | At most 32 each. `facts` and `executions` have at least one |
 | `unit.base` | A 40-digit commit id |
+| `unit.excluded_skills` | Exactly `plugin` and `names`. `plugin` and each name match `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`; `names` has 1 to 32 distinct names |
 | `repository`, `scope` paths | `repository` is a normalized absolute path in the form of the machine the engine runs on (`path_style`). A `scope` path is a relative path separated by `/` with no `.`, `..` or empty component. On Windows each component must be a name a file can have: it contains none of `\`, `:`, `*?"<>|` or control characters, does not end with `.` or a space, and is not `CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9` or `LPT1` to `LPT9`, in any letter case and with or without an extension. The same holds for `test_paths` and `ignore` in `.loop-engine/checks.json` |
 
 The keys of a contract must match exactly, with none missing and none extra (a fact has only the items of its `by`). A different contract under the same `unit_id` is not accepted.
@@ -76,11 +78,15 @@ What each stop reason means for the caller is in [How a unit stops](../PRODUCT.m
 - Every tool has a closed input schema, and a call outside it is refused before anything is sent. No tool takes a program, an argument list, an environment, a path or the state home.
 - A start is accepted only when the contract's `repository` is an existing directory inside the connection's directory, written as its resolved absolute path.
 - A unit that another connection started is answered as "no such unit" by every tool, and a start under its id is refused with "this unit_id cannot be used".
-- The entry does not open (exit code 2, the reason on stderr) for an agent the engine started, which carries the transport's execution role in its environment, or when the records root lies inside the connection's directory.
+- The entry does not open (exit code 2, the reason on stderr) for an agent the engine started, which carries the transport's execution role (`LOOP_ENGINE_EXECUTION_ROLE`) in its environment, or when the records root lies inside the connection's directory.
 - A refusal by the entry or the engine is a tool error (`isError`), distinct from a unit's stop. Reading a unit starts no engine; a request does, as with the CLI.
 - The server answers `initialize`, `ping`, `tools/list` and `tools/call` for the protocol revisions 2024-11-05, 2025-03-26 and 2025-06-18, one JSON-RPC message per line. It offers no resources or prompts and does not cancel a running call.
 
 A caller with a server of its own mounts the same tools. `composition.unit_entry(environ, connection)` returns the tool group (`tools`, `instructions`, `invoke(name, arguments)`). A caller that composes contracts replaces `unit_start` with its own tool, calls `admit(repository, unit_id)` before composing and hands the contract to `start(contract)`.
+
+## Installing and checking
+
+`python -I src/loop_engine/__main__.py install` places what the catalog's agents need besides their own commands, the Claude ACP adapter, in the transport's runtime directory (`LOOP_ENGINE_RUNTIME_DIR`, by default `~/.local/share/loop-engine`) and prints that directory. It needs Node.js 22 or later and npm, and it waits up to 120 seconds for another install to finish. `check` verifies what is installed without changing it. Both exit with 1 and the reason on stderr when they fail. What is installed and how it is verified is in [Claude ACP adapter](transport.md#claude-acp-adapter).
 
 ## Records
 
@@ -146,10 +152,11 @@ A gap remains in which another agent places a file between the check and the sta
 | `worktree.py` | Observing the worktree (the agent configuration digest, the tree digest, the changed paths compared with git's record) |
 | `check_runner.py` | The fixed check program an agent runs inside its sandbox. It owns how a tree is read (it fails when something cannot be read), the tree digest and the test for an environment entry; `worktree.py` uses the same code |
 | `agents.py` | The port that runs an agent's turn. A session is a token whose content is not interpreted |
-| `composition.py` | Connects the port to the provider transport, and opens the unit tools for a connection. The only module that touches the transport |
+| `composition.py` | Connects the port to the provider transport, opens the unit tools for a connection, and installs and checks what the agents need. The only module that touches the transport |
 | `client.py` / `cli.py` | The entry's client and the command line. Hand over requests and read records. Have no progress or judgment logic |
-| `unit_tools.py` | The unit tools and the boundary of a connection: closed schemas, the check of a call's arguments, whose a unit is. Entry code under the same rule as the client |
+| `unit_tools.py` | The unit tools and the boundary of a connection: closed schemas, the check of a call's arguments, whose a unit is, and the port for the entry's client (`EngineClient`). Entry code under the same rule as the client |
 | `mcp_stdio.py` | The stdio MCP server for a tool group, on the standard library alone. Decides nothing a tool decides |
+| `testing.py` | The fake of the entry's client, for a caller's tests. It runs the client's contract tests |
 | `platform_facts.py` | The platform facts of the machine the engine runs on (table below). The only module that chooses between POSIX and Windows by `os.name` |
 
 A platform's facts are a `Platform` value, and `CURRENT` is that of the machine the engine runs on. `composition.py` hands it to `Engine`, and `Engine` hands the path form to `facts.validate` and `facts.checks_config` and the quoting to `Unit`. `git.py`, `store.py` and `client.py` use the values of `CURRENT`. `place_new` and `lock` are adapters for effects that differ by platform, and they receive the OS functions they call as arguments. The Windows adapters get the same contract test, against fake Windows functions, as the adapters of the machine the engine runs on.
@@ -187,7 +194,7 @@ In the connection to the transport (`composition.py`), a token is the provider's
 - When `continue` returns `session_lost` or `recovery_pending`, or binding the session fails, the port reports that "the session cannot be continued".
 - `close` is used when the unit ends with a stop that cannot be continued, and for a session that could not be continued. Cancellation is `cancel`.
 
-The meaning of each transport operation and the wire procedure of each driver belong to the `cross-host-transport` package and its own documentation.
+The meaning of each transport operation and the wire procedure of each driver are in [Provider transport](transport.md#provider-sessions).
 
 ## Prompts
 
@@ -220,7 +227,7 @@ An environment entry is a name in the top-level directory of the worktree that i
 
 ## Approval requests
 
-When an agent asks for approval, permission or user input, the transport answers with an explicit refusal and the turn continues. No approval setting is sent to Codex. How each of the three drivers answers belongs to the `cross-host-transport` package and its own documentation.
+When an agent asks for approval, permission or user input, the transport answers with an explicit refusal and the turn continues. No approval setting is sent to Codex. How each of the three drivers answers is in [Approval requests](transport.md#approval-requests) of the provider transport.
 
 A refused request stays in the turn's execution record (`actions.refused`) with its kind (`command`, `file_change`, `permissions`, `input`) and a short description. The engine adds each turn's count per execution and shows it in `refused` of `status.json` and `result/stop.json`. A refusal does not stop the unit. A check that could not run because it was refused leaves no passing line, so its fact does not hold.
 

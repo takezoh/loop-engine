@@ -71,7 +71,7 @@ class StructureTest(unittest.TestCase):
     def test_only_the_composition_touches_the_provider_transport(self):
         for name in MODULES:
             if name != "composition.py":
-                self.assertNotIn("cross_host_transport", source(name), name)
+                self.assertNotIn("provider_transport", source(name), name)
 
     def test_git_arguments_always_carry_the_safe_prefix(self):
         for needle in (f"core.hooksPath={CURRENT.null_device}", "core.fsmonitor=false", "diff.external=",
