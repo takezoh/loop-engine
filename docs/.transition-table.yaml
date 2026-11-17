@@ -1,10 +1,10 @@
-# 構造化ドキュメント (dev-docs skill) の状態遷移ホワイトリスト。
-# docs init で project の docs/.transition-table.yaml にコピーされる。
-# project ごとに status enum を増やしたい場合はこのファイルを編集する
-# (対応する schema の status enum も併せて更新が必要)。
+# Status transition whitelist for structured documents (dev-docs skill).
+# docs init copies it to the project's docs/.transition-table.yaml.
+# To add status enum values for a project, edit this file
+# (the status enum of the corresponding schema must be updated as well).
 #
-# 形式: kind: { from_status: [allowed_next_status, ...] }
-# 空配列 [] は終端状態 (それ以降の遷移なし)。
+# Format: kind: { from_status: [allowed_next_status, ...] }
+# An empty array [] is a terminal state (no further transitions).
 
 adr:
   proposed:   [accepted, rejected]

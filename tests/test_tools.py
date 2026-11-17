@@ -115,7 +115,7 @@ class ScenarioTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work, mock.patch.object(scenarios.subprocess, "run") as run:
             home = os.path.join(work, "home")
             self.assertIsNone(scenarios.run_contract({"unit_id": "u1"}, home, work))
-            self.assertEqual(home, run.call_args.kwargs["env"]["DEV_SKILLS_HOME"])
+            self.assertEqual(home, run.call_args.kwargs["env"]["LOOP_ENGINE_HOME"])
 
     def test_judge_names_every_difference_from_the_expectation(self):
         unit = {"stop_reason": "rejected", "turns": [1, 2, 3], "findings": [{"criterion": "c2"}]}

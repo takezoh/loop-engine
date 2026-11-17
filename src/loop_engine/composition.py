@@ -232,6 +232,29 @@ def released_outcome(outcome, release):
     return replace(outcome, completed=False, detail=f"agent-session-not-released: {reason}"[:1000], released=False)
 
 
+def unit_entry(environ, connection):
+    """The unit tools for a session connected at the directory `connection`.
+
+    An agent the engine started carries the transport's execution role to every server it starts; the
+    entry opens only where no role is set, whatever its value, so a role inside a unit cannot start,
+    answer or read units. The records must lie outside the connection's directory, where the session
+    and its agents write.
+    """
+    from pathlib import Path
+
+    from cross_host_transport.port import EXECUTION_ROLE_VARIABLE
+
+    from . import client
+    from .unit_tools import UnitTools
+    if EXECUTION_ROLE_VARIABLE in environ:
+        raise PermissionError("an agent running inside a unit cannot open the unit entry")
+    root = home_root(environ)
+    tools = UnitTools(connection, root, client=client, environ=environ)
+    if Path(root).resolve().is_relative_to(tools.connection):
+        raise PermissionError("the engine's state home must be outside the connection's directory")
+    return tools
+
+
 def build(environ):
     """The engine of this installation and the path of its process lock."""
     root = home_root(environ)

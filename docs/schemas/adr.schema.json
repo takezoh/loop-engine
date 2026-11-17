@@ -23,25 +23,25 @@
       "items": {"type": "string", "minLength": 1}
     },
     "consequences": {
-      "description": "Nygard 形式の正・負・中立の三極を記録する。検証はADR作成日や編集履歴に依存しない。",
+      "description": "Records the three poles of the Nygard format: positive, negative and neutral. Validation does not depend on the ADR's creation date or edit history.",
       "type": "object",
       "additionalProperties": false,
       "required": ["positive", "negative", "neutral"],
       "properties": {
-        "positive": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "採用の望ましい帰結"},
-        "negative": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "採用の望ましくない帰結"},
-        "neutral":  {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "採用に伴う中立な帰結"}
+        "positive": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Desirable consequences of adoption"},
+        "negative": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Undesirable consequences of adoption"},
+        "neutral":  {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Neutral consequences that come with adoption"}
       }
     },
     "confirmation": {
       "type": "string",
-      "description": "spec-detail (2026-07-09): MADR 由来 (optional)。この decision が守られていることを機械的に確認する手段の宣言 (fitness function / grep / test)。artifacts/architecture-contract/semantics.md §18 が SoT。"
+      "description": "spec-detail (2026-07-09): from MADR (optional). Declares the means of mechanically confirming that this decision is kept (fitness function / grep / test). artifacts/architecture-contract/semantics.md §18 is the SoT."
     },
     "decision_bindings": {
       "type": "array",
       "uniqueItems": true,
       "items": {"type": "string", "minLength": 1},
-      "description": "この判断を実行時に拘束する project-root 相対ファイル。accepted ADR では各ファイルが ADR id を decision_ref またはコメントとして明示し、source_paths にも含める。"
+      "description": "Project-root-relative files that bind this decision at run time. For an accepted ADR, each file states the ADR id explicitly as a decision_ref or a comment, and is also included in source_paths."
     }
   }
 }

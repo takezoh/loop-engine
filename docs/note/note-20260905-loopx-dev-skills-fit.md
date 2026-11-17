@@ -1,7 +1,7 @@
 ---
 id: note-20260905-loopx-dev-skills-fit
 kind: note
-title: LoopX と dev-skills の責務比較 — Optional L4 outer control plane 境界
+title: 'Responsibility comparison of LoopX and dev-skills: Optional L4 outer control plane boundary'
 status: draft
 created: '2026-09-05'
 topic: loop-engineering
@@ -15,14 +15,14 @@ owners:
 - take.gn
 relations: []
 source_paths: []
-summary: LoopX の generic long-horizon control plane と dev-skills の reactive development control kernel を比較し、Native Development Loop を L3、LoopX を optional L4 とする責務境界を定義
+summary: Compares LoopX's generic long-horizon control plane with dev-skills' reactive development control kernel, and defines the responsibility boundary that makes the Native Development Loop L3 and LoopX an optional L4
 ---
 
-## 目的
+## Purpose
 
-LoopXを `dev-skills` のloop runtimeとして直接採用する場合と、Native Development Loopを実装してLoopXを上位control planeとして接続する場合を比較する。
+This note compares two cases: adopting LoopX directly as the loop runtime of `dev-skills`, and implementing the Native Development Loop and connecting LoopX as an upper control plane.
 
-本質は製品比較ではなく、**どのstate authorityを誰が所有するか**。
+The essential question is not a product comparison but **who owns which state authority**.
 
 ---
 
@@ -34,9 +34,9 @@ Reviewed sources:
 - https://huangruiteng.github.io/loopx/docs/guides/minimal-custom-runtime-example/
 - https://huangruiteng.github.io/loopx/docs/capabilities/issue-fix/
 
-LoopXは provider-neutral / stateful control plane for long-horizon agents。
+LoopX is a provider-neutral / stateful control plane for long-horizon agents.
 
-主なdurable control state:
+Main durable control state:
 
 - goal/objective
 - todo/claim
@@ -46,19 +46,19 @@ LoopXは provider-neutral / stateful control plane for long-horizon agents。
 - scheduling hints
 - handoff/recovery
 
-Host runtimeはbounded turnを実行するworker。
+The host runtime is a worker that runs bounded turns.
 
-LoopXは単なるretry helperではなく、generic long-horizon state kernelである。
+LoopX is not a mere retry helper; it is a generic long-horizon state kernel.
 
 ---
 
 ## 2. LoopX is suitable for development
 
-Issue-Fix capabilityは issue -> reproduce -> patch -> validation -> PR -> CI/review -> correction -> merge/close のlong-running lifecycleを扱う。
+The Issue-Fix capability handles the long-running lifecycle issue -> reproduce -> patch -> validation -> PR -> CI/review -> correction -> merge/close.
 
-したがってLoopXはsoftware developmentにも十分適している。
+LoopX is therefore well suited to software development too.
 
-特に強い領域:
+Areas where it is especially strong:
 
 - multi-day objective
 - PR/CI/review wait
@@ -67,13 +67,13 @@ Issue-Fix capabilityは issue -> reproduce -> patch -> validation -> PR -> CI/re
 - quota
 - operator attention/dashboard
 
-ただしこれは `dev-skills` が最も差別化している development correctness semantics と同じ責務ではない。
+However, this is not the same responsibility as the development correctness semantics, which is where `dev-skills` differentiates itself most.
 
 ---
 
 ## 3. Revised Native L3 model
 
-Native Development Loopは fixed executor loopではなく、次のreactive kernelとする。
+The Native Development Loop is not a fixed executor loop; it is the following reactive kernel.
 
 ```text
 bind goal
@@ -86,9 +86,9 @@ bind goal
  -> terminal / wait / next tick
 ```
 
-Native L3は generic Todo managerを持たない。
+Native L3 has no generic Todo manager.
 
-次のactionは canonical docs / repository / evidence / control ledger から導出する。
+The next action is derived from canonical docs / repository / evidence / control ledger.
 
 ```text
 L4 LoopX

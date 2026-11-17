@@ -19,7 +19,7 @@ from .store import (
 )
 from .unit import Unit
 
-CHECKS_FILE = ".dev-skills/checks.json"
+CHECKS_FILE = ".loop-engine/checks.json"
 POLL_SECONDS = 0.2
 LOCK_ATTEMPTS = 20
 LOCK_RETRY_SECONDS = 0.05

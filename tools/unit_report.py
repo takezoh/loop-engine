@@ -165,11 +165,11 @@ def render(units, summary):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="unit_report")
-    parser.add_argument("--home", help="state home (default: DEV_SKILLS_HOME or ~/.dev-skills)")
+    parser.add_argument("--home", help="state home (default: LOOP_ENGINE_HOME or ~/.loop-engine)")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("units", nargs="*")
     args = parser.parse_args(argv)
-    root = home_root({"DEV_SKILLS_HOME": args.home} if args.home else os.environ)
+    root = home_root({"LOOP_ENGINE_HOME": args.home} if args.home else os.environ)
     units = [unit for unit in (load_unit(root, name) for name in (args.units or list_units(root))) if unit]
     summary = summarize(units)
     if args.json:

@@ -1,7 +1,7 @@
 ---
 id: issue-20260925-drivetime-overhead
 kind: issue
-title: design Goal run が遅く、run 中の repo 編集で evidence が無効化される (駆動摩擦・tree_sha 比較の妥当性)
+title: The design Goal run is slow, and repo edits during the run invalidate evidence (drive friction, validity of the tree_sha comparison)
 status: rejected
 created: '2026-09-25'
 issue_type: bug
@@ -15,45 +15,44 @@ subject_paths:
 - runtime/development_loop/attempts.py
 - runtime/policies/planning/policy.py
 - runtime/development_loop/native_producer_v2.py
-summary: design Profile の Goal run は 14 capability を 1 step 1 subagent で直列駆動するため遅く、
-  continue セッションの attempt 取り違え・domain reject・anchor 欠落で再実行が重なる。加えて conductor が run
-  中に repo file を編集すると working tree の tree_sha が変わり先行 evidence が 一括無効化され run が継続不能になる。tree_sha
-  比較がどの surface を守るべきかは未決。
-disposition_reason: design の Goal run(capability の直列駆動)と、observe.py の capture_binding、attempts.py
-  は実装に存在しない。
+summary: 'The design Goal run is slow: 14 serial capabilities, 1 subagent per step, and reruns from attempt
+  mix-ups, domain rejects and missing anchors. A conductor repo edit mid-run changes tree_sha, voids all prior evidence
+  and halts the run. Which surface tree_sha comparison should protect is undecided.'
+disposition_reason: The design Goal run (serial driving of capabilities), capture_binding in observe.py, and attempts.py
+  do not exist in the implementation.
 updated: '2026-11-14'
 ---
 
-## 症状 / 機会
+## Symptom / opportunity
 
-design Profile の Goal run は固定の 14 capability を 1 step = 1 subagent で直列に駆動するため遅い。subagent の再実行と conductor の observe 往復が重なると 1 run が長時間化する。さらに run 中に conductor が repo file を編集すると working tree の tree_sha が変わり、先行 evidence が一括で無効化されて run が継続不能になる。
+The Goal run of the design Profile is slow because it drives a fixed 14 capabilities in series with 1 step = 1 subagent. When subagent reruns and the conductor's observe round trips pile up, one run takes a long time. Furthermore, when the conductor edits a repo file during the run, the tree_sha of the working tree changes, the preceding evidence is invalidated all at once, and the run cannot continue.
 
-期待する成果: (a) step 間の round-trip を減らすか overlay し、失敗 step だけを再実行できる、(b) run 中の非 governed file (docs 運用文書など) の編集が run 全体を無効化しない。少なくとも tree_sha 比較がどの surface を守る invariant なのかが宣言されている。
+Expected outcome: (a) the round-trips between steps are reduced or overlaid, and only the failed step can be rerun, (b) editing a non-governed file (such as a docs operations document) during the run does not invalidate the whole run. At the least, it is declared which surface the tree_sha comparison protects as an invariant.
 
-## 証拠
+## Evidence
 
-- **直列長と往復**: `profiles/design/profile.yaml` の capability 順は sources → context → constraints → problem → decision → draft-1 → draft-2 → integrate-2 → review → revise → minimality → reassess → package → record (14 node)。各 producing step は `goal dispatch` → `task` subagent → `goal observe-start` → `goal observe-terminal` → `goal advance` の ~5 CLI 呼び出し + 1 LLM turn を直列に要求する。`goal agent-step` は observe-start 前 (native_producer=null) では常に `agent-loop-producer-not-started` で fail するため、step 単位の中断性がない。
-- **高コスト出力**: design.package の design-publication は prose + spine + 3 member markdown で ~106KB。これを長大な continue セッション (`ses_f2bc14…`) の 1 turn で生成するため重く、応答が返らないように見えた (本 run で 2 回キャンセルされた)。
-- **再実行コスト**: draft-1 は初回 subagent が output.json を書かず再実行、minimality は domain reject で 2 attempt、package は anchor 欠落で新 attempt が予約され続けた (`daba73cb` → `a06c42ca` → `dacf007c`)。
-- **attempt 取り違え (package)**: attempt `daba73cb…` (design.package, continue step6) を designer セッション `ses_f2bc14…` に実行させたところ、このセッションが package ではなく旧 revise attempt `09c174aa…` を再実行して output.json を上書きした。「manifest 提示 path の hash が実在しない」という誤認で誤った attempt に fallback した。continue セッションの context 蓄積が原因と推定。
-- **domain reject (minimality)**: attempt `e0179023…` が `rejected / native-output-invalid:production-composition-domain-transition-invalid`。原因は `runtime/policies/planning/policy.py` の `validate_result` が pair/group 参照に `classifications[].signal_id` との byte 一致を要求するのに対し、LLM が descriptive 名で記述したこと。再実行 attempt `56cd3254…` で解消。参照 ID の一致は事前に機械検証されない。
-- **package の UNSATISFIED 再試行ループ**: design.package の evaluator は `runtime/policies/planning/policy.py` の `PlanningBundle.validate` で design.md の全 spine identity に `<!-- anchor: <id> -->` を要求する。producer の design-publication は JSON schema (`artifacts/design-publication/schema.json`) は通るが anchor 30 件が欠落し、evidence は ACCEPTED かつ `result: UNSATISFIED` のまま新 package attempt が予約される。schema は anchor 要求を表現しないため schema-valid でも domain 検証で再試行が続く。anchor を補完すると `validate` は 0 error。
-- **run 中の repo 編集が evidence を無効化**: `runtime/development_loop/observe.py::capture_binding` の `files_digest` (= tree_sha) は working tree 全体 (tracked + untracked。`docs/index/` は ignored で無影響) のハッシュ。conductor が run 中に repo file (issue 起票・change.md member 追加・consultation-evidence 追加) を編集したため、先行 evidence の tree_sha (`ac445407…`) と現在の tree (`39d68622…`) が不一致になり `sources.current` が STALE、続いて全 evidence が BLOCKED になって run が継続不能になった。attempt 単体では `runtime/development_loop/attempts.py::_verify_result` の `readonly-world-changed` が発火する。
-- **先に起票済み**: issue-20260924-debug-goal-observation-gate-verification (observation gate の完全一致要求で goal が回復不能になる)。
+- **Serial length and round trips**: the capability order in `profiles/design/profile.yaml` is sources → context → constraints → problem → decision → draft-1 → draft-2 → integrate-2 → review → revise → minimality → reassess → package → record (14 nodes). Each producing step requires, in series, the ~5 CLI calls `goal dispatch` → `task` subagent → `goal observe-start` → `goal observe-terminal` → `goal advance` + 1 LLM turn. `goal agent-step` always fails with `agent-loop-producer-not-started` before observe-start (native_producer=null), so the run cannot be interrupted at the level of a step.
+- **High-cost output**: the design-publication of design.package is ~106KB of prose + spine + 3 member markdown. Generating this in 1 turn of a very long continue session (`ses_f2bc14…`) is heavy, and it looked as if no response was coming back (it was cancelled twice in this run).
+- **Rerun cost**: draft-1 was rerun because the first subagent did not write output.json, minimality took 2 attempts because of a domain reject, and for package new attempts kept being reserved because of missing anchors (`daba73cb` → `a06c42ca` → `dacf007c`).
+- **Attempt mix-up (package)**: when the designer session `ses_f2bc14…` was made to run attempt `daba73cb…` (design.package, continue step6), the session reran the old revise attempt `09c174aa…` instead of package and overwrote output.json. It fell back to the wrong attempt under the mistaken belief that "the hash of the path the manifest presents does not exist" (translated from Japanese). The cause is presumed to be the accumulated context of the continue session.
+- **Domain reject (minimality)**: attempt `e0179023…` was `rejected / native-output-invalid:production-composition-domain-transition-invalid`. The cause was that `validate_result` in `runtime/policies/planning/policy.py` requires pair/group references to match `classifications[].signal_id` byte for byte, while the LLM wrote descriptive names. It was resolved by the rerun attempt `56cd3254…`. The match of reference IDs is not machine-verified in advance.
+- **UNSATISFIED retry loop of package**: the evaluator of design.package requires `<!-- anchor: <id> -->` for every spine identity of design.md, through `PlanningBundle.validate` in `runtime/policies/planning/policy.py`. The producer's design-publication passes the JSON schema (`artifacts/design-publication/schema.json`) but lacks 30 anchors, and a new package attempt is reserved while the evidence stays ACCEPTED with `result: UNSATISFIED`. The schema does not express the anchor requirement, so retries continue in domain validation even when the output is schema-valid. When the anchors are filled in, `validate` gives 0 errors.
+- **Repo edits during the run invalidate evidence**: `files_digest` (= tree_sha) of `runtime/development_loop/observe.py::capture_binding` is a hash of the whole working tree (tracked + untracked; `docs/index/` is ignored and has no effect). Because the conductor edited repo files during the run (filing an issue, adding a change.md member, adding consultation-evidence), the tree_sha of the preceding evidence (`ac445407…`) and the current tree (`39d68622…`) no longer matched, `sources.current` became STALE, then all evidence became BLOCKED, and the run could not continue. For a single attempt, `readonly-world-changed` of `runtime/development_loop/attempts.py::_verify_result` fires.
+- **Filed earlier**: issue-20260924-debug-goal-observation-gate-verification (the exact-match requirement of the observation gate makes a goal unrecoverable).
 
-## 着手に必要な文脈
+## Context needed to start
 
-- 発見元: `docs/changes/change-20260924-integrator-host-observation` (design Goal run 本体)。
-- **未決の問い: tree_sha (working tree 全体) の比較は必要か。** これが守っているのは「readonly attempt が宣言外の repo 変更をしないこと」と「evidence が同一 world を指すこと」である。しかし現行の粒度では、design の governed surface (`runtime/development_loop/**` など) ではない docs 運用文書 (`docs/issue/**`、`docs/changes/**` のメタ) の編集でも run 全体が無効化される。`docs/.docs-config.yaml` は dev-evidence 用に `evidence.meta_paths` / `generated_paths` を既に宣言しており、比較 surface を governed path に限定する先例になりうる。決めるべきは (a) 比較対象を Profile の declared source/scope surface に限定するか、(b) meta path 編集で run を継続できる明示 re-baseline を置くか、(c) 厳格なまま「run 中の repo 編集禁止」を運用規律にするか — evidence currency が何を守る invariant なのかで結論が変わる。
-- 対象 module: `agent_loop_v2.py` (agent-step gating)、`planning/policy.py` (reference/anchor 検証)、`native_producer_v2.py` (producer 束縛)、`observe.py` (capture_binding / tree_sha)、`attempts.py` (readonly-world-changed)。
+- Found in: `docs/changes/change-20260924-integrator-host-observation` (the design Goal run itself).
+- **Open question: is the comparison of tree_sha (the whole working tree) necessary?** What it protects is "a readonly attempt makes no undeclared repo change" and "evidence points to the same world". However, at the current granularity, the whole run is invalidated even by edits to docs operations documents (`docs/issue/**`, the metadata of `docs/changes/**`) that are not the governed surface of design (`runtime/development_loop/**` and the like). `docs/.docs-config.yaml` already declares `evidence.meta_paths` / `generated_paths` for dev-evidence, which can be a precedent for limiting the comparison surface to governed paths. What must be decided is whether to (a) limit what is compared to the declared source/scope surface of the Profile, (b) provide an explicit re-baseline that lets a run continue after a meta path edit, or (c) stay strict and make "no repo edits during a run" an operating discipline. The conclusion changes with which invariant evidence currency protects.
+- Target modules: `agent_loop_v2.py` (agent-step gating), `planning/policy.py` (reference/anchor validation), `native_producer_v2.py` (producer binding), `observe.py` (capture_binding / tree_sha), `attempts.py` (readonly-world-changed).
 
-## 2026-09-25 実行状況
+## 2026-09-25 execution status
 
-- 対象 run (design Goal `6b38f619…`) は `sources.current` STALE (tree_sha 不一致) で継続不能となり `goal cancel`。design 内容 (candidate A' 採択・plan・review/minimality) は runtime で accept 済みのため、受理済み package 出力から change `change-20260924-integrator-host-observation` を手動 materialize して回収した (design-plan/design.md + spine.yaml + 3 member、`docs lint` green)。
-- 本 issue 自体は未解決のまま (design の遅さ・run 中編集での evidence 無効化・package anchor ループのいずれも runtime 側は未修正)。
-- tree_sha 比較の必要性は上記「未決の問い」の通り未確定。
+- The target run (design Goal `6b38f619…`) could not continue because `sources.current` was STALE (tree_sha mismatch), and was ended with `goal cancel`. The design content (adoption of candidate A', plan, review/minimality) had already been accepted in the runtime, so it was recovered by manually materializing the change `change-20260924-integrator-host-observation` from the accepted package output (design-plan/design.md + spine.yaml + 3 members, `docs lint` green).
+- This issue itself remains unresolved (none of the slowness of design, the invalidation of evidence by edits during a run, and the package anchor loop has been fixed on the runtime side).
+- Whether the tree_sha comparison is necessary is undetermined, as stated in "Open question" above.
 
 
 {% transition from="open" to="rejected" date="2026-11-14" %}
-2026-11-14 の棚卸しで実装と照合した(ユーザー指示「実装と照らし合わせて実装されていないものは archive」)。design の Goal run(capability の直列駆動)と、observe.py の capture_binding、attempts.py は実装に存在しない。
+Checked against the implementation in the inventory of 2026-11-14 (user instruction "Compare against the implementation and archive what is not implemented" (translated from Japanese)). The design Goal run (serial driving of capabilities), capture_binding in observe.py, and attempts.py do not exist in the implementation.
 {% /transition %}

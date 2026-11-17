@@ -2,7 +2,7 @@
 
 A scenario is a directory:
 
-    repo/           the files of the base commit (with .dev-skills/checks.json when checks are used)
+    repo/           the files of the base commit (with .loop-engine/checks.json when checks are used)
     change/         optional: files committed on top of the base, the existing change a unit judges
     contract.json   the contract; "{repository}", "{base}" and "{unit_id}" are filled in
     expect.json     {"stop_reason": "...", "unmet": ["criterion id", ...], "max_turns": n}
@@ -103,7 +103,7 @@ def run_contract(contract, home, work):
         json.dump(contract, handle, ensure_ascii=False, indent=1)
     environ = dict(os.environ)
     if home:
-        environ["DEV_SKILLS_HOME"] = home
+        environ["LOOP_ENGINE_HOME"] = home
     subprocess.run([sys.executable, "-I", ENGINE, "run", path], env=environ, stdin=subprocess.DEVNULL,
                    stdout=subprocess.DEVNULL)
     return load_unit(home_root(environ), contract["unit_id"])

@@ -1,24 +1,24 @@
 ---
 id: note-20261111-loop-sandbox-mcp-contract
 kind: note
-title: Sandbox 内 Loop と host MCP の実装契約案
+title: Implementation contract proposal for the Loop inside the sandbox and the host MCP
 status: draft
 created: '2026-11-11'
 tags: []
 owners: []
 relations: []
 source_paths: []
-summary: 資源操作は MCP tool を通す。独自 HTTP／socket 接続案を撤回し、sandbox コマンドの tool 要求を conductor
-  が MCP tool として実行して結果を返す形へ修正。
+summary: Resource operations go through MCP tools. Withdraws the custom HTTP / socket connection proposal and
+  revises the design so that the conductor runs a sandbox command's tool request as an MCP tool and returns the result.
 ---
 
-## 接続案の撤回（2026-11-12）
+## Withdrawal of the connection proposal (2026-11-12)
 
-この note が指定した独自 HTTP／Unix socket 接続と接続情報の注入は撤回する。MCP tool を呼ぶというユーザー指示を、同じ host handler に到達すればよいと誤って読み替えていた。下記の資源操作の責務分離は、その独自経路を正当化しない。eb331b40 の接続実装は不適合であり、後続の change-20261112-loop-mcp-tool-dispatch がその撤去と MCP tool 呼出しへの修正を扱う。
+The custom HTTP / Unix socket connection and the injection of connection information that this note specified are withdrawn. The note had wrongly reinterpreted the user's instruction to call MCP tools as meaning that reaching the same host handler was enough. The separation of responsibilities for resource operations below does not justify that custom path. The connection implementation in eb331b40 is nonconforming, and the follow-up change-20261112-loop-mcp-tool-dispatch handles its removal and the correction to MCP tool calls.
 
-## 成果と構成
+## Outcome and structure
 
-実装契約。確定境界は ADR adr-20261111-loop-sandbox-mcp-boundary に従う。sandbox 内に CLI、kernel、Unit Driver と判断ロジックを置く。host 側 MCP に認可、永続化、worktree 操作、既存 cross-host executor を置く。producer の配置と動作権限は既存 transport 契約に従う。
+Implementation contract. The settled boundary follows ADR adr-20261111-loop-sandbox-mcp-boundary. The CLI, the kernel, the Unit Driver and the decision logic are placed inside the sandbox. Authorization, persistence, worktree operations and the existing cross-host executor are placed in the host-side MCP. The placement and operating permissions of the producer follow the existing transport contract.
 
 ```text
 sandbox: CLI → kernel / driver → resource ports + execution port
@@ -26,50 +26,50 @@ sandbox: CLI → kernel / driver → resource ports + execution port
 host: admission → state / worktree adapters + cross-host executor
 ```
 
-## 操作契約
+## Operation contract
 
-| port | 入力と結果 | host 側の責務 |
+| port | Input and result | Host-side responsibility |
 |---|---|---|
-| LoopState | repository に束縛された handle、snapshot revision、更新内容 → revision または conflict | 状態読書き、排他、原子的 commit、許可範囲の検査 |
-| ArtifactStore | 管理 artifact の handle、内容、digest → 保存 handle／内容 | 入出力と成果の管理保存・取得。任意絶対パスを公開しない |
-| RepositoryWorkspace | repository/worktree handle と必要な取得・変更操作 → snapshot／変更結果 | path と symlink の検査、Git/worktree 副作用、操作範囲の認可 |
-| ProducerExecution | 既存 subsession start/continue/observe/recover/cancel 等 | provider 起動、receipt、revision、実プロセス観測 |
+| LoopState | handle bound to a repository, snapshot revision, update content → revision or conflict | state read and write, mutual exclusion, atomic commit, check of the permitted scope |
+| ArtifactStore | handle, content and digest of a managed artifact → stored handle / content | managed storage and retrieval of inputs, outputs and outcomes. Does not expose arbitrary absolute paths |
+| RepositoryWorkspace | repository/worktree handle and the required read and change operations → snapshot / change result | check of paths and symlinks, Git/worktree side effects, authorization of the operation scope |
+| ProducerExecution | existing subsession start/continue/observe/recover/cancel and so on | provider startup, receipt, revision, observation of the real process |
 
-port は利用側の語彙で定義し、汎用 shell や任意ファイル read/write を公開しない。状態の意味・次の Execution の判断は sandbox の kernel が持つ。host は保存の原子性と認可を保証し、次の Execution を選ばない。変更 commit は expected revision 付き compare-and-swap とし、複数 file の ledger 更新を一つの transaction として保存する。kernel が snapshot から算出した更新を適用し、競合なら再読込みして再判断する。
+Ports are defined in the vocabulary of the using side and do not expose a general-purpose shell or arbitrary file read/write. The kernel in the sandbox owns the meaning of the state and the decision on the next Execution. The host guarantees the atomicity of storage and authorization, and does not choose the next Execution. A change commit is a compare-and-swap with an expected revision, and a ledger update across multiple files is stored as one transaction. The update that the kernel computed from the snapshot is applied; on a conflict, the kernel reloads and decides again.
 
-最初の repository handle は server 起動時の origin と既存 CwdAuthority から発行する。worktree 作成・参照 repository 登録はその権限内の明示操作にする。handle は server の scope と照合し、所持だけを認可としない。state root は server 設定で決まり caller が変更できない。入力 goal/source は共有アクセスを仮定せず内容を送って保存する。成果も内容または resource で取得し、host の任意出力先を受け付けない。
+The first repository handle is issued from the origin at server startup and the existing CwdAuthority. Worktree creation and registration of a reference repository are explicit operations within that authority. A handle is checked against the server's scope, and possession alone is not authorization. The state root is determined by the server configuration and the caller cannot change it. The input goal/source is sent as content and stored, without assuming shared access. Outcomes are also retrieved as content or as a resource, and an arbitrary output destination on the host is not accepted.
 
-## 起動と通信
+## Startup and communication
 
-MCP tool は用途に応じて定義・追加・変更する。既存 tool だけに限定しない。
+MCP tools are defined, added and changed as the use requires. They are not limited to the existing tools.
 
-sandbox 内から、MCP tool を呼ぶ。独自 HTTP／socket 接続や接続 URL／bearer の注入で tool 呼出しを置き換えない。driver が server を起動せず、Loop の判断を host へ移さない。単独 Python process という実行形態は固定せず、MCP tool を使う形へ見直す。sandbox コマンドは標準出力へ tool 名・引数・要求 id を返す。conductor が MCP tool を実行し、その構造化結果を標準入力へ返すと同じコマンドが続行する。この標準入出力は sandbox コマンドと conductor の受渡しであり、host 資源へのアクセスは MCP tool だけが行う。driver を別プロセスへ切り離さない。
+MCP tools are called from inside the sandbox. A custom HTTP / socket connection, or injection of a connection URL / bearer, does not replace the tool call. The driver does not start the server, and the Loop's decisions are not moved to the host. The execution form of a single standalone Python process is not fixed; it is revised into a form that uses MCP tools. The sandbox command returns the tool name, arguments and request id on standard output. When the conductor runs the MCP tool and returns its structured result on standard input, the same command continues. This standard input/output is the handoff between the sandbox command and the conductor, and only MCP tools access host resources. The driver is not split off into a separate process.
 
-## 排他・再試行・lifecycle
+## Mutual exclusion, retry and lifecycle
 
-現在の filesystem lease を MCP 側の LoopState lease 操作に置換する。lease は driver session と fencing token に結び付ける。通信切断で lease が失効しても producer 終了とは扱わない。後継 driver は新しい token で snapshot と既存 operation receipt を照合し、同一 operation_id を再利用する。失効 token の更新は拒否する。executor の起動・継続の冪等性を再利用し、通信 timeout から新しい producer を起動しない。
+The current filesystem lease is replaced with LoopState lease operations on the MCP side. A lease is tied to a driver session and a fencing token. When a lease expires because of a disconnection, that is not treated as the producer having ended. A successor driver uses a new token to reconcile the snapshot with the existing operation receipts, and reuses the same operation_id. An update that carries an expired token is refused. The idempotency of executor start and continue is reused, and a communication timeout does not start a new producer.
 
-MCP server が provider process と永続 receipt を所有し、driver 終了では provider を巻き添えにしない。server 自身の終了時の child cleanup は既存 transport 契約に従う。再接続で終了を確認できなければ recovery-unknown を返し、成功や停止を推測しない。明示 cancel は停止要求と writer 終了確認を区別する。
+The MCP server owns the provider process and the durable receipts, and the end of the driver does not take the provider down with it. Child cleanup when the server itself exits follows the existing transport contract. If the end cannot be confirmed on reconnection, recovery-unknown is returned, and neither success nor stop is guessed. An explicit cancel distinguishes the stop request from the confirmation that the writer has ended.
 
-## 実装単位と順序
+## Implementation units and order
 
-1. state、artifact、worktree、process の直接アクセス箇所を runtime/development_loop と依存先から列挙し、利用側 port と snapshot/commit 契約を定義する。純粋な kernel 判断は維持する。
-2. host MCP に資源操作 adapter と契約テストを追加する。既存認可と executor を共有し、許可外 request が副作用へ到達しないことを検証する。
-3. MCP tool を呼ぶ実行形態を定義し、全 CLI 操作と driver の資源操作をその経路へ接続する。open_execution_host の runtime 向け公開経路と呼出しを削除する。独立 MCP server 用 executor 実装は保持する。
-4. 独自 bridge と接続情報注入を撤去し、MCP tool 経由の観測・再開を接続する。instructions.md の一律 sandbox 外指定を削除し、生成物へ影響すれば generator から同期する。
+1. Enumerate the places that access state, artifacts, worktrees and processes directly, from runtime/development_loop and its dependencies, and define the using-side ports and the snapshot/commit contract. Keep the pure kernel decisions.
+2. Add resource operation adapters and contract tests to the host MCP. Share the existing authorization and executor, and verify that a request outside the permitted scope does not reach a side effect.
+3. Define the execution form that calls MCP tools, and connect all CLI operations and the driver's resource operations to that path. Delete the path that exposes open_execution_host to the runtime, and the calls to it. Keep the executor implementation for the independent MCP server.
+4. Remove the custom bridge and the injection of connection information, and connect observation and resumption through MCP tools. Delete the across-the-board outside-the-sandbox designation in instructions.md, and if generated files are affected, synchronize them from the generator.
 
-各単位の完了は次の契約テストで判定する。順序途中で実運用へ切り替えず、現在契約の producer/consumer を同期する。互換用の埋込み fallback は作らない。
+Completion of each unit is judged by the following contract tests. Production use is not switched over partway through the order, and the producer/consumer of the current contract are kept in sync. No embedded fallback for compatibility is created.
 
-## 検証計画
+## Verification plan
 
-- lint/static: 変更対象 schema、prompt、generator、docs を検査。runtime から embedded host と provider 起動への依存を検査する。
-- 通常テスト: fake と本番資源 adapter に同じ契約試験を適用。revision 競合、transaction 全反映／無反映、失効 token、異なる repository の handle、path traversal、symlink、操作拒否、副作用なしを確認。local test MCP を使い通信切断・再接続・重複 request・server 再起動の receipt を確認する。
-- 受入れ E2E: sandbox の host directory 直接アクセスと provider 起動を拒否したまま open/drive/status/instruction/再開/export/cancel を完了する。並行 drive でも producer は一度だけ起動し、拒否 request で状態・worktree は変化しない。外部 provider と実 host を使うため別途明示承認が必要。
+- lint/static: check the changed schemas, prompts, generators and docs. Check for dependencies from the runtime on the embedded host and on provider startup.
+- Regular tests: apply the same contract tests to the fake and to the production resource adapters. Confirm revision conflict, transaction applied in full / not applied at all, expired token, handle of a different repository, path traversal, symlink, operation refusal, and absence of side effects. Using a local test MCP, confirm the receipts for disconnection, reconnection, duplicate request and server restart.
+- Acceptance E2E: complete open/drive/status/instruction/resume/export/cancel while the sandbox's direct access to host directories and provider startup stay refused. Even with concurrent drives the producer starts only once, and a refused request does not change the state or the worktree. Because it uses an external provider and a real host, separate explicit approval is required.
 
-## 未検証の具体点
+## Specific points not yet verified
 
-既存 ledger の transaction 範囲、MCP tool と sandbox 内の判断処理の受渡し、既存 server の複数接続と終了時 cleanup の振る舞いは実装前の確認対象。これらは上記境界を変更する理由にはしない。未対応なら明示停止し、対応する host adapter を整備する。
+The transaction scope of the existing ledger, the handoff between MCP tools and the decision processing inside the sandbox, and the behavior of the existing server under multiple connections and its cleanup on exit are to be confirmed before implementation. These are not a reason to change the boundary above. Where something is not supported, stop explicitly and provide the corresponding host adapter.
 
-## 実装で確定した操作境界
+## Operation boundary settled by the implementation
 
-host effect は保存済み Execution の固定文書記録と delivery commit／land を扱う。baseline、任意の検証コマンド、delivery postflight は caller sandbox に残す。host に汎用 command executor を置かない。host の Git 子 process は cwd admission と lifetime cell に束縛する。通常テストの注入境界と実 host sandbox の実証を区別する。
+The host effect handles the fixed document record of a stored Execution and the delivery commit / land. The baseline, arbitrary verification commands and the delivery postflight stay in the caller sandbox. No general-purpose command executor is placed on the host. Git child processes on the host are bound to cwd admission and a lifetime cell. The injection boundary of regular tests and the demonstration on a real host sandbox are distinguished.

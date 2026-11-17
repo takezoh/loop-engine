@@ -13,7 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from engine_support import RUNNER, SRC, EngineCase, approve, changes, produced, published_runner, git, write
 
-from loop_engine import cli, client, store
+from loop_engine import cli, client, service, store
 from loop_engine.agents import TurnOutcome
 from loop_engine.platform_facts import CURRENT, POSIX, WINDOWS
 from loop_engine.service import Engine
@@ -34,13 +34,13 @@ class AdmissionTest(EngineCase):
     def test_start_is_refused_before_anything_is_created(self):
         engine = self.engine(finishing)
         self.assertIn("installed catalog", self.refused(engine, self.with_agent(self.contract(), producer="gamma")))
-        self.assertIn("top directory", self.refused(engine, repository=os.path.join(self.repo, ".dev-skills")))
+        self.assertIn("top directory", self.refused(engine, repository=os.path.join(self.repo, ".loop-engine")))
         self.assertIn("cannot be read", self.refused(engine, repository=os.path.join(self.repo, "missing")))
         self.assertIn("checks.json", self.refused(engine, self.with_check(self.contract(), "lint")))
         self.assertIn("keys must be exactly", self.refused(engine, command=["sh", "-c", "touch /tmp/x"]))
 
     def test_checks_come_from_the_committed_file_not_the_working_copy(self):
-        write(self.repo, ".dev-skills/checks.json", json.dumps(
+        write(self.repo, ".loop-engine/checks.json", json.dumps(
             {"checks": {"unit": {"argv": ["sh", "-c", "exit 0"]}, "lint": {"argv": ["x"]}}}))
         engine = self.engine(finishing)
         self.assertIn("lint", self.refused(engine, self.with_check(self.contract(), "lint")))
@@ -93,7 +93,7 @@ class ServeTest(EngineCase):
         return engine, thread, served
 
     def environ(self):
-        return {**os.environ, "DEV_SKILLS_HOME": self.home, "DEV_SKILLS_WORKTREES": os.path.join(self.home, "worktrees")}
+        return {**os.environ, "LOOP_ENGINE_HOME": self.home, "LOOP_ENGINE_WORKTREES": os.path.join(self.home, "worktrees")}
 
     def test_request_files_are_answered_and_removed_and_a_second_engine_yields(self):
         engine, _thread, _served = self.serving(finishing)
@@ -178,12 +178,21 @@ class ServeTest(EngineCase):
         self.assertEqual(2, self.cli("run", os.path.join(self.home, "missing.json"))[0])
 
     def test_worktrees_live_where_agents_can_write_not_under_the_state_home(self):
-        self.assertEqual("/cache/dev-skills/worktrees", store.worktrees_root({"XDG_CACHE_HOME": "/cache"}))
-        self.assertEqual("/elsewhere/wt", store.worktrees_root({"DEV_SKILLS_WORKTREES": "/elsewhere/wt",
-                                                                "DEV_SKILLS_HOME": "/state"}))
-        default = store.worktrees_root({"DEV_SKILLS_HOME": "/state"})
+        self.assertEqual("/cache/loop-engine/worktrees", store.worktrees_root({"XDG_CACHE_HOME": "/cache"}))
+        self.assertEqual("/elsewhere/wt", store.worktrees_root({"LOOP_ENGINE_WORKTREES": "/elsewhere/wt",
+                                                                "LOOP_ENGINE_HOME": "/state"}))
+        default = store.worktrees_root({"LOOP_ENGINE_HOME": "/state"})
         self.assertFalse(default.startswith("/state"))
-        self.assertTrue(default.endswith(os.path.join(".cache", "dev-skills", "worktrees")))
+        self.assertTrue(default.endswith(os.path.join(".cache", "loop-engine", "worktrees")))
+
+    def test_the_state_home_and_its_roots_carry_the_engines_own_names_and_no_callers(self):
+        environ = {"LOOP_ENGINE_HOME": "/state", "DEV_SKILLS_HOME": "/caller", "DEV_SKILLS_WORKTREES": "/caller/wt"}
+        self.assertEqual("/state/records", store.home_root(environ))
+        self.assertEqual("/state/published", store.published_root(environ))
+        self.assertFalse(store.worktrees_root(environ).startswith("/caller"))
+        default = store.home_root({"DEV_SKILLS_HOME": "/caller"})
+        self.assertTrue(default.endswith(os.path.join(".loop-engine", "records")))
+        self.assertEqual(".loop-engine/checks.json", service.CHECKS_FILE)
 
     def test_engine_command_is_fixed_and_isolated(self):
         command = client.engine_command()
@@ -248,16 +257,19 @@ class EngineProcessTest(EngineCase):
     """The real engine process, started the way an entry starts it."""
 
     def test_entry_starts_the_engine_which_answers_and_refuses_from_its_own_installation(self):
-        environ = {**os.environ, "DEV_SKILLS_HOME": self.home, "PYTHONPATH": self.repo,
-                   "DEV_SKILLS_WORKTREES": os.path.join(self.home, "worktrees")}
+        environ = {**os.environ, "LOOP_ENGINE_HOME": self.home, "PYTHONPATH": self.repo,
+                   "LOOP_ENGINE_WORKTREES": os.path.join(self.home, "worktrees")}
         write(self.repo, "loop_engine/__init__.py", "raise SystemExit('imported from the working directory')\n")
         before = list(client._started)
 
         def stop_engines():
-            for process in client._started:
-                if process not in before:
-                    process.terminate()
-                    process.wait(30)
+            # An engine this test stopped is not one that failed: forget it, so a later request
+            # in this process does not report it as stopped before answering.
+            for process in [process for process in client._started if process not in before]:
+                process.terminate()
+                process.wait(30)
+                client._started.remove(process)
+                client._stderr_paths.pop(process, None)
         self.addCleanup(stop_engines)
         self.assertEqual({"ok": True, "result": {"engine": "running"}},
                          client.request(self.root, {"request": "ping"}, environ=environ))
@@ -279,8 +291,8 @@ class EngineProcessTest(EngineCase):
         # An engine that cannot start says why, instead of the entry waiting until its time runs out.
         no_git = os.path.join(os.path.dirname(self.home), "no git")
         os.makedirs(no_git)
-        environ = {**os.environ, "DEV_SKILLS_HOME": self.home, "PATH": no_git,
-                   "DEV_SKILLS_WORKTREES": os.path.join(self.home, "worktrees")}
+        environ = {**os.environ, "LOOP_ENGINE_HOME": self.home, "PATH": no_git,
+                   "LOOP_ENGINE_WORKTREES": os.path.join(self.home, "worktrees")}
         started = time.monotonic()
         with self.assertRaisesRegex(client.EngineUnavailable, r"(?s)stopped with status [1-9]\d* before it answered: .*git not found on PATH"):
             client.request(self.root, {"request": "ping"}, environ=environ, timeout=60)

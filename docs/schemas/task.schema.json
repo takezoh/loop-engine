@@ -27,12 +27,12 @@
     },
     "pinned_context": {
       "type": "array",
-      "description": "実装判断に必要な契約・根拠・コードの参照。",
+      "description": "References to the contracts, evidence and code needed for implementation decisions.",
       "items": {"type": "string"}
     },
     "done_criteria": {
       "type": "array",
-      "description": "観察可能なtaskの完了条件。",
+      "description": "Observable completion conditions of the task.",
       "items": {"type": "string"}
     }
   }

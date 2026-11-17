@@ -1,4 +1,5 @@
-"""Process entry, run as a script with `python -I`: `serve` is the engine, anything else the CLI.
+"""Process entry, run as a script with `python -I`: `serve` is the engine, `mcp` the MCP entry for the
+session connected at the current directory, anything else the CLI.
 
 With -I nothing from the current directory or the environment reaches the
 import path, so the engine imports only this installation's own packages.
@@ -21,9 +22,22 @@ def serve():
     return 0
 
 
+def mcp():
+    from loop_engine import composition, mcp_stdio
+    try:
+        tools = composition.unit_entry(os.environ, os.getcwd())
+    except PermissionError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    mcp_stdio.serve(tools)
+    return 0
+
+
 def main(argv):
     if argv == ["serve"]:
         return serve()
+    if argv == ["mcp"]:
+        return mcp()
     from loop_engine import cli
     return cli.main(argv)
 

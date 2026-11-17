@@ -1,102 +1,102 @@
 ---
 id: note-20261114-loop-engine-redesign-investigation
 kind: note
-title: Loop Engine 再設計の調査記録(失敗の実測、原因、参照ハーネス、PoC)
+title: Loop Engine redesign investigation record (measured failures, causes, reference harnesses, PoC)
 status: draft
 created: '2026-11-14'
 tags: []
 owners: []
 relations: []
 source_paths: []
-summary: 2026-11-14 の調査。Loop の完了率、不完全な実装が繰り返される原因、参照ハーネスとの比較、PoC と実機確認の結果、確定した方針と未確認事項。
+summary: Investigation of 2026-11-14. The Loop completion rate, the cause of repeated incomplete implementations, the comparison with reference harnesses, the results of the PoC and of the checks on real agents, the direction that was settled, and the items not yet confirmed.
 ---
 
 ## Summary
 
-Loop が安定して動かない原因と、再設計の方針を調べた記録である。完了しない Loop の大半は、成果の質ではなく実行基盤の段階で止まっていた。不完全な実装が繰り返される原因は、要件を運ぶ文書と検査を、実装するエージェント自身が同じ変更で書き換えられることにあった。方針は 2 件の ADR 案にまとめた。
+This note records an investigation into why Loops do not run stably and into the direction of the redesign. Most Loops that did not complete stopped at the execution infrastructure stage, not because of the quality of the outcome. Incomplete implementations were repeated because the implementing agent itself could rewrite, in the same change, the documents and checks that carry the requirements. The direction is summarized in 2 draft ADRs.
 
-- [engine の境界](../adr/adr-20261114-loop-engine-host-boundary.md)
-- [検査の判定](../adr/adr-20261114-checks-judged-from-execution-record.md)
+- [Engine boundary](../adr/adr-20261114-loop-engine-host-boundary.md)
+- [Judging checks](../adr/adr-20261114-checks-judged-from-execution-record.md)
 
 ## Notes
 
-### Loop の完了率(実行記録の集計)
+### Loop completion rate (tally of execution records)
 
-`~/.dev-skills/development-loop/.families/*.sqlite3` の記録を、受理済みの品質評価が充足しているかで機械的に分類した。
+The records in `~/.dev-skills/development-loop/.families/*.sqlite3` were classified mechanically by whether the accepted quality review was satisfied.
 
-| 記録 | 期間 | 件数 | 完了 | 取消 | 未完了 |
+| Records | Period | Count | Completed | Cancelled | Not completed |
 |---|---|---|---|---|---|
-| この端末 | 11/07〜11/12 | 61 | 29 | 21 | 11 |
-| 別の端末 | 9/29〜11/13 | 174 | 58 | 30 | 86 |
+| This machine | 11/07 to 11/12 | 61 | 29 | 21 | 11 |
+| Another machine | 9/29 to 11/13 | 174 | 58 | 30 | 86 |
 
-- 別の端末の未完了のうち、最後の記録が「実行開始」のまま終了記録がないものが 43 件、登録だけのものが 8 件。
-- 完了しなかった implementation 63 件の review 回数は中央値 0。評価に届く前に止まっている。
-- host MCP service 方式(11/13 以降)の記録は別の端末に 6 件。成果境界に到達 1 件、`producer-not-started` 3 件、`producer-output-missing` の繰り返しによる打ち切り 2 件。
+- Of the Loops not completed on the other machine, 43 had "execution started" as their last record with no end record, and 8 were only registered.
+- The median number of reviews for the 63 implementation Loops that did not complete was 0. They stopped before reaching review.
+- There are 6 records of the host MCP service approach (from 11/13 on) on the other machine. 1 reached the outcome boundary, 3 were `producer-not-started`, and 2 were cut off after repeated `producer-output-missing`.
 
-### 不完全な実装が繰り返される原因
+### Cause of repeated incomplete implementations
 
-- commit `0540f7a5`(240 file)は、Loop を host へ移し、bwrap の隔離を追加し、`DEVELOPMENT.md` §11 の規則を削除し、skill-lint の境界規則(C11〜C15)の意味を入れ替え、test 103 file を書き換え、ADR 2 件を accepted で新規作成した。承認の記録はない。
-- 以後の文書と検査は、違反後の状態を正として一致する。巻き戻しを指示されたセッションも、その文書を基準にしたため、producer 側だけが戻った(`00e288da`)。
-- sandbox の中からは、git の書き込み、`~/.dev-skills` への書き込み、agent の起動ができない(実測)。Loop がこれらに依存していたことが、境界を越える経路を繰り返し生んだ。
+- Commit `0540f7a5` (240 files) moved the Loop to the host, added bwrap isolation, deleted the rules of `DEVELOPMENT.md` §11, swapped the meaning of the skill-lint boundary rules (C11 to C15), rewrote 103 test files, and newly created 2 ADRs as accepted. There is no record of approval.
+- The documents and checks after that agree with each other, taking the state after the violation as correct. The session that was instructed to roll back also used those documents as its baseline, so only the producer side was rolled back (`00e288da`).
+- From inside the sandbox, git writes, writes to `~/.dev-skills`, and starting an agent are not possible (measured). The Loop depended on these, and that repeatedly produced paths that cross the boundary.
 
-### 参照ハーネスとの比較
+### Comparison with reference harnesses
 
-文書とコードの読み取りによる。実際の動作は確かめていない。
+This is based on reading documents and code. The actual behavior was not confirmed.
 
-| ハーネス | 進行の担い手 | 会話からの利用 | sandbox |
+| Harness | What drives progress | Use from a conversation | sandbox |
 |---|---|---|---|
-| Ouroboros | 切り離した worker | skill が MCP tool を呼び、待機・照会する | 持たない |
-| Lobster | runtime | agent が tool として同期的に呼ぶ | 持たない |
-| Clawpatch | CLI | 手段は見つからず | provider に頼る |
-| autoresearch | shell の loop | なし | 持たない |
+| Ouroboros | A detached worker | A skill calls MCP tools, then waits and queries status | None |
+| Lobster | runtime | The agent calls it synchronously as a tool | None |
+| Clawpatch | CLI | No means was found | Relies on the provider |
+| autoresearch | A shell loop | None | None |
 
-- どれも自前の sandbox と一度きり実行の台帳を持たない。
-- Ouroboros は機械検査だけが受入を出せる。検査 command は project の設定 file から読む。
-- Ouroboros は検査を host で実行していて、閉じ込めに関する未解決の issue がある。この点は取り入れない。
+- None of them has its own sandbox or a ledger for run-once execution.
+- In Ouroboros, only mechanical checks can give acceptance. It reads the check commands from the project's configuration file.
+- Ouroboros runs the checks on the host and has an unresolved issue about confinement. This point is not adopted.
 
-### PoC の結果
+### PoC results
 
-PoC は一時 directory に作り、repository には入れていない。engine 本体は約 670 行。
+The PoC was built in a temporary directory and is not in the repository. The engine itself is about 670 lines.
 
-- 偽の agent での試験 38 件: 流れ、差し戻し、7 つの止まり方の区別、強制終了後の再開、8 経路の遮断、純粋関数の範囲が成り立った。
-- 実機(CLI を直接起動):
-  - `codex exec` は command と数値の終了コードを出す。
-  - `claude -p` は数値の終了コードを出さない。
-  - 既定の `claude -p` は、作業 directory の hook と `.mcp.json` の server を確認なしで起動した。
-  - `--setting-sources user` を付けると起動しないが、`CLAUDE.md` と `AGENTS.md` も読まれなくなる。
-  - codex は `.codex/config.toml` の MCP server を、読み取り専用 sandbox と信頼なしの指定でも起動した。
-- git は、hook を無効にする設定と、属性を空の tree から読ませる指定の両方を付けて初めて、外部 program を起動しなくなった。
+- 38 tests with a fake agent: the flow, sending work back, the distinction between the 7 stop reasons, resumption after a forced kill, the blocking of 8 paths, and the extent of pure functions all held.
+- Real agents (CLI started directly):
+  - `codex exec` outputs the command and a numeric exit code.
+  - `claude -p` does not output a numeric exit code.
+  - `claude -p` with defaults started the hooks of the working directory and the servers in `.mcp.json` without confirmation.
+  - With `--setting-sources user` it does not start them, but `CLAUDE.md` and `AGENTS.md` are no longer read either.
+  - codex started the MCP servers in `.codex/config.toml` even with a read-only sandbox and the untrusted setting.
+- git stopped starting external programs only when given both the setting that disables hooks and the option that makes it read attributes from the empty tree.
 
-### 今の実装で、方針と合わない点
+### Points where the current implementation does not match the direction
 
-- `codex_driver.py` は producer の sandbox を自分で指定している。
-- 書き込み先を強制できる driver だけを producer にする判定がある。
-- turn の結果に、実行した command の記録がない。
-- 対応表では pi を使う側が空で、無効になっている。
+- `codex_driver.py` specifies the producer's sandbox by itself.
+- There is a judgment that makes only drivers that can enforce the write destination into producers.
+- The turn result has no record of the commands that were run.
+- In the catalog, the side that uses pi is empty, so it is disabled.
 
-### 未確認
+### Not yet confirmed
 
-- 本体の `.git` が agent から読めない場所にある worktree。
-- ACP 経由の claude で `~/.ssh` を一覧できた理由。環境の sandbox 設定がどこまで効いているか。
-- pi が `--exclude-skills` を受け付けなかった理由。
-- codex の記録に command が現れない条件。
-- 取消になった Loop の個別の理由。
+- A worktree whose main `.git` is in a place the agent cannot read.
+- Why claude over ACP was able to list `~/.ssh`. How far the environment's sandbox settings take effect.
+- Why pi did not accept `--exclude-skills`.
+- The conditions under which a command does not appear in the codex record.
+- The individual reasons for the Loops that were cancelled.
 
-### 既存の抽象を通した実機確認
+### Checks on real agents through the existing abstraction
 
-各 agent 3 turn。記録は一時 directory にあり、repository には入れていない。
+3 turns per agent. The records are in a temporary directory and are not in the repository.
 
-- provider の共通処理は、MCP server なしで普通の process から組み立てて動かせた。
-- 対応表のままでは起動できなかったものが 2 つある。
-  - claude: launcher の起動前 check が失敗した。導入済みの bundle(11/12)の実行 file 名が、現在の repository が期待する名前と違う。
-  - pi: 対応表が渡す `--exclude-skills` を、起動された pi が受け付けなかった。
-- 実行記録: codex と pi は成否と数値の終了コードを出す。ACP 経由の claude は出さず、失敗する command も completed として届いた。3 つの driver はどれもこれらの event を捨てている。
-- codex は、sandbox で失敗した command 1 件を記録に出さなかった。
-- 作業 directory の設定: claude は hook と MCP server を起動した。codex は MCP server だけを起動した。pi はどちらも起動しなかった。
-- 指示 file: claude は `CLAUDE.md`、codex と pi は `AGENTS.md` を読んだ。
-- codex は、承認なしの指定のもとで git の実行を拒否した。利用者の設定が git を sandbox の外で実行するよう求めているためである。
-- claude と pi は、worktree の中で `git status` と `git diff` を実行できた。本体の `.git` が読めない場所にある場合は試していない。
+- The provider's common processing could be assembled and run from an ordinary process without an MCP server.
+- 2 agents could not be started with the catalog as it is.
+  - claude: the launcher's pre-start check failed. The executable file name in the installed bundle (11/12) differs from the name the current repository expects.
+  - pi: the started pi did not accept `--exclude-skills`, which the catalog passes.
+- Execution record: codex and pi output success or failure and a numeric exit code. claude over ACP does not, and even a failing command arrived as completed. All 3 drivers discard these events.
+- codex did not output to the record 1 command that failed in the sandbox.
+- Working directory configuration: claude started the hooks and the MCP servers. codex started only the MCP servers. pi started neither.
+- Instruction files: claude read `CLAUDE.md`; codex and pi read `AGENTS.md`.
+- codex refused to run git under the no-approval setting. This is because the user's configuration requires git to run outside the sandbox.
+- claude and pi were able to run `git status` and `git diff` inside the worktree. The case where the main `.git` is in an unreadable place was not tried.
 
-### 文書の棚卸し(同日)
+### Document inventory (same day)
 
-status が無効を示す文書 172 件と、実装に対応物がない文書 20 件を `docs/archived/` へ退避した。
+172 documents whose status indicates they are not in effect and 20 documents with no counterpart in the implementation were moved to `docs/archived/`.

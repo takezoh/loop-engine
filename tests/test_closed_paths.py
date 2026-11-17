@@ -64,7 +64,7 @@ class StructureTest(unittest.TestCase):
                 self.assertNotIn(word, text, f"{name}: {word}")
 
     def test_entries_hold_no_progress_judgment_or_recording_logic(self):
-        for name in ("cli.py", "client.py"):
+        for name in ("cli.py", "client.py", "unit_tools.py", "mcp_stdio.py"):
             found, _calls = imports(name)
             self.assertFalse(found & {".facts", ".unit", ".service", ".git", ".prompts", ".composition"}, name)
 

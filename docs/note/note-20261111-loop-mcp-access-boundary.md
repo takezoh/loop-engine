@@ -1,30 +1,30 @@
 ---
 id: note-20261111-loop-mcp-access-boundary
 kind: note
-title: Loop の MCP 操作境界と sandbox アクセス設計案
+title: Loop MCP operation boundary and sandbox access design proposal
 status: draft
 created: '2026-11-11'
 tags: []
 owners: []
 relations: []
 source_paths: []
-summary: Loop／driver を sandbox 内に保ち、host 資源アクセスを MCP の検査・認可経由に限定する確定境界。先の集約案は撤回。
+summary: The settled boundary that keeps the Loop / driver inside the sandbox and limits host resource access to the path through MCP's check and authorization. The earlier consolidation proposal is withdrawn.
 ---
 
-## 確定した境界
+## Settled boundary
 
-ユーザー指示: 「loop はサンドボックスの中で動いている。 sub agent (subsession) を起動するにはサンドボックスを越える必要がある。それをMCPがホスト側で検閲することで提供している。worktree や状態ディレクトリへのアクセスも同じだろう。二度とこの境界を破壊するな。」
+User instruction: "The loop runs inside the sandbox. Starting a sub agent (subsession) requires crossing the sandbox. MCP provides that by inspecting it on the host side. Access to worktrees and the state directory is presumably the same. Never break this boundary again." (translated from Japanese)
 
-開発上の設計原則は DEVELOPMENT.md §11 に記録した。Loop／driver は sandbox 内、host 資源への操作は、MCP tool の呼出しと、その先の検査・認可を経由する。同じ handler を呼ぶ独自接続はこの境界を満たさない。driver に executor を埋め込むことも、driver を host 側へ移すことも認めない。
+The design principle for development was recorded in DEVELOPMENT.md §11. The Loop / driver stays inside the sandbox, and operations on host resources go through an MCP tool call and the check and authorization behind it. A custom connection that calls the same handler does not satisfy this boundary. Embedding an executor in the driver is not allowed, and neither is moving the driver to the host side.
 
-## 撤回した提案
+## Withdrawn proposal
 
-このメモで先に提案した「MCP に Loop 操作を集約する」案は撤回する。Loop の制御と host 資源へのアクセスを混同していた。CLI に直接アクセスを与える案、一律 sandbox 外実行、既存の埋込み executor 経路の継続利用も採用しない。
+The proposal made earlier in this note, "consolidate Loop operations into MCP", is withdrawn. It confused control of the Loop with access to host resources. The proposal to give the CLI direct access, running everything outside the sandbox across the board, and continued use of the existing embedded executor path are not adopted either.
 
-## 判断時点で観測した実装
+## Implementation observed at the time of the decision
 
-runtime/development_loop/driver_process.py の _production_host は open_execution_host を呼ぶ。packages/cross-host-transport/src/cross_host_transport/subsession/execution_host.py は MCP handler を呼出し元プロセスに組み込む。この経路と runtime/development_loop/instructions.md の一律 sandbox 外指定は、上記境界に整合させる必要がある。この記録時点では実装修正と動作検証は未実施だった。
+_production_host in runtime/development_loop/driver_process.py calls open_execution_host. packages/cross-host-transport/src/cross_host_transport/subsession/execution_host.py embeds the MCP handler in the caller's process. This path, and the across-the-board outside-the-sandbox designation in runtime/development_loop/instructions.md, must be made consistent with the boundary above. At the time of this record, the implementation fix and the behavior verification had not been done.
 
-後続の設計は sandbox 内 driver から独立した host 側 MCP を呼ぶ契約を具体化する。起動、状態・worktree 操作、再接続、拒否時の副作用防止を対象とし、既存 ledger と lease の業務規則を重複実装しない。
+The follow-up design makes concrete the contract by which the driver inside the sandbox calls an independent host-side MCP. It covers startup, state and worktree operations, reconnection, and prevention of side effects on refusal, and it does not reimplement the business rules of the existing ledger and lease.
 
-実装修正と検証の記録は [change package](../../../docs/changes/change-20261111-loop-sandbox-mcp-boundary/change.md)、現在の構造は [subsession architecture](../../../docs/architecture/subsession.md) を参照する。
+For the record of the implementation fix and its verification, see the [change package](../../../docs/changes/change-20261111-loop-sandbox-mcp-boundary/change.md); for the current structure, see [subsession architecture](../../../docs/architecture/subsession.md).

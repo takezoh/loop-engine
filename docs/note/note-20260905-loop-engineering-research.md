@@ -1,7 +1,7 @@
 ---
 id: note-20260905-loop-engineering-research
 kind: note
-title: Loop Engineering 研究ノート — external feedback、verification、long-running harness
+title: Loop Engineering research note - external feedback, verification, long-running harness
 status: draft
 created: '2026-09-05'
 topic: loop-engineering
@@ -15,14 +15,14 @@ owners:
 - take.gn
 relations: []
 source_paths: []
-summary: Loop Engineering、self-correction、long-running coding harness、software-engineering agent interface の文献を調べ、dev-skills の Development Loop に必要な設計原則へ写像する
+summary: Surveys the literature on Loop Engineering, self-correction, long-running coding harness and software-engineering agent interface, and maps it to the design principles that the Development Loop of dev-skills needs
 ---
 
-## 目的
+## Purpose
 
-`dev-skills` に goal-level Development Loop を追加するにあたり、単純な retry / reflection loop ではなく、2023-2026 の研究・実務知見から成立条件を抽出する。
+In adding a goal-level Development Loop to `dev-skills`, this note extracts the conditions under which such a loop holds from the research and practical findings of 2023-2026, instead of adding a simple retry / reflection loop.
 
-対象は:
+The topics covered are:
 
 - external loop specification
 - self-correction / feedback
@@ -32,9 +32,9 @@ summary: Loop Engineering、self-correction、long-running coding harness、soft
 - software-engineering agent interface
 - simple deterministic workflows vs. heavyweight orchestration
 
-結論を先にまとめる。
+The conclusion comes first.
 
-> Development Loop の正本は Agent の内省ではなく **sealed goal + external evidence + deterministic stop policy + durable state** に置くべき。
+> The source of truth of the Development Loop should be placed not in the Agent's introspection but in **sealed goal + external evidence + deterministic stop policy + durable state**.
 
 ---
 
@@ -46,9 +46,9 @@ Source:
 
 - https://arxiv.org/abs/2607.00038
 
-このpreprintは Loop Engineering の対象を、普通のprogramming loopやagent harness内部の perceive-act-observe cycleと区別し、外部の **loop specification** として定義する。
+This preprint distinguishes the subject of Loop Engineering from an ordinary programming loop and from the perceive-act-observe cycle inside an agent harness, and defines it as an external **loop specification**.
 
-主要構成:
+Main components:
 
 - trigger
 - goal
@@ -56,15 +56,15 @@ Source:
 - stopping rule
 - memory
 
-重要なのは「Agentに何度もpromptする」のではなく、人間がstep-by-step promptingをしなくても済むよう、反復の契約自体をartifact化すること。
+The important point is not to "prompt the Agent many times" but to turn the contract of the iteration itself into an artifact, so that a human does not have to do step-by-step prompting.
 
-Corpus 50 loops の記述分析では verification と named terminal states が比較的成熟し、automated trigger と durable memory はまだ弱いと報告している。
+Its descriptive analysis of a corpus of 50 loops reports that verification and named terminal states are relatively mature, and that automated trigger and durable memory are still weak.
 
-### dev-skillsへの意味
+### Implications for dev-skills
 
-現在のPlaybook Runtimeは L2 workflow feedback を既に所有するため、Macedoのexternal loopをplaybook step DSLへ混ぜる必要はない。
+The current Playbook Runtime already owns L2 workflow feedback, so there is no need to mix Macedo's external loop into the playbook step DSL.
 
-新規L3は:
+The new L3:
 
 ```text
 sealed goal
@@ -74,13 +74,13 @@ sealed goal
   -> deterministic stop/continue
 ```
 
-だけを所有するのが自然。
+It is natural for it to own only this.
 
-Macedoは新しい実務概念を整理したpreprintであり、成熟した学術disciplineとして過大評価しない。一方、verification burden / reward hacking / named terminalsを前面に出す点は既存のdev-skills設計と強く一致する。
+Macedo is a preprint that organizes a new practical concept, and it is not to be overrated as a mature academic discipline. On the other hand, the way it puts verification burden / reward hacking / named terminals in the foreground agrees strongly with the existing dev-skills design.
 
 ---
 
-## 2. Self-correctionは external feedback の質が支配する
+## 2. Self-correction is governed by the quality of external feedback
 
 ### Kamoi et al., TACL 2024
 
@@ -88,11 +88,11 @@ Source:
 
 - https://aclanthology.org/2024.tacl-1.78/
 
-Critical surveyの主要結論:
+Main conclusions of the critical survey:
 
-1. prompted LLM自身からのfeedbackだけで一般的なself-correction成功を示した先行研究は、例外的に自己修正向きのtaskを除いて確認できない。
-2. reliable external feedbackが使えるtaskではself-correctionがよく機能する。
-3. fine-tuningを伴うself-correctionは別カテゴリとして有効性がある。
+1. No prior work can be confirmed that shows general self-correction success with only feedback from the prompted LLM itself, except on tasks that are exceptionally suited to self-correction.
+2. Self-correction works well on tasks where reliable external feedback is available.
+3. Self-correction that involves fine-tuning is effective, as a separate category.
 
 ### Pan et al., TACL 2024
 
@@ -100,7 +100,7 @@ Source:
 
 - https://aclanthology.org/2024.tacl-1.27/
 
-automated correctionを training-time / generation-time / post-hoc に整理。feedback source と correction mechanism を分離して考える重要性を示す。
+It organizes automated correction into training-time / generation-time / post-hoc. It shows the importance of thinking about the feedback source and the correction mechanism separately.
 
 ### Reflexion / Self-Refine
 
@@ -109,15 +109,15 @@ Sources:
 - Reflexion: https://papers.neurips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html
 - Self-Refine: https://arxiv.org/abs/2303.17651
 
-両者は反復feedbackの有効性を示した重要な先行例。
+Both are important earlier examples that showed the effectiveness of iterative feedback.
 
-Reflexionはexternal/internal feedbackをverbal memoryへ持ち越し、Self-Refineは同じLLMのfeedback/refine反復で改善を示した。
+Reflexion carries external/internal feedback over into verbal memory, and Self-Refine showed improvement through feedback/refine iterations by the same LLM.
 
-ただしTACLの後続critical surveyを踏まえると、これらを根拠に「Agent自身のreflectionをsuccess verifierにする」と一般化してはいけない。
+However, in light of the later critical survey in TACL, these must not be used as grounds to generalize to "make the Agent's own reflection the success verifier".
 
-### dev-skillsへの意味
+### Implications for dev-skills
 
-Development Loop のfeedback packetは:
+The feedback packet of the Development Loop:
 
 ```text
 failed check
@@ -127,17 +127,17 @@ artifact/evidence ref
 protected binding
 ```
 
-を主とし、free-form introspectionを correctness authority にしない。
+It consists mainly of these, and free-form introspection is not made a correctness authority.
 
-Executorが生成するreflectionは解法探索の補助として使えても、continue/successの判定入力はexternal verifierを優先する。
+Even if the reflection that the Executor generates can be used as an aid in searching for a solution, the external verifier takes priority as the input to the continue/success judgment.
 
 ---
 
-## 3. Verificationは current postcondition にbindする
+## 3. Verification binds to the current postcondition
 
-Loop Engineeringで最も強い設計原則は「completion text != proof」。
+The strongest design principle in Loop Engineering is "completion text != proof".
 
-Software engineeringでは特に:
+In software engineering in particular:
 
 - test
 - build
@@ -146,21 +146,19 @@ Software engineeringでは特に:
 - exact git tree / HEAD
 - runtime readback
 
-のようなenvironment-backed signalが利用できる。
+Environment-backed signals like these are available.
 
-Dev-skillsには既に:
+Dev-skills already has:
 
 - verified tree
 - consumer verification
 - acceptance commit
-- stale evidenceのFAIL/UNKNOWN扱い
+- treatment of stale evidence as FAIL/UNKNOWN
 - plan revision / authority binding
 
-がある。
+Therefore, lifting this external verification chain to the goal level is safer than inventing a new "judge" in the new Loop.
 
-したがって新Loopで新しい「judge」を発明するより、このexternal verification chainをgoal levelへ持ち上げる方が安全。
-
-### 推奨verification ladder
+### Recommended verification ladder
 
 ```text
 Level 1 deterministic static
@@ -176,10 +174,10 @@ Level 4 independent semantic review
   mechanically undecidable contract only
 
 Level 5 executor self-report
-  diagnostic only, proofではない
+  diagnostic only, not proof
 ```
 
-下位番号を優先し、semantic reviewを万能judgeにしない。
+Prefer the lower numbers, and do not make semantic review an all-purpose judge.
 
 ---
 
@@ -191,22 +189,22 @@ Source:
 
 - https://www.anthropic.com/engineering/harness-design-long-running-apps
 
-Anthropicは long-running codingで planner / generator / evaluator を分離し、structured handoff、context reset、外部evaluatorの価値を検討している。
+Anthropic separates planner / generator / evaluator in long-running coding and examines the value of structured handoff, context reset and an external evaluator.
 
-重要な観測:
+Important observations:
 
-- older/weaker agentではcontext管理とseparate evaluatorが大きく効く
-- model自身のself-evaluationは過度にpositiveになりやすい
-- 強いmodelではfull harnessの固定費が逆に無駄になるケースもある
-- harnessはモデル能力に合わせて簡素化すべき
+- With older/weaker agents, context management and a separate evaluator help a lot
+- The model's own self-evaluation tends to be overly positive
+- With strong models, there are also cases where the fixed cost of the full harness is instead wasted
+- The harness should be simplified to match model capability
 
-### dev-skillsへの意味
+### Implications for dev-skills
 
-1. transcript全体を次iterationへ送らない。
-2. diskのcanonical artifacts + compact feedbackをhandoffに使う。
-3. fresh subsessionは有効なexecution policyだがsemantic correctness条件にはしない。
-4. reviewer/evaluatorを毎iteration無条件追加しない。既存plan-deliveryのmechanical gate + cross-task reviewを再利用する。
-5. Development Loop自身は「もう一人のplanner/evaluator Agent」を常設しない。
+1. Do not send the whole transcript to the next iteration.
+2. Use canonical artifacts on disk + compact feedback for the handoff.
+3. A fresh subsession is a valid execution policy, but it is not made a condition of semantic correctness.
+4. Do not add a reviewer/evaluator unconditionally on every iteration. Reuse the mechanical gate + cross-task review of the existing plan-delivery.
+5. The Development Loop itself does not keep "one more planner/evaluator Agent" permanently in place.
 
 ---
 
@@ -216,20 +214,20 @@ Source:
 
 - https://arxiv.org/abs/2405.15793
 
-SWE-agentは model 単体ではなく Agent-Computer Interface (ACI) の設計がsoftware engineering agent性能を大きく左右すことを示した。
+SWE-agent showed that the design of the Agent-Computer Interface (ACI), not the model alone, strongly affects software engineering agent performance.
 
-例:
+Examples:
 
-- succinctなfile viewer
+- a succinct file viewer
 - search interface
-- edit時lint
-- tool resultの明確なsignal
+- lint at edit time
+- clear signals in tool results
 
-### dev-skillsへの意味
+### Implications for dev-skills
 
-Loopの改善をprompt sophisticationだけで行わない。
+Do not improve the Loop through prompt sophistication alone.
 
-`dev-skills`では既に:
+`dev-skills` already has:
 
 - typed requests
 - bounded file scope
@@ -237,27 +235,27 @@ Loopの改善をprompt sophisticationだけで行わない。
 - host capabilities
 - receipts
 
-を持つため、Development Loopはこれらのinterface contractを再利用すべき。
+The Development Loop should therefore reuse these interface contracts.
 
-Feedbackも「前回だめだった、頑張れ」ではなく tool/evidence-friendly packet にする。
+Feedback is also made a tool/evidence-friendly packet, not "it failed last time, try harder".
 
 ---
 
-## 6. Agentless: complexityを増やせばよいわけではない
+## 6. Agentless: more complexity is not necessarily better
 
 Source:
 
 - https://arxiv.org/abs/2407.01489
 
-Agentlessは localization -> repair -> validation という単純な3段構造で、当時のSWE-bench Lite上で複雑なagent frameworkに対して競争力と低コストを示した。
+With a simple three-stage structure of localization -> repair -> validation, Agentless showed competitiveness and low cost against complex agent frameworks on SWE-bench Lite at the time.
 
-Benchmark世代や絶対scoreは現在のモデル性能判断には使わないが、architecture lessonは重要:
+The benchmark generation and the absolute scores are not used to judge current model performance, but the architecture lesson is important:
 
-> dynamic autonomous planning/orchestrationの複雑性は、それ自体が価値ではない。
+> The complexity of dynamic autonomous planning/orchestration is not a value in itself.
 
-### dev-skillsへの意味
+### Implications for dev-skills
 
-v1 Development Loopに:
+Do not put the following into the v1 Development Loop:
 
 - dynamic skill chooser
 - arbitrary planner
@@ -265,17 +263,15 @@ v1 Development Loopに:
 - scheduler
 - generic todo graph
 
-を入れない。
-
-Executor profileをfixedにし、external verification結果だけでcontinue/stopする。
+Fix the Executor profile, and continue/stop on the external verification result only.
 
 ---
 
 ## 7. Fresh context vs. durable memory
 
-Long-running agentで必要なのは「同じchatを永久に伸ばす」ことではない。
+What a long-running agent needs is not to "extend the same chat forever".
 
-推奨構造:
+Recommended structure:
 
 ```text
 canonical disk state
@@ -284,32 +280,30 @@ canonical disk state
 + bounded repository context
 ```
 
-Fresh contextが有効なhostでは各iterationを新しいsubsessionにできるが、resume correctnessはconversation memoryに依存させない。
+On a host where fresh context is available, each iteration can be a new subsession, but resume correctness is not made to depend on conversation memory.
 
-Dev-skillsは既にdocument/state/evidenceをdiskへmaterializeしており、この方向と整合する。
+Dev-skills already materializes document/state/evidence to disk, which is consistent with this direction.
 
 ---
 
-## 8. Stop conditionはnamed + machine-readableにする
+## 8. Make the stop condition named + machine-readable
 
-Loopが危険になる典型例:
+A typical example of a Loop becoming dangerous:
 
 ```text
 while not agent_says_done:
     ask_agent_again()
 ```
 
-これでは:
+This does not prevent:
 
-- 無限loop
+- infinite loop
 - token burn
 - reward hacking
 - fake completion
 - regression after temporary success
 
-を防げない。
-
-推奨terminal:
+Recommended terminals:
 
 - `SUCCESS`
 - `NO_OP`
@@ -318,15 +312,15 @@ while not agent_says_done:
 - `EXHAUSTED`
 - `ABORTED`
 
-`FAILED` 一語に潰さないことで、callerが次のowner/actionを正しく選べる。
+By not collapsing these into the single word `FAILED`, the caller can correctly choose the next owner/action.
 
 ---
 
-## 9. Stall detectionは repository activity ではなく failure frontier
+## 9. Stall detection uses the failure frontier, not repository activity
 
-Git SHAやchanged filesだけを見ると、意味のない変更でもprogressに見える。
+Looking only at the Git SHA and the changed files makes even a meaningless change look like progress.
 
-よりよいsignal:
+A better signal:
 
 ```text
 verification fingerprint
@@ -341,7 +335,7 @@ verification fingerprint
 A -> A
 ```
 
-閾値で停止。
+Stop at a threshold.
 
 ### oscillation stall
 
@@ -349,37 +343,33 @@ A -> A
 A -> B -> A -> B
 ```
 
-も停止。
+This also stops.
 
-Diffは診断情報でありprogress authorityではない。
+The diff is diagnostic information, not a progress authority.
 
 ---
 
-## 10. Retry budgetは層ごとに二重計上しない
+## 10. Do not double-count the retry budget across layers
 
-Dev-skillsには既に:
+Dev-skills already has:
 
-- implement単回repair
+- implement single repair
 - playbook retry/back-to
 - plan-delivery integration remediation
 
-が存在する。
+If the new Development Loop counts internal attempts directly, it breaks the existing ownership.
 
-新Development Loopが内部attemptを直接数えると既存ownershipを破壊する。
+Therefore one iteration of L3 is defined as:
 
-したがってL3の1 iterationは:
+> one bounded terminal episode returned by an existing skill/playbook
 
-> 既存skill/playbookが返す1 bounded terminal episode
-
-とする。
-
-Cost amplificationを測るときは内部attempt telemetryを参照しても、control ownershipは変えない。
+When measuring cost amplification, the internal attempt telemetry may be consulted, but control ownership does not change.
 
 ---
 
 ## 11. Authority and reward hacking
 
-Autonomous loopで最も重要な保護対象:
+The most important things to protect in an autonomous loop:
 
 - user intent
 - requirements
@@ -388,9 +378,9 @@ Autonomous loopで最も重要な保護対象:
 - verifier contract
 - permission / authority
 
-難しい実装に遭遇したAgentが成功条件を書き換えられると loopは壊れる。
+If an Agent that runs into a difficult implementation can rewrite the success condition, the loop breaks.
 
-したがって:
+Therefore:
 
 ```text
 before loop:
@@ -401,9 +391,9 @@ autonomous zone:
   protected contract may not
 ```
 
-premise conflictは自動scope expansionではなく `BLOCKED` + upstream hint。
+A premise conflict results in `BLOCKED` + upstream hint, not automatic scope expansion.
 
-これは現行 recovery / implement のauthority separationをそのまま延長する。
+This extends the authority separation of the current recovery / implement as it is.
 
 ---
 
@@ -411,13 +401,13 @@ premise conflictは自動scope expansionではなく `BLOCKED` + upstream hint�
 
 | Evidence | Architecture implication |
 |---|---|
-| Macedo external loop spec | L3をPlaybook/Agent内部loopと分離 |
-| TACL self-correction survey | reliable external feedbackをcorrectness authorityにする |
-| Reflexion / Self-Refine | feedback反復は有用だがreflection自体をproofにしない |
-| Anthropic long-running harness | structured disk handoff、evaluator separation、harness over-complexity回避 |
-| SWE-agent | typed/tool-friendly interfaceを重視 |
-| Agentless | dynamic autonomous orchestrationをv1から入れない |
-| dev-skills existing runtime | append-only ledger / exact binding / typed receiptを再利用 |
+| Macedo external loop spec | Separate L3 from the Playbook/Agent internal loop |
+| TACL self-correction survey | Make reliable external feedback the correctness authority |
+| Reflexion / Self-Refine | Iterating on feedback is useful, but reflection itself is not made proof |
+| Anthropic long-running harness | Structured disk handoff, evaluator separation, avoiding harness over-complexity |
+| SWE-agent | Emphasize a typed/tool-friendly interface |
+| Agentless | Do not put dynamic autonomous orchestration in from v1 |
+| dev-skills existing runtime | Reuse append-only ledger / exact binding / typed receipt |
 
 ---
 
@@ -425,14 +415,14 @@ premise conflictは自動scope expansionではなく `BLOCKED` + upstream hint�
 
 1. **Evidence-driven, not reflection-driven.**
 2. **Verify before first execution.** Already-green goal is `NO_OP`.
-3. **Stop immediately on current GREEN.** Improvement for its own sakeを続けない。
-4. **Exact-state verification.** stale GREENは禁止。
-5. **Sealed goal/verifier.** success conditionはexecutorから保護。
-6. **Deterministic controller.** LLMはsemantic worker。
-7. **Bounded retries.** budgetをcontractに含める。
-8. **Machine-visible stall detection.** activity != progress。
-9. **Structured feedback only.** raw transcriptをiteration memoryにしない。
-10. **Keep it smaller than a general agent control plane.** scheduler/portfolioは外部層。
+3. **Stop immediately on current GREEN.** Do not continue improvement for its own sake.
+4. **Exact-state verification.** Stale GREEN is prohibited.
+5. **Sealed goal/verifier.** The success condition is protected from the executor.
+6. **Deterministic controller.** The LLM is a semantic worker.
+7. **Bounded retries.** Include the budget in the contract.
+8. **Machine-visible stall detection.** activity != progress.
+9. **Structured feedback only.** Do not make the raw transcript the iteration memory.
+10. **Keep it smaller than a general agent control plane.** scheduler/portfolio are an outer layer.
 
 ---
 

@@ -130,7 +130,7 @@ class PatchTest(EngineCase):
     def test_the_patch_leaves_out_only_the_entries_and_follows_their_present_state(self):
         engine_git, head = Git(os.environ), git_out(self.repo, "rev-parse", "HEAD")
         committed = engine_git.top_names(self.repo, head)
-        self.assertEqual([".dev-skills", "README.md"], committed)
+        self.assertEqual([".loop-engine", "README.md"], committed)
 
         def patch():
             entries = environment_entries(self.repo, committed)
@@ -318,7 +318,7 @@ class FlowTest(EngineCase):
         self.run_to_stop(engine)
         self.assertEqual(MUST_NOT_WRITE, self.finished("first")[0])
         with open(os.path.join(store.unit_dir(self.published, "u1"), "checks.json"), encoding="utf-8") as handle:
-            self.assertEqual([".dev-skills", "README.md", "out.txt"], json.load(handle)["committed"])
+            self.assertEqual([".loop-engine", "README.md", "out.txt"], json.load(handle)["committed"])
 
 
 if __name__ == "__main__":

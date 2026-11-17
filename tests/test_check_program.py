@@ -21,7 +21,7 @@ class PublishTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.root = os.path.join(os.path.realpath(self._tmp.name), "home", "loop-engine")
+        self.root = os.path.join(os.path.realpath(self._tmp.name), "home", "published")
 
     def read(self, path):
         with open(path, "rb") as handle:

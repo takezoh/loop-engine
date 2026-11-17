@@ -1,7 +1,7 @@
 ---
 id: issue-20260916-development-loop-fact-capability
 kind: issue
-title: Development Loop が未充足 fact の理由を次の Capability へ渡さず盲目的に再試行する
+title: Development Loop retries blindly without passing the reason for an unsatisfied fact to the next Capability
 status: done
 created: '2026-09-16'
 issue_type: bug
@@ -13,29 +13,29 @@ subject_paths:
 - runtime/development_loop/production_implementation_v2.py
 - runtime/development_loop/production_diagnostic_v2.py
 - runtime/development_loop/single_change_v2.py
-summary: Evaluator の不受理理由が次の Capability 入力へ渡らず、同じ未充足 fact を盲目的に再実行する。
-disposition_reason: production single-change frame evaluator の不受理条件を typed findings
-  として次の同一 Capability inputへ渡し、snapshot evidenceの再評価も再帰せず処理する回帰テストを追加した。production
-  implementation 12件と Development Loop 全684件で検証した。
+summary: The Evaluator's rejection reason is not passed to the next Capability input, and the same unsatisfied fact is rerun blindly.
+disposition_reason: Passed the rejection conditions of the production single-change frame evaluator as typed findings
+  to the next input of the same Capability, and added a regression test that also handles the re-evaluation of snapshot
+  evidence without recursion. Verified with 12 production implementation tests and all 684 Development Loop tests.
 updated: '2026-09-16'
 ---
 
-## 症状 / 機会
+## Symptom / opportunity
 
-Development Loop が Capability の成果を `UNSATISFIED` と評価しても、その理由を次に予約する同一 Capability の入力へ渡さない。このため、Goal が必要とする fact は正しく選ばれていても、producer は前回と同じ情報だけで再実行され、同じ種類の不受理を反復する。
+Even when the Development Loop evaluates a Capability's outcome as `UNSATISFIED`, it does not pass the reason to the input of the same Capability that it reserves next. As a result, even though the fact the Goal needs is selected correctly, the producer is rerun with only the same information as the previous time and repeats the same kind of rejection.
 
-## 証拠
+## Evidence
 
-- `issue-20260916-skills-suite-imports-removed-managed-child-entry-test` の single-change child Goal で、`implementation.frame` が `disposition: ready` を返した後も `premise.current: UNSATISFIED` となり、同じ `implementation.frame` が再予約された。
-- 1回目は `constraint_checks[].constraint_ref` が request の文字列と完全一致せず不受理になった。2回目は `evidence_refs` の `:44-45` のような範囲 locator が assessor の単一行 locator 契約を満たさず不受理になった。
-- 次の frame handoff には request だけが渡され、どの検査条件で `UNSATISFIED` になったかは含まれなかった。conductor が producer へ不受理理由を別途通知した場合にだけ、3回目で `premise.current: SATISFIED` へ進んだ。
-- `runtime/development_loop/production_implementation_v2.py:96` の frame assessor は複数条件を単一の `bool` に畳み込む。
-- `runtime/development_loop/single_change_v2.py:178` は assessor の `bool` を `SATISFIED` / `UNSATISFIED` に変換し、不受理理由を Evidence または次回入力へ保存しない。
-- `runtime/development_loop/single_change_v2.py:257` は未充足 fact に対応する Capability を再選択するが、直前の evaluator rejection を入力に加えない。
+- In the single-change child Goal of `issue-20260916-skills-suite-imports-removed-managed-child-entry-test`, the result was `premise.current: UNSATISFIED` even after `implementation.frame` returned `disposition: ready`, and the same `implementation.frame` was reserved again.
+- The first time, the result was rejected because `constraint_checks[].constraint_ref` did not exactly match the string in the request. The second time, it was rejected because a range locator such as `:44-45` in `evidence_refs` did not satisfy the assessor's single-line locator contract.
+- Only the request was passed to the next frame handoff, and it did not include which check condition had led to `UNSATISFIED`. Only when the conductor separately notified the producer of the rejection reason did the Goal advance to `premise.current: SATISFIED` on the third time.
+- The frame assessor at `runtime/development_loop/production_implementation_v2.py:96` folds multiple conditions into a single `bool`.
+- `runtime/development_loop/single_change_v2.py:178` converts the assessor's `bool` to `SATISFIED` / `UNSATISFIED` and does not save the rejection reason to Evidence or to the next input.
+- `runtime/development_loop/single_change_v2.py:257` reselects the Capability that corresponds to the unsatisfied fact, but does not add the immediately preceding evaluator rejection to the input.
 
-## 着手に必要な文脈
+## Context needed to start
 
-- `change-20260913-development-loop-first-class-integration` は Development Loop を単一 semantic controller とし、Profile と直接 Capability / Child Goal で選択された成果へ到達する契約を持つ。
-- `GoalKernel.tick()` の一 tick 一操作、immutable Evidence、native producer の排他的 lifecycle は維持する。
-- producer の自己申告を成功根拠にせず、独立 evaluator が受理を決める境界は維持する。
-- debug、requirements、design、test-harness、single-change で同じ欠陥が存在するかは未確認。起票時点で再現済みなのは production single-change の frame retry である。
+- `change-20260913-development-loop-first-class-integration` makes the Development Loop the single semantic controller and has a contract to reach the selected outcome through the Profile and direct Capability / Child Goal.
+- Keep one operation per tick of `GoalKernel.tick()`, immutable Evidence, and the exclusive lifecycle of the native producer.
+- Keep the boundary in which the producer's self-report is not the basis of success and an independent evaluator decides acceptance.
+- Whether the same defect exists in debug, requirements, design, test-harness and single-change is unconfirmed. What had been reproduced when this issue was filed is the frame retry of production single-change.

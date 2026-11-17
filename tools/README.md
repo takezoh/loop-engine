@@ -1,46 +1,46 @@
-# Loop Engine の検証 tool
+# Loop Engine verification tools
 
-engine、定型文、判定の規則を変えたときに、変更の前後を比べるための tool。
+Tools for comparing before and after a change to the engine, the protocol texts or the judgment rules. The commands below run from the repository root.
 
-## `unit_report.py`: 記録の集計
-
-```bash
-runtime/python loop-engine/tools/unit_report.py [--home DIR] [--json] [unit_id ...]
-```
-
-engine の記録だけを読む。単位ごとに、止まり方、差し戻しの回数、実行ごとの turn 数と時間、各 turn が新しい session か続けた session か、各 turn の実行記録の内訳、拒否された承認の要求の回数、各 turn の判定で外した環境の entry、成立した事実、残った指摘、worktree にあって patch に入っていない環境の entry を示す。合計には、やり直しになった turn、未完了の turn、数えられなかった結果(理由つき)、session を続けた turn、続けられずに置き換えた session、拒否された要求の件数が出る。
-
-読み方の目安:
-
-- 「数えられなかった結果」が多い実行は、定型文が求める返答の形を agent が守れていない。理由の文を見て定型文を直す。
-- 差し戻しが多い単位は、指摘の内容を見る。同じ条件の指摘が続くなら、作る役の指示か受入条件の書き方を疑う。
-- 実行記録に `read` も `command` もない評価は、調べずに返している。
-
-## `scenarios.py`: 実際の agent での確認
+## `unit_report.py`: aggregate the records
 
 ```bash
-runtime/python loop-engine/tools/scenarios.py prepare <scenario> <work-dir>   # repository と契約を作るだけ
-runtime/python loop-engine/tools/scenarios.py run <scenario>... [--home DIR] [--work DIR] [--json]
+python tools/unit_report.py [--home DIR] [--json] [unit_id ...]
 ```
 
-`run` は engine と agent を起動する。agent の利用枠を使い、数分かかるので、実行前に対象と費用を利用者に示して承認を得る。期待と違う止まり方をした scenario があれば、終了コード 1 を返す。
+It reads only the engine's records. For each unit it shows the stop reason, the number of rounds, the turns and time per execution, whether each turn ran in a new or a continued session, the breakdown of each turn's execution record, the number of refused approval requests, the environment entries left out of each turn's judgment, the facts that hold, the findings that remain, and the environment entries that are in the worktree and not in the patch. The totals show retried turns, turns that did not complete, results that were not counted (with reasons), turns that continued a session, sessions replaced because they could not be continued, and the number of refused requests.
 
-engine は検査 program と元の commit の複製を `--home` の下の公開の置き場所(`loop-engine/`)に置き、agent はそこから検査を実行する。記録は `--home` の下の `records/loop-engine/` にある。検査の事実が意味を持つのは、agent の sandbox が公開の置き場所を読めて書けない場合だけである。実際の agent での実行には、そうした場所(既定の `~/.dev-skills`)を使う。sandbox が読めない場所では検査の状態の行が出ず、書ける場所では元の commit での検査を agent が変えられる。
+How to read it:
 
-scenario は次の directory である。
+- An execution with many "results not counted" has an agent that does not keep the form of reply the protocol text asks for. Read the reasons and fix the protocol text.
+- For a unit with many rounds, read the findings. When findings on the same criterion repeat, suspect the writer's instructions or the wording of the acceptance criteria.
+- A review whose execution record has neither `read` nor `command` replied without examining anything.
 
-| 中身 | 意味 |
+## `scenarios.py`: confirm with real agents
+
+```bash
+python tools/scenarios.py prepare <scenario> <work-dir>   # only makes the repository and the contract
+python tools/scenarios.py run <scenario>... [--home DIR] [--work DIR] [--json]
+```
+
+`run` starts the engine and agents. It uses agent quota and takes several minutes, so show the user what will run and what it costs and get approval before running. It returns exit code 1 when a scenario stopped differently from what was expected.
+
+The engine places the check program and the copy of the base revision in the published root under `--home` (`published/`), and agents run the checks from there. The records are in `records/` under `--home`. A checks fact means something only when the agent's sandbox can read and cannot write the published root. For a run with real agents, use such a place (the default `~/.loop-engine`). Where the sandbox cannot read, no check status line appears; where it can write, the agent can alter a check on the base revision.
+
+A scenario is a directory with:
+
+| Content | Meaning |
 |---|---|
-| `repo/` | 元の commit の file。検査を使うなら `.dev-skills/checks.json` を含める |
-| `change/` | 省略可。元の commit の上に commit される、評価の対象になる既存の変更 |
-| `contract.json` | 契約。`{repository}`、`{base}`、`{unit_id}` は実行時に埋まる |
-| `expect.json` | 期待。`stop_reason`、指摘が名指しすべき条件(`unmet`)、turn 数の上限(`max_turns`) |
+| `repo/` | The files of the base revision. Include `.loop-engine/checks.json` when the scenario uses checks |
+| `change/` | Optional. An existing change, committed on top of the base revision, that is the subject of the review |
+| `contract.json` | The contract. `{repository}`, `{base}` and `{unit_id}` are filled in at run time |
+| `expect.json` | The expectation: `stop_reason`, the criteria the findings must name (`unmet`), and the maximum number of turns (`max_turns`) |
 
-同梱の scenario:
+Bundled scenarios:
 
-| scenario | 確かめること |
+| Scenario | What it confirms |
 |---|---|
-| `median-fix` | 実装 → 評価 2 つが完了する。検査は「候補で通る」と「元の code では落ちる」 |
-| `median-missing-empty-check` | 条件を 1 つ満たさない既存の変更を、3 つの評価役が該当の条件を名指しして止める |
+| `median-fix` | An implementation and two reviews complete. The checks are "passes on the candidate" and "fails on the original code" |
+| `median-missing-empty-check` | Three reviewers stop an existing change that misses one criterion, each naming that criterion |
 
-欠陥を仕込んだ scenario を足すときは、`change/` に欠陥のある変更を置き、`expect.json` の `unmet` に見つけるべき条件を書く。
+To add a scenario with a planted defect, put the defective change in `change/` and write the criteria that must be found in `unmet` of `expect.json`.

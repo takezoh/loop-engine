@@ -1,84 +1,85 @@
-# Loop Engine の技術アーキテクチャ
+# Loop Engine architecture
 
-Loop Engine は、委任された 1 単位の作業を、契約にある必須の事実がすべて成立するか、止まる理由が生じるまで host 上で進める。作る・機械検査する・独立に評価する作業は agent が自分の sandbox の中で行い、engine は次の実行の選択、事実の判定、記録だけを持つ。engine が受け取るのは契約(成立させる事実と、それを成立させられる実行)だけで、契約を作った側の概念(役の名前、判断知識、skill)を知らない。
+Loop Engine carries one delegated unit of work on a host until every required fact in its contract holds or a reason to stop arises. Agents make, check and independently review inside their own sandbox. The engine holds only the choice of the next execution, the judgment of facts and the records. The engine receives nothing but the contract (the facts to establish and the executions that can establish them) and knows no concept of the side that wrote it: no role names, no judgment knowledge, no skills.
 
-本文書は全体像と核心の境界を示す。module、契約の field、記録の file、終了コードの詳細は [docs/architecture.md](docs/architecture.md)、決定の理由と比較した案は [docs/adr/](docs/adr/) にある。
+This document is for people who change or review the engine. It shows the whole and the boundaries that matter. What a caller can rely on is in [Product](PRODUCT.md). Modules, contract limits, record files and exit codes are in the [technical reference](docs/architecture.md). The reasons for each decision and the alternatives considered are in [docs/adr/](docs/adr/).
 
-## 境界
+## Boundary
 
 ```mermaid
 flowchart LR
-  Entry["呼出し元の入口<br/>呼出し元の server・CLI・CI<br/>client.py / cli.py"]
+  Entry["Entry<br/>the MCP entry, the CLI, a caller's server<br/>unit_tools.py, mcp_stdio.py, cli.py, client.py"]
   subgraph HostG["host"]
-    Engine["engine process<br/>service.py・unit.py"]
-    Git["git<br/>hook・filter・外部 diff を無効にして起動"]
-    Home[("記録の置き場所<br/>DEV_SKILLS_HOME/records/loop-engine<br/>agent は読めない")]
-    Pub[("公開の置き場所<br/>DEV_SKILLS_HOME/loop-engine<br/>agent は読めて書けない")]
-    Trees[("worktree の置き場所<br/>DEV_SKILLS_WORKTREES")]
-    Pkg[("導入済みの package<br/>engine と transport の code・定型文")]
-    AgentHost["agent の host process<br/>codex・claude・pi<br/>利用者の設定のまま"]
-    subgraph SandboxG["環境の sandbox(engine の外)"]
-      Work["agent が実行する command<br/>project の code と検査"]
+    Engine["engine process<br/>service.py, unit.py"]
+    Git["git<br/>started with hooks, filters and external diff disabled"]
+    Home[("Records root<br/>LOOP_ENGINE_HOME/records<br/>agents cannot read it")]
+    Pub[("Published root<br/>LOOP_ENGINE_HOME/published<br/>agents can read it and cannot write it")]
+    Trees[("Worktrees root<br/>LOOP_ENGINE_WORKTREES")]
+    Pkg[("Installed packages<br/>code and protocol texts of the engine and the transport")]
+    AgentHost["Agent host process<br/>codex, claude, pi<br/>with the user's own settings"]
+    subgraph SandboxG["the environment's sandbox (outside the engine)"]
+      Work["Commands the agent runs<br/>the project's code and checks"]
     end
-    Never["engine が起動しないもの<br/>project の command・worktree の code<br/>sandbox の作成と変更"]
+    Never["What the engine never starts<br/>project commands, code in the worktree<br/>creating or changing a sandbox"]
   end
-  Entry -->|"要求 file: 契約・回答・やり直し・取消"| Home
-  Home -->|"status.json・stop.json・patch.diff"| Entry
-  Entry -.->|"engine がなければ固定の command で起動"| Engine
-  Engine -->|"要求を取り、記録を書く"| Home
-  Engine -->|"検査 program・checks.json・元の commit の複製を公開する"| Pub
-  Pkg -->|"code と定型文"| Engine
-  Engine -->|"固定の subcommand"| Git
-  Git -->|"worktree の作成・元の commit の記録・差分"| Trees
-  Engine -->|"transport で起動・turn・解放・取消"| AgentHost
-  AgentHost -->|"返答・実行記録・拒否した要求"| Engine
-  AgentHost -->|"command を sandbox の中で実行"| Work
-  Work -->|"読み書き"| Trees
-  Work -->|"検査 program と元の commit の複製を読む"| Pub
-  Engine -->|"turn の後に読む"| Trees
-  Engine -.->|"起動しない"| Never
+  Entry -->|"request files: contract, answer, retry, cancel"| Home
+  Home -->|"status.json, stop.json, patch.diff"| Entry
+  Entry -.->|"starts the engine with a fixed command when none runs"| Engine
+  Engine -->|"takes requests, writes records"| Home
+  Engine -->|"publishes the check program, checks.json and the copy of the base revision"| Pub
+  Pkg -->|"code and protocol texts"| Engine
+  Engine -->|"fixed subcommands"| Git
+  Git -->|"makes the worktree, reads the base revision's record, diffs"| Trees
+  Engine -->|"start, turn, release, cancel through the transport"| AgentHost
+  AgentHost -->|"reply, execution record, refused requests"| Engine
+  AgentHost -->|"runs commands inside the sandbox"| Work
+  Work -->|"reads and writes"| Trees
+  Work -->|"reads the check program and the copy of the base revision"| Pub
+  Engine -->|"reads after the turn"| Trees
+  Engine -.->|"never starts"| Never
 ```
 
-engine が起動する process は git と、transport の対応表にある agent の起動 command だけであり、project の code が動くのは agent の sandbox の中だけである。この境界を保つ規則は次の[設計原則](#設計原則)にある。
+The only processes the engine starts are git and the agent start commands in the transport's catalog. Project code runs only inside an agent's sandbox. The rules that keep this boundary are the [design principles](#design-principles) below.
 
-## 設計原則
+## Design principles
 
-engine の実装と変更が守る規則。各規則を決めた ADR を括弧に示す。
+The rules that the engine's implementation and every change to it keep. The ADR that decided each rule is in parentheses.
 
-- **起動するもの**: engine が起動するのは git(hook、filter、外部 diff を無効にした引数で)と、導入済みの対応表にある agent の起動 command だけである。project の command(test、build、script)は実行せず、agent が自分の sandbox の中で実行する。LLM の出力と project の内容に、host で実行される program、引数、設定を決めさせない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 3)
-- **sandbox**: engine は sandbox を作らず、確かめず、変えない。起動する agent に sandbox や承認の指定を渡さず、利用者の設定のまま起動する。承認の要求は拒否して turn を続け、承認する経路を持たない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 2、[session と承認](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) 項目 7)
-- **process の形**: engine は host で動く固定のコードで、呼出し元の入口(server、CLI)とは別の process である。1 つの状態の置き場所につき 1 つの process が複数の単位を実行し、単位ごとに thread を持ち、単位ごとに process を作らない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1)
-- **入口**: 入口は要求を file で渡し、engine の記録を読むだけで、進行・判定・記録の処理を持たない。engine process が動いていなければ、入口が固定の command(`python -I` で engine の main)で起動する。CI では CLI が単位の止まるまで待ち、止まり方を終了コードで受け取る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1)
-- **継続と再開**: 入口の接続や呼出し元の会話が終わっても、engine は実行中の単位を進める。engine が止まったら、次の起動で記録(`state.json`)から続ける。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 1 と結果)
-- **状態の置き場所と書き手**: 状態は状態の置き場所(`DEV_SKILLS_HOME` の下、既定 `~/.dev-skills`)に置き、書き手は engine の process だけである(`agents/` は engine の process の中の transport が書く)。契約、回答、やり直し、取消は入口から data として渡る。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 6)
-- **記録と公開物**: agent が読むもの(検査 program、単位の `checks.json`、元の commit の複製)は公開の置き場所(`loop-engine/`)に、それ以外の記録は記録の置き場所(`records/loop-engine/`)に置く。役に渡す path は公開の置き場所だけを指す。記録を agent から読めなくするのは環境の sandbox 設定である。([記録の決定](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md))
-- **止まる条件**: 否定された事実を作る実行へ戻すのは、指摘が同じ事実の前回の否定より少ないときだけで、少なくなければ `stagnation` で止まる。差し戻しの回数の上限は持たない。([収束の決定](docs/adr/adr-20261116-work-goes-back-while-it-converges.md))
-- **回答**: 依頼者の回答は単位の状態に残り、すべての実行が受け取る。評価の事実は判定したときの回答を根拠に持つ。([回答の決定](docs/adr/adr-20261116-answers-reach-every-execution.md))
-- **値だけの判断**: 判断(`facts.py`)と指示文の組み立て(`prompts.py`)は値だけを扱い、I/O、時計、乱数、process、global な実行文脈を持たない。状態は JSON として保存でき、読み直して続きから進められる。([事実による完了](docs/adr/adr-20261114-unit-completes-when-facts-hold.md) 項目 8。`prompts.py` を含めることは engine の ADR になく、`tests/test_closed_paths.py` が検査する)
-- **agent 設定**: worktree の agent 設定(`.claude/`、`.codex/`、`.pi/`、`.agents/`、`.mcp.json`)が worktree の作成時から変わっていたら、agent を起動せずに止める(`unsafe_agent_config`)。3 つの agent で同じに扱い、agent による例外を持たない。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 5)
-- **独立した package**: engine は独立した package で、導入時の複製から起動する。作業 tree のコードを読み込まず、呼出し元のコードに依存しない。依存する package は transport だけで、transport に接続するのは `composition.py` だけである。engine の core は `agents.py` の port(turn の実行、session の終了、全体の停止)だけに依存する。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4、7)
-- **対応する agent**: claude、codex、pi である。起動は transport の provider の共通処理と、protocol ごとの driver(codex-app-server、acp-v1、pi-rpc)を通す。([host の境界](docs/adr/adr-20261114-loop-engine-host-boundary.md) 項目 4 と、その「ユーザーが述べた要件」)
-- **port と偽物**: platform や agent で異なる作用は port の adapter に置き、agent の port には transport への接続と台本の偽物の両方に同じ契約テスト(`tests/test_transport_agents.py`)を当てる。(engine の ADR はなく、repository 全体の [platform と agent の差を port に置く ADR](../docs/adr/adr-20261115-platform-agent-differences-behind-ports.md) が決めている)
-- **platform の事実**: engine は Linux と native Windows で動く。platform で異なる事実(絶対 path の形、null device、agent に渡す検査の command line の quote、呼出し元から切り離した子 process の起動)は値として、platform で異なる作用(すでにある file を置き換えない作成、process の lock)は platform ごとの adapter として、`platform_facts.py` だけが `os.name` で選ぶ。判断(`facts.py`、`prompts.py`、lock の競合の判定)は platform を見ず、事実を値で受け取る。Windows の adapter には偽の OS の API に対して、POSIX の adapter と偽物と同じ契約テスト(`tests/test_platform_facts.py`)を当てる。git、状態の保存、時刻には port を置かない。(engine の ADR はなく、repository 全体の [platform と agent の差を port に置く ADR](../docs/adr/adr-20261115-platform-agent-differences-behind-ports.md) が決めている)
-- **確かめられない結果**: turn の結果を確かめられない単位は理由を付けて止まり(`unknown_result`、`invalid_result`)、自分ではやり直さない。やり直しは呼出し元の `retry` の要求だけで行う。session を続けられない turn を新しい session で 1 回だけ起動し直すことは、この規則の外である。(engine の ADR はない)
+- **What it starts**: The engine starts only git (with arguments that disable hooks, filters and external diff) and the agent start commands in the installed catalog. It does not run project commands (tests, builds, scripts); agents run them inside their own sandbox. Neither LLM output nor project content decides a program, an argument or a setting that runs on the host. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 3)
+- **Sandbox**: The engine does not create, check or change a sandbox. It passes no sandbox or approval setting to the agents it starts and starts them with the user's own settings. It refuses approval requests and lets the turn continue; it has no path to approve. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 2; [sessions and approvals](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md), item 7)
+- **Shape of the process**: The engine is fixed code that runs on the host, in a process separate from the caller's entry (server, CLI). One process per state home runs many units, with one thread per unit and no process per unit. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 1)
+- **Entry**: An entry hands over requests as files and reads the engine's records. It has no progress, judgment or recording logic. When no engine process is running, the entry starts one with a fixed command (the engine's main under `python -I`). In CI the CLI waits until the unit stops and receives the stop reason as an exit code. A session uses the unit tools, which the engine provides with a stdio MCP server on the standard library alone; a caller that builds contracts mounts the tools in its own server and replaces only the start. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 1; [MCP entry decision](docs/adr/adr-20261117-engine-provides-the-unit-tools-and-mcp-entry.md))
+- **Connections**: The unit tools serve one connection, a session's directory. A start is accepted only for a repository inside it, a unit another connection started does not exist for it, and the entry does not open for an agent the engine started or when the records lie inside the connection. No tool takes a program, an argument list, an environment, a path or the state home. ([MCP entry decision](docs/adr/adr-20261117-engine-provides-the-unit-tools-and-mcp-entry.md), items 1 and 2)
+- **Continuing and resuming**: The engine carries a running unit on after the entry's connection or the caller's conversation ends. When the engine stops, the next start continues from the record (`state.json`). ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 1 and its consequences)
+- **State home and its writer**: State lives in the state home (under `LOOP_ENGINE_HOME`, by default `~/.loop-engine`), and only the engine's process writes it (`agents/` is written by the transport inside the engine's process). Contracts, answers, retries and cancellations arrive from the entry as data. The home, its environment variables and the project's check file carry the engine's name and no caller's. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 6; [engine names](docs/adr/adr-20261117-engine-names-its-own-home-and-check-file.md))
+- **Records and what is published**: What agents read (the check program, the unit's `checks.json`, the copy of the base revision) goes to the published root (`published/`); every other record goes to the records root (`records/`). Paths handed to a role point only into the published root. What makes the records unreadable to agents is the environment's sandbox settings. ([records decision](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md); [engine names](docs/adr/adr-20261117-engine-names-its-own-home-and-check-file.md), item 2)
+- **When work stops going back**: A refuted fact goes back to the execution that makes its subject only when the findings are fewer than at the previous refutation of the same fact. Otherwise the unit stops with `stagnation`. There is no limit on the number of rounds. ([convergence decision](docs/adr/adr-20261116-work-goes-back-while-it-converges.md))
+- **Answers**: The requester's answers stay in the unit's state and every execution receives them. A verdict fact has the answers at the time of its judgment in its basis. ([answers decision](docs/adr/adr-20261116-answers-reach-every-execution.md))
+- **Decisions on values only**: The decision logic (`facts.py`) and prompt assembly (`prompts.py`) work on values only, with no I/O, clock, randomness, process or global execution context. State can be saved as JSON, read back and carried on from there. ([completion by facts](docs/adr/adr-20261114-unit-completes-when-facts-hold.md), item 8; [pure prompts and unconfirmed results](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md), item 1. `tests/test_closed_paths.py` checks both modules)
+- **Agent configuration**: When the agent configuration in the worktree (`.claude/`, `.codex/`, `.pi/`, `.agents/`, `.mcp.json`) has changed since the worktree was made, the engine stops without starting an agent (`unsafe_agent_config`). The three agents are treated alike, with no exception per agent. ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 5)
+- **An independent package**: The engine is an independent package and starts from the installed copy. It does not load code from a working tree and does not depend on the caller's code. Its only package dependency is the transport, and only `composition.py` connects to the transport. The engine's core depends only on the port in `agents.py` (run a turn, close a session, stop everything). ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), items 4 and 7)
+- **Supported agents**: claude, codex and pi. They are started through the common handling of the transport's providers and a driver per protocol (codex-app-server, acp-v1, pi-rpc). ([host boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md), item 4 and its "Requirements the user stated")
+- **Ports and fakes**: Effects that differ by platform or agent live in adapters of a port. The agent port gets the same contract test (`tests/test_transport_agents.py`) for both the connection to the transport and the scripted fake. ([ports decision](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md), item 2)
+- **Platform facts**: The engine runs on Linux and native Windows. Facts that differ by platform (the form of an absolute path, the null device, the quoting of the check command line handed to agents, starting a child process detached from the caller) are values, and effects that differ by platform (creating a file without replacing an existing one, the process lock) are adapters per platform. Only `platform_facts.py` chooses among them by `os.name`. The decision logic (`facts.py`, `prompts.py`, judging lock contention) does not look at the platform and receives the facts as values. The Windows adapters get the same contract test (`tests/test_platform_facts.py`) as the POSIX adapters and the fakes, against a fake OS API. git, saving state and time have no port. ([ports decision](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md), items 1 and 3 to 5)
+- **Results that cannot be confirmed**: A unit whose turn result cannot be confirmed stops with a reason (`unknown_result`, `invalid_result`) and does not retry by itself. Only the caller's `retry` request runs it again. Restarting, once and in a new session, a turn whose session cannot be continued is outside this rule. ([pure prompts and unconfirmed results](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md), items 2 to 4)
 
-## 単位の宣言
+## Unit declaration
 
 ```mermaid
 flowchart LR
   subgraph UnitG["unit"]
-    UG["goal・criteria・scope<br/>base(省略可)"]
+    UG["goal, criteria, scope<br/>base (optional)"]
   end
-  subgraph FactsG["facts(id・required・by)"]
-    FG["given<br/>初めから成立"]
-    FR["report<br/>1 つの実行が成立させる"]
-    FC["checks<br/>検査の name と expect"]
+  subgraph FactsG["facts (id, required, by)"]
+    FG["given<br/>holds from the start"]
+    FR["report<br/>one execution establishes it"]
+    FC["checks<br/>check name and expect"]
     FV["verdict<br/>block_at"]
-    FT["git<br/>engine が成立させる"]
+    FT["git<br/>the engine establishes it"]
   end
-  subgraph ExecsG["executions(id・agent・model・effort・instructions)"]
-    EW["作る実行<br/>writes: true"]
-    EN["報告する実行・評価する実行<br/>writes: false"]
+  subgraph ExecsG["executions (id, agent, model, effort, instructions)"]
+    EW["writing execution<br/>writes: true"]
+    EN["reporting and reviewing executions<br/>writes: false"]
   end
   FC -->|"subject"| FR
   FT -->|"subject"| FR
@@ -87,52 +88,52 @@ flowchart LR
   FR -->|"reads"| EW
   FR -->|"reads"| EN
   EW -->|"establishes"| FR
-  EW -->|"establishes: 対象を書いた実行"| FC
+  EW -->|"establishes: the execution that wrote the subject"| FC
   EN -->|"establishes"| FR
   EN -->|"establishes"| FV
-  EN -.->|"independent_of: agent と model の組が違う"| EW
-  UG -->|"criteria: 条件ごとに判定"| FV
-  UG -->|"scope: 範囲の判定"| FT
+  EN -.->|"independent_of: a different agent and model pair"| EW
+  UG -->|"criteria: judged one by one"| FV
+  UG -->|"scope: judged against changed paths"| FT
 ```
 
-契約に実行の順番はなく、事実と実行の参照(`reads`、`establishes`、`subject`、`independent_of`)だけがある。この構造は engine が定義する。`facts.py` の `check_structure` が事実と実行の構造を検査し、`validate` は契約全体をそれと実行に要る値で検査して、合わない契約を受け付けない。`check_structure` が見るのは、`checks` の事実の `checks` と実行の `agent`・`model`・`effort`・`instructions` を除いた事実と実行である。契約を組み立てる側は、key の名前(`unit` の key、run が加える項目)と検査の `expect` の値も `facts.py` の公開の定数から使い、写さない。新しい種類の単位は、この節の規則を満たす契約を書けば engine で動く。
+A contract has no order of executions. It has only facts, executions and the references between them (`reads`, `establishes`, `subject`, `independent_of`). The engine defines this structure. `check_structure` in `facts.py` checks the structure of facts and executions, and `validate` checks the whole contract with it and with the values a run needs; a contract that does not fit is not accepted. What `check_structure` looks at is the facts and executions without the `checks` of a `checks` fact and without an execution's `agent`, `model`, `effort` and `instructions`. The side that assembles a contract also takes key names (the keys of `unit`, the items a run adds) and the values of a check's `expect` from the public constants of `facts.py` instead of copying them. A new kind of unit runs on the engine once its contract satisfies the rules of this section.
 
-### 契約の形
+### Contract shape
 
 ```
-unit_id, repository(repository の最上位の絶対 path。engine が動く machine の形)
+unit_id, repository (absolute path of the repository's top level, in the form of the machine the engine runs on)
 unit:        goal, criteria[{id, text}], scope[path]
-             任意: base(commit id)、allow_same_model(bool)、examine_min(0..1)
-facts:       {id, required, by} と by ごとの項目
+             optional: base (commit id), allow_same_model (bool), examine_min (0..1)
+facts:       {id, required, by} and the items of each `by`
 executions:  {id, agent, model, effort, instructions, reads, establishes, writes, independent_of}
 ```
 
-- `unit.goal` と `criteria` は全実行の指示に入る。評価役は `criteria` の条件ごとに判定する。`scope` は `git` の事実が判定する変更してよい path で、作る役にも示される。`scope` の path は、どの platform でも git の形(`/` で区切った repository の中の path)で書く。
-- `unit.base` を指定すると、その commit から repository の現在の commit までの既存の変更を対象にする(現在の commit は `base` の子孫でなければならない)。省略すると現在の commit が元の commit になる。
-- `allow_same_model` は `independent_of` の検査を緩める。`examine_min` は、評価役の実行記録が読んだことを示さなければならない変更 file の割合で、既定は 1 である。
+- `unit.goal` and `criteria` go into the prompt of every execution. A reviewer judges each condition of `criteria`. `scope` is the set of paths that may change, which the `git` fact judges, and it is also shown to the writer. A `scope` path is written in git's form (a path inside the repository separated by `/`) on every platform.
+- With `unit.base`, the unit covers the existing change from that commit to the repository's current commit (the current commit must be a descendant of `base`). Without it, the current commit is the base revision.
+- `allow_same_model` relaxes the `independent_of` check. `examine_min` is the share of changed files that a reviewer's execution record must show as read; the default is 1.
 
-### 事実の種類
+### Fact kinds
 
-| `by` | 項目 | 成立させる実行 | 成立のさせ方 |
+| `by` | Items | Executions that establish it | How it comes to hold |
 |---|---|---|---|
-| `given` | なし | 持たない | 初めから成立する。内容は今の tree の digest で、これを対象にした事実は tree が変わると未成立に戻る |
-| `report` | なし | ちょうど 1 つ | その実行の turn が完了したとき |
-| `checks` | `subject`、`checks[{name, expect}]` | `subject` を成立させる実行と同じ集合で、すべて `writes: true` | その実行の実行記録にある検査の状態の行 |
-| `verdict` | `subject`、`block_at`(`minor`・`major`・`blocker`) | 1 つ以上(評価役) | 全評価役の判定から engine が計算 |
-| `git` | `subject` | 持たない | `subject` が成立した後、変更 path を `scope` と比べる |
+| `given` | none | none | Holds from the start. Its content is the digest of the present tree, so a fact whose subject it is stops holding when the tree changes |
+| `report` | none | exactly one | When that execution's turn completes |
+| `checks` | `subject`, `checks[{name, expect}]` | the same set as the executions that establish `subject`, all `writes: true` | The check status lines in that execution's execution record |
+| `verdict` | `subject`, `block_at` (`minor`, `major`, `blocker`) | one or more (reviewers) | The engine computes it from every reviewer's judgment |
+| `git` | `subject` | none | After `subject` holds, the engine compares the changed paths with `scope` |
 
-- `checks` の `expect` は `pass`(候補で通る)か `fails_on_base`(元の commit に候補の test だけを入れて落ちる)である。名前は元の commit の `.dev-skills/checks.json` に定義がなければならず、`fails_on_base` の検査は `test_paths` を持たなければならない。
-- `required: false` の事実は完了の条件に入らず、ほかの事実の対象や読む事実にはなれる。
+- A check's `expect` is `pass` (passes on the candidate) or `fails_on_base` (fails on the base revision with only the candidate's tests added). The name must be defined in `.loop-engine/checks.json` at the base revision, and a `fails_on_base` check must have `test_paths`.
+- A fact with `required: false` is not a condition of completion. It can still be the subject of another fact or a fact an execution reads.
 
-### 実行の規則
+### Execution rules
 
-- `agent` は導入済みの対応表にある名前、`model` と `effort` は名前か `null` である。engine はこれらの値で agent を起動し、解釈しない。`claude` は transport の対応表(`providers.json` の `bindings.required`)が model を要するため、`model` が `null` だと agent が起動せず、単位は `unknown_result` で止まって detail に `agent-start-failed: ... provider-binding-required:model` を残す。
-- `establishes` は 1 つ以上で、`reads` と重ならない。参照する事実と実行はすべて契約にある。
-- `writes: true` の実行だけが worktree を変えてよい。書かない実行の turn が差分を変えれば、その turn は完了しない。
-- `independent_of` に挙げた実行とは、`unit.allow_same_model` が真でない限り、agent と model の組が違わなければならない。
-- 事実の依存(対象と、その事実を成立させる実行が読む事実)は循環してはならない。`checks` の事実の依存は対象だけである。
+- `agent` is a name in the installed catalog; `model` and `effort` are names or `null`. The engine starts the agent with these values and does not interpret them. `claude` needs a model according to the transport's catalog (`bindings.required` in `providers.json`), so with `model` `null` the agent does not start, and the unit stops with `unknown_result` and leaves `agent-start-failed: ... provider-binding-required:model` in the detail.
+- `establishes` has one or more facts and does not overlap `reads`. Every fact and execution referred to is in the contract.
+- Only an execution with `writes: true` may change the worktree. When the turn of a non-writing execution changes the diff, that turn does not complete.
+- An execution's agent and model pair must differ from that of every execution listed in its `independent_of`, unless `unit.allow_same_model` is true.
+- The dependencies of facts (a fact's subject, and the facts read by the executions that establish it) must not form a cycle. The only dependency of a `checks` fact is its subject.
 
-### 例
+### Example
 
 ```json
 {"facts": [
@@ -145,234 +146,243 @@ executions:  {id, agent, model, effort, instructions, reads, establishes, writes
    "reads": ["a"], "establishes": ["b"], "writes": false, "independent_of": ["x"]}]}
 ```
 
-x が報告 a を書き、x と独立な y が a を評価して b を成立させる。b が否定されると、指摘は a を作った x へ戻り、a は外される。x の次の turn で a が再び成立すると、b は新しい a を根拠に判定し直される(指摘の後も報告が変わらなければ `stagnation`)。大きさと文字種の上限は [docs/architecture.md#契約](docs/architecture.md#契約) にある。
+x writes the report a, and y, independent of x, reviews a and establishes b. When b is refuted, the findings go back to x, which made a, and a is removed. When a holds again after x's next turn, b is judged again against the new a (`stagnation` if the report is unchanged after the findings). Size and character limits are in [Contract](docs/architecture.md#contract).
 
-## 次の実行の選択と止まり方
+## Choosing the next execution and stopping
 
 ```mermaid
 flowchart TD
-  Start(["記録した状態"]) --> Cancel{"取消の要求"}
-  Cancel -->|"ある"| Cancelled["cancelled"]
-  Cancel -->|"ない"| Judge["engine が判定する事実を判定<br/>git: 対象が成立したら範囲を判定<br/>verdict: 全評価役の判定が揃ったら合否を計算"]
-  Judge --> Refuted{"否定された事実"}
-  Refuted -->|"ない"| AllHeld{"必須の事実がすべて成立"}
-  Refuted -->|"ある"| Maker{"対象を作る実行"}
-  Maker -->|"ない"| Rejected["rejected<br/>指摘が結果"]
-  Maker -->|"ある"| Fewer{"指摘が同じ事実の<br/>前回の否定より少ない<br/>(最初の否定を含む)"}
-  Fewer -->|"いいえ"| Stagnation["stagnation"]
-  Fewer -->|"はい"| Back["対象を作った実行へ指摘を渡し<br/>その実行が成立させた事実を外す"]
+  Start(["recorded state"]) --> Cancel{"cancel requested"}
+  Cancel -->|"yes"| Cancelled["cancelled"]
+  Cancel -->|"no"| Judge["judge the facts the engine judges<br/>git: judge the scope once the subject holds<br/>verdict: compute pass or fail once every reviewer has judged"]
+  Judge --> Refuted{"a refuted fact"}
+  Refuted -->|"none"| AllHeld{"every required fact holds"}
+  Refuted -->|"one"| Maker{"an execution makes the subject"}
+  Maker -->|"none"| Rejected["rejected<br/>the findings are the result"]
+  Maker -->|"one"| Fewer{"fewer findings than at the<br/>previous refutation of the same fact<br/>(the first refutation counts as fewer)"}
+  Fewer -->|"no"| Stagnation["stagnation"]
+  Fewer -->|"yes"| Back["hand the findings to the execution that made the subject<br/>and remove the facts it established"]
   Back --> AllHeld
-  AllHeld -->|"はい"| Done["done"]
-  AllHeld -->|"いいえ"| Pick{"読む事実がすべて成立し<br/>成立させる事実に未成立が残る実行"}
-  Pick -->|"ない"| Stuck["stuck"]
-  Pick -->|"契約の順で最初の 1 つ"| Turn["その実行の turn"]
-  Turn -->|"agent 設定が変わった"| Unsafe["unsafe_agent_config"]
-  Turn -->|"完了しない・解放されない・読めない"| Unknown["unknown_result"]
-  Turn -->|"質問で終わる"| Waiting["waiting_for_answer"]
-  Turn -->|"確かめられない評価が 2 回"| Invalid["invalid_result"]
-  Turn -->|"指摘の後も候補・報告が同じ<br/>(その後に回答がない)"| Stagnation
-  Turn -->|"turn を事実に適用"| Start
+  AllHeld -->|"yes"| Done["done"]
+  AllHeld -->|"no"| Pick{"an execution whose read facts all hold<br/>and that has an open fact to establish"}
+  Pick -->|"none"| Stuck["stuck"]
+  Pick -->|"the first in contract order"| Turn["that execution's turn"]
+  Turn -->|"agent configuration changed"| Unsafe["unsafe_agent_config"]
+  Turn -->|"not completed, not released, not readable"| Unknown["unknown_result"]
+  Turn -->|"ends with a question"| Waiting["waiting_for_answer"]
+  Turn -->|"a review that cannot be confirmed, twice"| Invalid["invalid_result"]
+  Turn -->|"candidate or report unchanged after findings<br/>(and no answer since)"| Stagnation
+  Turn -->|"apply the turn to the facts"| Start
 ```
 
-事実は、判定したときの根拠(対象と読んだ事実の内容。評価ではさらに依頼者の回答)が今と同じ間だけ成立し、根拠が変われば自動的に未成立に戻るので、engine は工程を持たずに次の実行を導く。否定の指摘は 1 件以上で、同じ事実の否定のたびに減らなければ止まるので、どの単位も有限回の差し戻しで止まる。続けられる止まり方は `waiting_for_answer`(回答)、`unknown_result` と `invalid_result`(やり直し)だけで、ほかは最終である([止まり方と終了コード](docs/architecture.md#止まり方と終了コード))。
+A fact holds only while the basis it was judged against (the content of its subject and of the facts read; for a review, also the requester's answers) is the same as now, and it stops holding by itself when the basis changes. The engine therefore derives the next execution without any notion of stages. A refutation has at least one finding, and the unit stops unless the findings decrease at each refutation of the same fact, so every unit stops after a finite number of rounds. The only stops that can be continued are `waiting_for_answer` (by an answer) and `unknown_result` and `invalid_result` (by a retry); the others are final ([Stop reasons and exit codes](docs/architecture.md#stop-reasons-and-exit-codes)).
 
-## 1 turn
+## One turn
 
 ```mermaid
 sequenceDiagram
   participant U as unit.py
   participant W as worktree
   participant P as prompts.py
-  participant A as agent の port
-  participant G as agent(sandbox の中)
+  participant A as agent port
+  participant G as agent (inside the sandbox)
   participant F as facts.py
-  participant S as 状態の置き場所
-  U->>W: agent 設定の digest と worktree より上を確かめる
-  alt 変わっている
-    U->>S: unsafe_agent_config で止める
+  participant S as state home
+  U->>W: check the agent configuration digest and what is above the worktree
+  alt changed
+    U->>S: stop with unsafe_agent_config
   end
-  alt 実行の session がない
-    U->>P: 最初のメッセージ(定型文・指示・目的・受入条件・範囲・検査の command・回答)
-  else 実行の session の token がある
-    U->>P: 続きのメッセージ(指摘や回答・未送付の報告・変更 file・検査の command)
+  alt the execution has no session
+    U->>P: first message (protocol text, instructions, goal, acceptance criteria, scope, check commands, answers)
+  else the execution has a session token
+    U->>P: follow-up message (findings or answers, reports not yet delivered, changed files, check commands)
   end
   U->>S: turn_started
-  U->>A: TurnRequest(agent・model・effort・cwd・prompt・session)
-  A->>G: session を始める、または続ける
-  G->>W: 読み書きと検査の実行
-  G-->>A: 返答と実行記録(承認の要求は拒否される)
-  A->>A: session を解放する
-  A-->>U: TurnOutcome(completed・text・actions・session・refused・released)
-  opt session を続けられない
-    U->>A: 指示の全文で新しい session として 1 回だけ起動し直す
+  U->>A: TurnRequest (agent, model, effort, cwd, prompt, session)
+  A->>G: start or continue the session
+  G->>W: read, write and run checks
+  G-->>A: reply and execution record (approval requests are refused)
+  A->>A: release the session
+  A-->>U: TurnOutcome (completed, text, actions, session, refused, released)
+  opt the session cannot be continued
+    U->>A: start once more as a new session with the full instructions
   end
-  U->>S: result/turns の turn の記録
-  alt 解放されなかった
-    U->>F: 完了していない turn(worktree は読まない)
-  else 解放された
-    U->>W: agent 設定と worktree より上を再び確かめる
-    U->>W: tree の digest と変更 path を読む(環境の entry は外す)
-    alt 読めないものがある
-      U->>F: 完了していない turn(worktree-not-readable)
-    else 全体を読めた
-      U->>F: apply_turn(返答・実行記録・tree・変更 path)
+  U->>S: the turn's record in result/turns
+  alt not released
+    U->>F: a turn that did not complete (the worktree is not read)
+  else released
+    U->>W: check the agent configuration and what is above the worktree again
+    U->>W: read the tree digest and the changed paths (environment entries are left out)
+    alt something cannot be read
+      U->>F: a turn that did not complete (worktree-not-readable)
+    else everything was read
+      U->>F: apply_turn (reply, execution record, tree, changed paths)
     end
   end
-  U->>S: turn_finished と state.json
+  U->>S: turn_finished and state.json
 ```
 
-engine が worktree を判定するのは、port が agent の session を解放して turn を返した後だけであり、読めないものが 1 つでもある tree では何も判定しない。書かない実行の turn では、git が記録する差分を turn の前後で比べ、変わっていれば完了として扱わない。詳細は [turn の終わりと worktree](docs/architecture.md#turn-の終わりと-worktree) と [環境の entry](docs/architecture.md#環境の-entry) にある。
+The engine judges the worktree only after the port released the agent's session and returned the turn, and it judges nothing on a tree in which even one thing cannot be read. For the turn of a non-writing execution it compares the diff that git records before and after the turn, and does not treat the turn as completed when the diff changed. Details are in [End of a turn and the worktree](docs/architecture.md#end-of-a-turn-and-the-worktree) and [Environment entries](docs/architecture.md#environment-entries).
 
-## 事実の成立
+## How facts come to hold
 
 ```mermaid
 flowchart LR
   subgraph ReportG["report"]
-    R1["実行の turn が完了し<br/>質問で終わらない"] --> R2["成立<br/>内容: 書く実行は tree の digest<br/>書かない実行は返答の digest"]
+    R1["the execution's turn completes<br/>and does not end with a question"] --> R2["holds<br/>content: the tree digest for a writing execution,<br/>the reply digest for a non-writing one"]
   end
   subgraph ChecksG["checks"]
-    C1["engine が検査 program を<br/>check/sha256/ に公開"] --> C2["作る実行の agent が<br/>指定の command を sandbox で実行"]
-    C2 --> C3["program の最後の行<br/>名前・tree・digest・base・exit"]
-    C3 --> C4["engine が実行記録の<br/>その command の行だけを読む"]
-    C4 --> C5{"digest が今の tree<br/>base が置いた複製<br/>exit が期待どおり"}
-    C5 -->|"はい"| C6["成立"]
-    C5 -->|"いいえ"| C7["否定: 作る実行へ戻す"]
+    C1["the engine publishes the check program<br/>under check/sha256/"] --> C2["the writing execution's agent runs<br/>the given command in its sandbox"]
+    C2 --> C3["the program's last line<br/>name, tree, digest, base, exit"]
+    C3 --> C4["the engine reads only that command's line<br/>in the execution record"]
+    C4 --> C5{"digest is the present tree<br/>base is the copy the engine placed<br/>exit is as expected"}
+    C5 -->|"yes"| C6["holds"]
+    C5 -->|"no"| C7["refuted: back to the writing execution"]
   end
   subgraph VerdictG["verdict"]
-    V1["評価役の返答<br/>条件ごとの判定と指摘"] --> V2{"引用が今の file か報告にある<br/>根拠の command をこの turn で実行<br/>変更 file を読んだ(同じ根拠の前の turn を含む)"}
-    V2 -->|"いいえ"| V3["数えない。理由をすべて返す<br/>2 回で invalid_result"]
-    V2 -->|"はい"| V4["評価役の判定として記録<br/>全評価役の判定が揃うのを待つ"]
-    V4 --> V5{"block_at 以上の指摘<br/>または満たさない条件"}
-    V5 -->|"ない"| V6["成立"]
-    V5 -->|"ある"| V7["否定: 対象を作った実行へ戻す"]
+    V1["the reviewer's reply<br/>a judgment per criterion, and findings"] --> V2{"quotes are in the present file or the report<br/>evidence commands ran in this turn<br/>changed files were read (earlier turns on the same basis count)"}
+    V2 -->|"no"| V3["not counted; every reason is returned<br/>invalid_result after two"]
+    V2 -->|"yes"| V4["recorded as that reviewer's judgment<br/>wait until every reviewer has judged"]
+    V4 --> V5{"a finding at block_at or above,<br/>or an unmet criterion"}
+    V5 -->|"none"| V6["holds"]
+    V5 -->|"one"| V7["refuted: back to the execution that made the subject"]
   end
   subgraph GitG["git"]
-    T1["対象の事実が成立"] --> T2["worktree の file と<br/>固定した git directory の<br/>元の commit の記録を比べる"]
-    T2 --> T3{"変更 path が<br/>すべて scope の中"}
-    T3 -->|"はい"| T4["成立"]
-    T3 -->|"いいえ"| T5["否定: 範囲外の path を指摘"]
+    T1["the subject fact holds"] --> T2["compare the worktree's files with<br/>the base revision's record<br/>in the pinned git directory"]
+    T2 --> T3{"every changed path<br/>is inside scope"}
+    T3 -->|"yes"| T4["holds"]
+    T3 -->|"no"| T5["refuted: the out-of-scope paths are the findings"]
   end
 ```
 
-どの事実も、agent の自己申告ではなく engine が確かめられるもの(engine の置いた program の状態の行、引用と実行記録、git の記録)で成立する。評価役は承認を宣言せず、合否は engine が計算する。検査の command と状態の行は [検査](docs/architecture.md#検査)、元の commit の扱いは [元の commit](docs/architecture.md#元の-commit) にある。
+Every fact comes to hold by something the engine can check (the status line of a program the engine placed, quotes and the execution record, git's record), not by an agent's self-report. A reviewer does not declare approval; the engine computes pass or fail. The check command and the status line are in [Checks](docs/architecture.md#checks); the handling of the base revision is in [Base revision](docs/architecture.md#base-revision).
 
-## agent の session と承認の要求
+## Agent sessions and approval requests
 
 ```mermaid
 stateDiagram-v2
-  state "session なし" as NoSession
-  state "token を保つ" as Held
-  state "閉じた" as Closed
+  state "no session" as NoSession
+  state "token kept" as Held
+  state "closed" as Closed
   [*] --> NoSession
-  NoSession --> Held : 実行の最初の turn。指示の全文で新しい session
-  Held --> Held : 同じ実行が再び走る。続きのメッセージだけを送る
-  Held --> Held : 続けられる止まり方、engine の再起動
-  Held --> NoSession : 続けられないと port が返す。その turn を全文で 1 回だけ起動し直す
-  Held --> Closed : 単位が続けられない止まり方で終わる
+  NoSession --> Held : the execution's first turn. A new session with the full instructions
+  Held --> Held : the same execution runs again. Only the follow-up message is sent
+  Held --> Held : a stop that can be continued, an engine restart
+  Held --> NoSession : the port reports that it cannot be continued. That turn is started once more in full
+  Held --> Closed : the unit ends with a stop that cannot be continued
   Closed --> [*]
   note right of Held
-    token は実行ごとに state.json にある
-    turn が終わるたびに transport が session を解放し
-    次の turn で token から読み込み直す
+    the token of each execution is in state.json
+    the transport releases the session after every turn
+    and loads it again from the token for the next turn
   end note
 ```
 
 ```mermaid
 sequenceDiagram
-  participant G as agent(codex・claude・pi)
-  participant D as transport の driver
+  participant G as agent (codex, claude, pi)
+  participant D as transport driver
   participant U as engine
-  G->>D: 承認・permission・利用者の入力の要求
-  D-->>G: 明示的な拒否
-  Note over G: turn は続く
-  D-->>U: 実行記録の actions.refused(種類と短い説明)
-  U->>U: 実行ごとの拒否の回数を state.json・status.json・stop.json に足す
+  G->>D: a request for approval, permission or user input
+  D-->>G: an explicit refusal
+  Note over G: the turn continues
+  D-->>U: actions.refused in the execution record (kind and short description)
+  U->>U: add to the execution's refusal count in state.json, status.json and stop.json
 ```
 
-session は実行ごとに 1 つで、ほかの実行(評価役と作る役を含む)と共有しない。承認の要求は 3 つの agent で同じく拒否され、単位は止まらない。拒否されて実行できなかった検査は合格の行を残さないので、その事実は成立しない。詳細は [agent の session](docs/architecture.md#agent-の-session) と [承認の要求](docs/architecture.md#承認の要求) にある。
+There is one session per execution, shared with no other execution (reviewers and writers included). Approval requests are refused alike for the three agents and do not stop the unit. A check that could not run because it was refused leaves no passing line, so its fact does not hold. Details are in [Agent sessions](docs/architecture.md#agent-sessions) and [Approval requests](docs/architecture.md#approval-requests).
 
-## 置き場所と書き手
+## Locations and writers
 
 ```mermaid
 flowchart LR
-  Cal["呼出し元の入口"]
+  Cal["caller's entry"]
   Eng["engine"]
-  Ag["agent(sandbox の中)"]
-  subgraph HomeG["記録の置き場所 DEV_SKILLS_HOME/records/loop-engine<br/>agent の sandbox から読めない"]
+  Ag["agent (inside the sandbox)"]
+  subgraph HomeG["Records root LOOP_ENGINE_HOME/records<br/>not readable from the agent's sandbox"]
     Inbox["inbox/"]
     Outbox["outbox/"]
     Lock["engine.lock"]
-    AgentState["agents/(transport の状態)"]
+    AgentState["agents/ (the transport's state)"]
     subgraph UnitDirG["units/unit_id/"]
-      Rec["contract.json・admission.json<br/>state.json・events.jsonl・status.json"]
-      Res["result/<br/>patch.diff・stop.json・turns/"]
+      Rec["contract.json, admission.json<br/>state.json, events.jsonl, status.json"]
+      Res["result/<br/>patch.diff, stop.json, turns/"]
     end
   end
-  subgraph PubG["公開の置き場所 DEV_SKILLS_HOME/loop-engine<br/>agent の sandbox から読めて書けない"]
+  subgraph PubG["Published root LOOP_ENGINE_HOME/published<br/>readable and not writable from the agent's sandbox"]
     Check["check/sha256/check_runner.py"]
     subgraph PubUnitG["units/unit_id/"]
       Cfg["checks.json"]
-      Base["base-token/<br/>元の commit の複製"]
+      Base["base-token/<br/>copy of the base revision"]
     end
   end
-  subgraph TreesG["worktree の置き場所 DEV_SKILLS_WORKTREES<br/>agent の sandbox から書ける"]
-    WT["repository の digest/unit_id-token/"]
+  subgraph TreesG["Worktrees root LOOP_ENGINE_WORKTREES<br/>writable from the agent's sandbox"]
+    WT["repository digest/unit_id-token/"]
   end
-  subgraph PkgG["導入済みの package"]
-    Code["loop-engine/src/loop_engine/<br/>packages/cross-host-transport/"]
+  subgraph PkgG["Installed packages"]
+    Code["the engine: src/loop_engine/<br/>the transport: cross-host-transport"]
   end
-  Cal -->|"書く"| Inbox
-  Inbox -->|"読んで消す"| Eng
-  Eng -->|"書く"| Outbox
-  Outbox -->|"読む"| Cal
-  Eng -->|"保持する"| Lock
-  Eng -->|"書く"| Rec
-  Eng -->|"書く"| Res
-  Rec -->|"status.json を読む"| Cal
-  Res -->|"stop.json・patch.diff を読む"| Cal
-  Eng -->|"内容の sha256 の名前で公開"| Check
-  Eng -->|"transport が書く"| AgentState
-  Eng -->|"書く"| Cfg
-  Eng -->|"git で作る"| Base
-  Check -->|"実行する"| Ag
-  Cfg -->|"読む"| Ag
-  Base -->|"読む"| Ag
-  Eng -->|"git で作る・turn の後に読む・最終の停止で消す"| WT
-  Ag -->|"読み書き"| WT
-  Code -->|"読む"| Eng
+  Cal -->|"writes"| Inbox
+  Inbox -->|"reads and removes"| Eng
+  Eng -->|"writes"| Outbox
+  Outbox -->|"reads"| Cal
+  Eng -->|"holds"| Lock
+  Eng -->|"writes"| Rec
+  Eng -->|"writes"| Res
+  Rec -->|"reads status.json"| Cal
+  Res -->|"reads stop.json, patch.diff"| Cal
+  Eng -->|"publishes under the sha256 of its content"| Check
+  Eng -->|"the transport writes"| AgentState
+  Eng -->|"writes"| Cfg
+  Eng -->|"makes with git"| Base
+  Check -->|"runs"| Ag
+  Cfg -->|"reads"| Ag
+  Base -->|"reads"| Ag
+  Eng -->|"makes with git, reads after a turn, removes on a final stop"| WT
+  Ag -->|"reads and writes"| WT
+  Code -->|"reads"| Eng
 ```
 
-agent が書ける場所は worktree の置き場所だけで、判定に使うもの(検査 program、元の commit の複製、記録)はすべて agent が書けない場所にある。agent が読むのは公開の置き場所だけで、ほかの役の返答、実行記録、session を持つ記録の置き場所は読まない。この読み書きの区別を守るのは環境の sandbox 設定であり、engine は前提とするだけである。file の内容は [記録](docs/architecture.md#記録) にある。
+The worktrees root is the only place agents can write, and everything a judgment uses (the check program, the copy of the base revision, the records) is where agents cannot write. Agents read only the published root; they do not read the records root, which holds other roles' replies, execution records and sessions. What keeps this separation of reading and writing is the environment's sandbox settings, and the engine only assumes it. The content of the files is in [Records](docs/architecture.md#records).
 
-## 信頼の境界
+## Trust boundary
 
-engine が確かめるもの:
+What the engine verifies:
 
-- 契約は受付時に形と参照を検査し、agent 名、model、effort は固定の文字種に限る。agent は導入済みの対応表にあるものだけを受け付け、engine 自身の code を含む repository は受け付けない。
-- 検査の定義は元の commit の `.dev-skills/checks.json` を git から読む。範囲と変更 path は、worktree を作った時点で読んだ git directory にある元の commit の記録と比べ、agent が書ける tree から元の内容を読まない。
-- 各 turn の前後で、worktree の agent 設定(`.claude`、`.codex`、`.pi`、`.agents`、`.mcp.json`)の digest と、worktree より上に engine が作ったもの以外がないことを確かめる。
-- 検査 program は名前を渡す前に、内容が directory 名の sha256 と一致することを確かめる。状態の行は今の tree の digest と、engine が置いた元の commit の複製の digest に結び付ける。
-- 評価役の引用は今の file か判定対象の報告に、根拠の command はその turn の実行記録にあることを確かめる。評価する実行と、それが独立すべき実行は、契約が許さない限り agent と model の組が違う。
-- session の解放を確かめられない turn と、全体を読めない worktree では何も判定しない。
-- 環境が worktree の最上位に置く空の読み取り専用 file(どちらの commit にもない名前)だけは変更として数えず、外した名前を記録する。worktree の中のものは削除も変更もしない。
+- The unit tools check each call against the tool's closed schema, accept a start only for a repository inside the connection's directory, and answer for another connection's unit as for one that does not exist.
+- A contract's shape and references are checked on admission, and agent names, models and efforts are limited to fixed character sets. Only agents in the installed catalog are accepted, and a repository that contains the engine's own code is not.
+- Check definitions are read from `.loop-engine/checks.json` at the base revision through git. Scope and changed paths are compared with the base revision's record in the git directory read when the worktree was made; the original content is never read from a tree agents can write.
+- Before and after every turn, the engine checks the digest of the agent configuration in the worktree (`.claude`, `.codex`, `.pi`, `.agents`, `.mcp.json`) and that nothing but what the engine made is above the worktree.
+- Before handing out the check program's name, the engine checks that its content matches the sha256 of its directory name. A status line is tied to the digest of the present tree and to the digest of the copy of the base revision that the engine placed.
+- A reviewer's quotes are checked to be in the present file or in the report under judgment, and its evidence commands to be in that turn's execution record. A reviewing execution and the executions it must be independent of have different agent and model pairs unless the contract allows the same.
+- Nothing is judged for a turn whose session release cannot be confirmed, or on a worktree that cannot be read in full.
+- Only an empty read-only file that the environment places at the top level of the worktree (under a name in neither commit) is not counted as a change, and the names left out are recorded. The engine neither removes nor changes anything inside the worktree.
 
-engine が確かめずに環境に頼るもの:
+What the engine does not verify and relies on the environment for:
 
-- agent の sandbox が有効であること、公開の置き場所と engine の Python を読めて公開の置き場所に書けないこと、記録の置き場所を読めないこと。
-- 確認と agent の起動の間に別の agent が worktree の置き場所へ file を置かないこと。
-- 検査 program が複製を写した後の、sandbox の中での test の振る舞い。
-- agent の実行記録は transport が provider から受け取ったものであり、engine はそれを agent の報告文の代わりに使う。
+- That the agent's sandbox is in effect, that it can read the published root and the engine's Python and cannot write the published root, and that it cannot read the records root.
+- That no other agent places a file in the worktrees root between the check and the start of an agent.
+- What the tests do inside the sandbox after the check program copied the base revision.
+- The agent's execution record is what the transport received from the provider; the engine uses it in place of the agent's own report.
 
-## 決定
+## Verification boundary
 
-| 決定 | ADR |
+The engine's tests run real git repositories and a real engine process, with agents replaced by scripted fakes. The agent port, the platform adapters and the fakes share contract tests, so what the tests establish about the engine also holds for the adapters they cover. The tests do not start claude, codex or pi and say nothing about how a real agent behaves under a contract; that is observed with the [scenario tool](tools/README.md), which uses agent quota and runs only with the user's approval. Which test covers which rule is in the [verification map](docs/development.md#verification-map).
+
+## Decisions
+
+| Decision | ADR |
 |---|---|
-| engine は host で動き sandbox を持たず、git と agent の command だけを起動する | [adr-20261114-loop-engine-host-boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md) |
-| 単位の完了は事実の成立で決め、次の実行は契約のデータから導く | [adr-20261114-unit-completes-when-facts-hold](docs/adr/adr-20261114-unit-completes-when-facts-hold.md) |
-| 検査は agent が sandbox の中で実行し、engine は実行記録で判定する | [adr-20261114-checks-judged-from-execution-record](docs/adr/adr-20261114-checks-judged-from-execution-record.md) |
-| 評価の合否は engine が計算し、確かめられる結果だけを数える | [adr-20261114-verdict-computed-from-checkable-findings](docs/adr/adr-20261114-verdict-computed-from-checkable-findings.md) |
-| 実行は自分の session を続け、承認の要求は拒否して turn を続ける | [adr-20261114-agent-sessions-continue-and-approvals-are-refused](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) |
-| 環境が置く空の読み取り専用 file は役の変更として数えない | [adr-20261115-environment-entries-are-not-changes](docs/adr/adr-20261115-environment-entries-are-not-changes.md) |
-| 差し戻しは指摘が減る間だけ続け、回数の上限を持たない | [adr-20261116-work-goes-back-while-it-converges](docs/adr/adr-20261116-work-goes-back-while-it-converges.md) |
-| 依頼者の回答はすべての実行に渡し、評価はその回答に照らして判定する | [adr-20261116-answers-reach-every-execution](docs/adr/adr-20261116-answers-reach-every-execution.md) |
-| engine の記録を agent が読むものから分け、agent から読めない場所に置く | [adr-20261116-engine-records-apart-from-what-agents-read](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md) |
+| The engine runs on the host, has no sandbox, and starts only git and agent commands | [adr-20261114-loop-engine-host-boundary](docs/adr/adr-20261114-loop-engine-host-boundary.md) |
+| A unit completes when its facts hold, and the next execution is derived from the contract's data | [adr-20261114-unit-completes-when-facts-hold](docs/adr/adr-20261114-unit-completes-when-facts-hold.md) |
+| Agents run checks inside the sandbox, and the engine judges from the execution record | [adr-20261114-checks-judged-from-execution-record](docs/adr/adr-20261114-checks-judged-from-execution-record.md) |
+| The engine computes a review's verdict and counts only results it can check | [adr-20261114-verdict-computed-from-checkable-findings](docs/adr/adr-20261114-verdict-computed-from-checkable-findings.md) |
+| An execution continues its own session, and approval requests are refused while the turn continues | [adr-20261114-agent-sessions-continue-and-approvals-are-refused](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) |
+| An empty read-only file that the environment places is not counted as a role's change | [adr-20261115-environment-entries-are-not-changes](docs/adr/adr-20261115-environment-entries-are-not-changes.md) |
+| Prompt assembly works on values only, and a unit with an unconfirmed result stops and does not retry by itself | [adr-20261115-prompts-are-pure-and-unconfirmed-results-stop](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md) |
+| Work goes back only while the findings decrease, with no limit on the number of rounds | [adr-20261116-work-goes-back-while-it-converges](docs/adr/adr-20261116-work-goes-back-while-it-converges.md) |
+| The requester's answers reach every execution, and reviews are judged against them | [adr-20261116-answers-reach-every-execution](docs/adr/adr-20261116-answers-reach-every-execution.md) |
+| The engine's records are kept apart from what agents read, where agents cannot read them | [adr-20261116-engine-records-apart-from-what-agents-read](docs/adr/adr-20261116-engine-records-apart-from-what-agents-read.md) |
+| Only effects that differ by platform or agent sit behind ports, and decisions receive those facts as values | [adr-20261117-platform-and-agent-differences-behind-ports](docs/adr/adr-20261117-platform-and-agent-differences-behind-ports.md) |
+| The state home, its environment variables and the check file carry the engine's own name, and the earlier names are not read | [adr-20261117-engine-names-its-own-home-and-check-file](docs/adr/adr-20261117-engine-names-its-own-home-and-check-file.md) |
+| The engine provides the unit tools, the boundary of a connection and a stdio MCP entry, and a caller adds only its own start | [adr-20261117-engine-provides-the-unit-tools-and-mcp-entry](docs/adr/adr-20261117-engine-provides-the-unit-tools-and-mcp-entry.md) |

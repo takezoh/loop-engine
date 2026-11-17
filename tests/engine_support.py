@@ -186,12 +186,12 @@ class EngineCase(unittest.TestCase):
         os.makedirs(self.repo)
         git(self.repo, "init", "-q")
         write(self.repo, "README.md", "base\n")
-        write(self.repo, ".dev-skills/checks.json", json.dumps({"checks": self.checks, "ignore": IGNORE}))
+        write(self.repo, ".loop-engine/checks.json", json.dumps({"checks": self.checks, "ignore": IGNORE}))
         self.seed()
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "base")
-        self.root = store.home_root({"DEV_SKILLS_HOME": self.home})
-        self.published = store.published_root({"DEV_SKILLS_HOME": self.home})
+        self.root = store.home_root({"LOOP_ENGINE_HOME": self.home})
+        self.published = store.published_root({"LOOP_ENGINE_HOME": self.home})
 
     def seed(self):
         """Hook for tests that need more files in the base commit."""

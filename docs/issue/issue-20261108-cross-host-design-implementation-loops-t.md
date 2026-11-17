@@ -18,56 +18,56 @@ summary: Design/implementation Loops via Codex took 45-60 min per unit, needed m
   interventions and could not run in parallel on one checkout.
 ---
 
-## 症状 / 機会
+## Symptom / opportunity
 
-2026-11-08、1 件の transport 改修（design 1 単位 + implementation 4 単位）を dev-skills の design / implement Loop で進めたところ、design に約 40 分、implementation 1 単位あたり 45〜60 分かかり、2 時間 40 分経過時点で 4 単位中 2 単位しか完了しなかった。ユーザーから「時間かかりすぎ」との指摘を受けた。implementation 単位を同じ checkout で並行実行することもできない。
+On 2026-11-08, one transport rework (1 design unit + 4 implementation units) was carried out with the design / implement Loops of dev-skills. Design took about 40 minutes and each implementation unit took 45 to 60 minutes, and after 2 hours 40 minutes only 2 of the 4 units were complete. The user pointed out that it was "taking too long" (translated from Japanese). Implementation units also cannot run in parallel on the same checkout.
 
-## 証拠
+## Evidence
 
-- 単位ごとに Codex producer（implement は `gpt-6-luna` / xhigh、design / review は `gpt-6.1-sol` / low。`profiles/agent-placement-presets.yaml`）で「実装 → 独立評価 → 差し戻し → 再評価」を直列に回し、1 turn に 15〜30 分かかった。
-- 初回の implementation 候補は通常テストを実行せずに提出され（producer の自己申告は「通常テストは実行していません」）、subsession テストが 28 failures + 7 errors だった。テスト実行は独立評価の差し戻しを待って初めて行われ、1 往復が余分にかかった。
-- design producer（`gpt-6.1-sol` / low）は、repository を調査しないまま `BLOCKED`（pursuit-unresolved: inspection 不足）を返した。メインセッションが調査対象ファイルを示す pursuit-resolution を記録するまで進まなかった。
-- 独立評価は、実機の Codex `thread/closed` 遅延（約 60 秒）に起因する close / continue の欠陥を見逃した。メインセッションが発見した。implementation Loop にはメインセッションの証拠や指摘を追加する入口がなく、`export-pursuit` → `cancel` → 後継 `open` で作り直した。
-- 2 つの implementation Loop を同じ checkout で並行して開くと、後から開いた側が `world-observation-unconfirmed` で失敗した。`runtime/development_loop/observe.py` の `capture_binding` が worktree 全体の digest を前後で比較するため、もう一方の producer の書き込みで不一致になる。別 git worktree を作れば回避できるが、手順書（`runtime/development_loop/instructions.md`）に記載がない。
-- producer が使う sandbox 内では、`tests/runtime/subsession` の cell 系テストが `Read-only file system: /run/user/1000/...` で失敗する（未変更の HEAD でも同じ）。producer と評価役はこれを候補による回帰と区別できず、差し戻しが 1 回発生した。
+- Each unit ran "implementation → independent review → sending work back → re-review" in series with a Codex producer (`gpt-6-luna` / xhigh for implement, `gpt-6.1-sol` / low for design / review; `profiles/agent-placement-presets.yaml`), and one turn took 15 to 30 minutes.
+- The first implementation candidate was submitted without running the ordinary tests (the producer's self-report was "The ordinary tests were not run" (translated from Japanese)), and the subsession tests had 28 failures + 7 errors. The tests were run only after the independent review sent the work back, which cost one extra round trip.
+- The design producer (`gpt-6.1-sol` / low) returned `BLOCKED` (pursuit-unresolved: insufficient inspection) without investigating the repository. It did not proceed until the main session recorded a pursuit-resolution that named the files to investigate.
+- The independent review missed a close / continue defect caused by the delay of Codex `thread/closed` on a real machine (about 60 seconds). The main session found it. The implementation Loop has no entry for adding the main session's evidence or findings, so the Loop was rebuilt with `export-pursuit` → `cancel` → a successor `open`.
+- When two implementation Loops were opened in parallel on the same checkout, the one opened later failed with `world-observation-unconfirmed`. `capture_binding` in `runtime/development_loop/observe.py` compares the digest of the whole worktree before and after, so the other producer's writes cause a mismatch. Creating a separate git worktree avoids this, but the procedure document (`runtime/development_loop/instructions.md`) does not mention it.
+- Inside the sandbox the producer uses, the cell tests of `tests/runtime/subsession` fail with `Read-only file system: /run/user/1000/...` (the same on an unchanged HEAD). The producer and the reviewer could not tell this from a regression caused by the candidate, and work was sent back once.
 
-## 調査結果: 直列化か単位内 pipeline か（2026-11-08）
+## Investigation result: serialization or the pipeline within a unit (2026-11-08)
 
-結論: 主因は単位内の pipeline であり、単位間の直列化は副次的である。
+Conclusion: the main cause is the pipeline within a unit, and serialization between units is secondary.
 
-計測元（観測事実）: composition の各 execution の `invocation.json` / `receipt.json` の mtime、メインセッション transcript の transport 呼び出し時刻、Codex rollout（`~/.codex/sessions/2026/11/08/rollout-*-<thread>.jsonl`）の tool 呼び出し時刻・`Wall time`・token 使用量。tool 呼び出しの分類（Loop 手続き / テスト / コード）は入力文字列の正規表現による近似である。
+Measurement sources (observed facts): the mtime of `invocation.json` / `receipt.json` of each execution in the composition, the transport call times in the main session transcript, and the tool call times, `Wall time` and token usage in the Codex rollout (`~/.codex/sessions/2026/11/08/rollout-*-<thread>.jsonl`). The classification of tool calls (Loop procedure / tests / code) is an approximation by regular expressions over the input strings.
 
-1. 時間の内訳（11:27 の design dispatch から 14:07 の receipt 単位の candidate まで約 160 分）:
-   - Codex producer の作業時間（dispatch → receipt）は約 128 分（80%）。うち implementer が約 114 分、評価役が 4 回で計約 9 分、design（designer 2 turn・評価役 1 turn）が約 5 分。
-   - メインセッション側の間隙（producer の後処理、メインセッションの検証・待機・dispatch）は約 32 分（20%）。
-2. implementer turn の中身（Codex rollout）:
-   - turn 時間の 87〜91% はモデル側の時間で、tool の実行時間（テスト・Loop 手続き・コード操作の合計）は 1 turn あたり 2〜5 分。
-   - 1 turn のモデル往復は 100〜230 回、1 往復は平均 9〜15 秒（`gpt-6-luna` / xhigh）。入力 token は 1 turn で 1,200〜3,500 万（cache 率 98〜99%）。
-   - モデル時間の配分: コードの読み書き 56〜71%、Loop 手続き（manifest 読み取り・`agent-step`・checkpoint 等）12〜29%、テスト関連 9〜15%。評価役はモデル時間の約 74% が Loop 手続きだった。
-3. 差し戻しの往復: chunk-host 2 回目の implementer turn（約 38 分）は初回候補がテスト未実行で提出されたため、chunk-lifecycle の 2 回目（約 16 分）は評価役が見逃した欠陥をメインセッションが見つけたため発生した。合計約 54 分（全体の約 34%）が手戻りである。
-4. 直列化の影響: 承認済み設計の chunk 依存は host → lifecycle → receipt → loop の一直線で、transport の 3 chunk は同じ `mcp_application.py` を変更し内容上も依存していた。並行化できたのは Loop 側の chunk-loop だけで、短縮できた時間はその 1 単位分（全体の 15〜20% 程度、推定）に留まる。加えて、同じ checkout では Loop の world observation が並行実行を拒否する（証拠節を参照）。
+1. Time breakdown (about 160 minutes from the design dispatch at 11:27 to the candidate of the receipt unit at 14:07):
+   - The working time of the Codex producers (dispatch → receipt) was about 128 minutes (80%). Of this, the implementer took about 114 minutes, the reviewer about 9 minutes in total over 4 runs, and design (2 designer turns, 1 reviewer turn) about 5 minutes.
+   - The gaps on the main session side (the producers' post-processing, and the main session's verification, waiting and dispatch) were about 32 minutes (20%).
+2. Contents of the implementer turns (Codex rollout):
+   - 87 to 91% of the turn time was model-side time, and the tool execution time (the total of tests, Loop procedure and code operations) was 2 to 5 minutes per turn.
+   - One turn had 100 to 230 model round trips, and one round trip averaged 9 to 15 seconds (`gpt-6-luna` / xhigh). Input tokens were 12 to 35 million per turn (cache rate 98 to 99%).
+   - Distribution of model time: reading and writing code 56 to 71%, Loop procedure (reading the manifest, `agent-step`, checkpoint and so on) 12 to 29%, test-related 9 to 15%. For the reviewer, about 74% of the model time was Loop procedure.
+3. Round trips from sending work back: the second implementer turn of chunk-host (about 38 minutes) occurred because the first candidate was submitted without running tests, and the second turn of chunk-lifecycle (about 16 minutes) occurred because the main session found a defect the reviewer had missed. About 54 minutes in total (about 34% of the whole) was rework.
+4. Effect of serialization: the chunk dependencies of the approved design were a straight line, host → lifecycle → receipt → loop, and the 3 transport chunks changed the same `mcp_application.py` and also depended on each other in content. Only chunk-loop on the Loop side could have been parallelized, and the time that could have been saved is limited to that one unit (about 15 to 20% of the whole, estimated). In addition, on the same checkout the Loop's world observation refuses parallel execution (see the Evidence section).
 
-推論: 所要時間を最も左右するのは、(a) xhigh の implementer が 1 turn に行う多数の短いモデル往復、(b) テスト実行と実機挙動の確認が候補提出後・評価後に回ることによる手戻り、(c) producer turn 内の Loop 手続き往復、の順である。いずれも 1 セッション分の計測で、モデルの応答時間の時間帯差は考慮していない。
+Inference: what most affects the elapsed time is, in this order, (a) the many short model round trips that the xhigh implementer makes in one turn, (b) the rework caused by test execution and the confirmation of real-machine behavior being left until after candidate submission and after review, and (c) the Loop procedure round trips within a producer turn. All of these are measurements of one session, and differences in the model's response time by time of day are not considered.
 
-## 改善の実施状況（2026-11-08）
+## Status of improvements (2026-11-08)
 
-Loop 手続きの内訳（chunk-host implementer、rollout の tool 入力による分類）: pursuit・候補状態の読み取り 30 回・モデル約 6.2 分、`loop agent` による pursuit/candidate 操作 16 回・約 3.3 分、`agent-step` 7 回・約 2.1 分、prompt・入力の読み取り 7 回・約 1.4 分、manifest 読み取り 2 回・約 0.9 分。`agent-step` 自体の実行コストは小さい。
+Breakdown of the Loop procedure (chunk-host implementer, classified by the tool inputs in the rollout): reading the pursuit and candidate state, 30 times, about 6.2 minutes of model time; pursuit/candidate operations through `loop agent`, 16 times, about 3.3 minutes; `agent-step`, 7 times, about 2.1 minutes; reading the prompt and inputs, 7 times, about 1.4 minutes; reading the manifest, 2 times, about 0.9 minutes. The execution cost of `agent-step` itself is small.
 
-実施した変更:
+Changes made:
 
-- `tests/runtime/subsession/test_cell_membership.py` の 2 件が、既定 cell path（`XDG_RUNTIME_DIR` 配下）を使い、読み取り専用の sandbox で失敗していた。test の一時ディレクトリを `XDG_RUNTIME_DIR` に使うよう修正し、producer と評価役が回帰と取り違える偽の失敗を除いた。`test_installed_package_authority` の multiprocessing Manager の失敗はソケット作成の制限による環境固有のもので、変更していない。
-- `agents/definitions/{repository,readonly}-agent.yaml` の bootstrap に、独立した読み取り・検索・確認を 1 回の tool 呼び出しにまとめ、必要な範囲と出力量だけを要求する指示を加えた。往復回数への効果は未計測である。
-- `profiles/implementation/profile.yaml` の implementer 指示は「全体の check は委任先へ提出し、広い check は不確実性の解消に必要なときだけ走らせる」としていた。implementation Profile には全体 check を実行する Execution がなく、producer がテストを省いて提出する余地になっていた。単位責務を覆う unit・contract・反例テストを修正中に使い、組み上げた候補で提出前に実行し、候補が起こした失敗を解消する指示に置き換えた。単位責務を超える check は持ち主に残す。
+- Two tests in `tests/runtime/subsession/test_cell_membership.py` used the default cell path (under `XDG_RUNTIME_DIR`) and failed in the read-only sandbox. They were fixed to use the test's temporary directory as `XDG_RUNTIME_DIR`, which removed the false failures that the producer and the reviewer mistook for regressions. The multiprocessing Manager failure in `test_installed_package_authority` is specific to the environment, caused by the restriction on creating sockets, and was not changed.
+- An instruction was added to the bootstrap of `agents/definitions/{repository,readonly}-agent.yaml` to combine independent reads, searches and confirmations into one tool call and to request only the needed range and amount of output. The effect on the number of round trips has not been measured.
+- The implementer instructions in `profiles/implementation/profile.yaml` said "submit the overall checks to the delegate, and run broad checks only when they are needed to resolve uncertainty" (translated from Japanese). The implementation Profile had no Execution that runs the overall checks, which left room for the producer to submit without tests. The instruction was replaced with one to use the unit, contract and counterexample tests that cover the unit's responsibility while making the change, to run them on the assembled candidate before submission, and to resolve the failures the candidate caused. Checks beyond the unit's responsibility stay with their owner.
 
-実施していない変更と理由:
+Changes not made, and the reasons:
 
-- 候補提出時のテスト結果添付を必須にする機械ゲートは採用しない。accepted ADR `adr-20261010-outcome-evidence-boundaries`（固定 verify 段を廃止し、証拠の十分性を独立検収で判断する）に従い、テスト証拠の十分性は implementation の評価役（regression evidence の評価と `test-discipline` Knowledge）が判断する。turn 終了時の hook（Codex 0.167 / Claude Code の Stop hook）は、`agent-step` が候補を記録した後に発火するため、継続させると記録済み候補と worktree が食い違う。`agent-step` 内でテストを実行させる案は、ADR が廃止した固定 gate の移設になる。
-- `agent-step` と `CONTINUE` の処理を runtime 側へ移す案は、上の内訳のとおり `agent-step` の往復が小さいため見送った。
-- 実行中の Loop にメインセッションの証拠・指摘を追加する入口は、Loop の instruction 契約と review 入力の変更を伴う設計変更であり、未着手である。
-- 配置 preset の effort（xhigh / high / medium）の比較計測は未実施である。
+- A machine gate that makes attaching test results mandatory at candidate submission is not adopted. Following the accepted ADR `adr-20261010-outcome-evidence-boundaries` (which abolishes the fixed verify stage and judges the sufficiency of evidence by independent acceptance), the sufficiency of test evidence is judged by the reviewer of implementation (the evaluation of regression evidence and the `test-discipline` Knowledge). A hook at the end of a turn (the Stop hook of Codex 0.167 / Claude Code) fires after `agent-step` has recorded the candidate, so making the turn continue would make the recorded candidate and the worktree disagree. The option of running the tests inside `agent-step` would relocate the fixed gate that the ADR abolished.
+- The option of moving the handling of `agent-step` and `CONTINUE` to the runtime side was deferred, because the `agent-step` round trips are small, as the breakdown above shows.
+- An entry for adding the main session's evidence and findings to a running Loop is a design change that involves changing the Loop's instruction contract and the review input, and has not been started.
+- A comparative measurement of the effort of the placement presets (xhigh / high / medium) has not been done.
 
-## 着手に必要な文脈
+## Context needed to start
 
-- 対象は dev-skills の Development Loop 実行経路（`runtime/development_loop/`）、配置 preset、`skills/implement` / `skills/design` の運用。
-- 発見時の作業: cross-host transport の shared host / turn capacity / start receipt 分類の実装（design Loop `ba6b9545...`、implementation Loop `7cbd88bf...`、`769d706e...`、`6d705bb5...`、`e3dadf28...`）。
-- 制約: Loop の独立評価とメインセッションによる受け入れ判断は残す。所要時間は計測値が 1 セッション分しかない。
+- The target is the Development Loop execution path of dev-skills (`runtime/development_loop/`), the placement presets, and the operation of `skills/implement` / `skills/design`.
+- Work at the time of discovery: the implementation of shared host / turn capacity / start receipt classification for the cross-host transport (design Loop `ba6b9545...`, implementation Loops `7cbd88bf...`, `769d706e...`, `6d705bb5...`, `e3dadf28...`).
+- Constraints: keep the Loop's independent review and the acceptance decision by the main session. For the elapsed time, there are measurements of only one session.

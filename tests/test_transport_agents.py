@@ -14,7 +14,7 @@ from unittest import mock
 
 from engine_support import RUNNER, SRC, EngineCase, ScriptedAgents, approve, produced
 
-TRANSPORT = os.path.join(os.path.dirname(os.path.dirname(SRC)), "cross-host-transport", "src")
+TRANSPORT = os.path.join(os.path.dirname(os.path.dirname(SRC)), "packages", "cross-host-transport", "src")
 if TRANSPORT not in sys.path:
     sys.path.insert(0, TRANSPORT)
 
@@ -263,8 +263,13 @@ class TransportAgentsTest(AgentTurnsContract, unittest.TestCase):
         import inspect
         self.assertNotIn("grant", inspect.getsource(provider_drivers))  # the module's own source, not the patch
         self.assertEqual(["origin", "state_dir"], list(inspect.signature(composition.TransportAgents).parameters))
+        # No environment variable reaches the agent port: only `build` reads the environment, for the
+        # state home, the worktrees root and git.
+        self.assertNotIn("environ", inspect.getsource(composition.TransportAgents))
         with open(composition.__file__, encoding="utf-8") as handle:
-            self.assertNotIn("DEV_SKILLS_MCP_", handle.read())
+            source = handle.read()
+        self.assertNotIn("os.environ", source)
+        self.assertNotIn("getenv", source)
 
     def test_catalog_decides_which_agents_exist(self):
         self.assertEqual(set(provider_catalog.provider_names()), set(self.agents.names))

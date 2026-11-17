@@ -1,166 +1,49 @@
-# Loop Engine の構造
+# Loop Engine technical reference
 
-module、契約の field、記録の file、command の詳細を書く。全体像と境界は [ARCHITECTURE.md](../ARCHITECTURE.md)、決定の理由と比較した案は [adr/](adr/) にある。
+The details behind [ARCHITECTURE.md](../ARCHITECTURE.md): contract limits, checks, exit codes, record files and the engine's internals. The whole and its boundaries are in ARCHITECTURE.md; the reasons for each decision and the alternatives considered are in [adr/](adr/).
 
-## 責務
-
-| module | 責務 |
+| If you | Read |
 |---|---|
-| `facts.py` | 契約の受付検査、次の実行の選択、事実の成立と無効化、検査と評価の判定。値だけを扱う |
-| `prompts.py` | 実行に渡す指示文(session の最初のメッセージと続きのメッセージ)の組み立て。値だけを扱う。書く役に変えさせない agent 設定の名前は、`worktree.py` が観測する一覧を値として受け取る |
-| `unit.py` | 1 単位を、保存された状態から次に止まるところまで進める |
-| `service.py` | engine process。単位ごとに thread を持ち、要求を受け付ける |
-| `store.py` | 単位の記録、agent が読むものの公開(検査 program、単位の `checks.json`)、要求と応答の file、process の lock。lock の取得は、取れた・別の process が持つ・取れない(原因を示す `LockFailed`)の 3 つを区別し、取れないことを別の engine が動いているとは扱わない |
-| `git.py` | git の起動。hook、filter、外部 diff を無効にした引数を必ず付ける |
-| `worktree.py` | worktree の観測(agent 設定の digest、tree の digest、git の記録と比べた変更された path) |
-| `check_runner.py` | agent が sandbox の中で実行する固定の検査 program。tree の読み方(読めないものがあれば失敗する)、tree の digest、環境の entry の判定を持ち、`worktree.py` も同じものを使う |
-| `agents.py` | agent の turn を実行する port。session は中身を解釈しない token で表す |
-| `composition.py` | port を provider transport に接続する。transport に触れる唯一の module |
-| `client.py` / `cli.py` | 入口。要求を渡し、記録を読む。進行と判定の処理を持たない |
-| `platform_facts.py` | engine が動く machine の platform の事実(下の表)。`os.name` で POSIX と Windows を選ぶ唯一の module |
+| write a contract or define checks for a project | [Contract](#contract), [Checks](#checks) |
+| give a session the unit tools, or mount them in a server of your own | [MCP entry](#mcp-entry) |
+| handle a unit's result | [Stop reasons and exit codes](#stop-reasons-and-exit-codes), [Records](#records), [Sending work back and answers](#sending-work-back-and-answers), [Accepting a reviewer's reply](#accepting-a-reviewers-reply) |
+| change the engine | [Modules](#modules), [Agent sessions](#agent-sessions), [Prompts](#prompts), [End of a turn and the worktree](#end-of-a-turn-and-the-worktree), [Environment entries](#environment-entries), [Approval requests](#approval-requests), [Base revision](#base-revision) |
 
-platform の事実は `Platform` の値で、`CURRENT` が engine の動く machine のものである。`composition.py` が `Engine` に渡し、`Engine` は path の形を `facts.validate` と `facts.checks_config` に、quote を `Unit` に渡す。`git.py`、`store.py`、`client.py` は `CURRENT` の値を使う。`place_new` と `lock` は platform で異なる作用の adapter で、呼び出す OS の関数を引数で受け取る。Windows の adapter には偽の Windows の関数に対して、engine が動く machine の adapter と同じ契約テストを当てる。
+## Contract
 
-| 事実 | POSIX | Windows | 使う module |
-|---|---|---|---|
-| `path_style`(絶対 path の形) | `/a/b` | `C:\a\b` か `\\server\share\a`(`\` だけで区切る) | `facts.py` |
-| `null_device` | `/dev/null` | `nul` | `git.py`(hook、attributes、global 設定) |
-| `home`(環境に `HOME` がないときに git に渡す値) | `/` | 渡さない | `git.py` |
-| `quote`(agent に渡す検査の command line) | POSIX shell の quote | Microsoft C runtime が分け直す形(`subprocess.list2cmdline` と同じ) | `unit.py` |
-| `detached`(呼出し元から切り離した engine の起動) | 新しい session | 新しい process group、console なし | `client.py` |
-| `place_new`(すでにある file を置き換えない作成) | hard link | rename | `store.py`(検査 program の公開) |
-| `lock`(process の lock) | `flock` | `msvcrt.locking` | `store.py` |
-| `lock_held`(別の process が lock を持つときの errno。それ以外の errno は lock を取れないこと) | `EAGAIN`、`EWOULDBLOCK` | `EACCES` | `store.py`(`lock_contended`) |
+The structure of a contract (fact kinds, execution rules, references) is in [Unit declaration](../ARCHITECTURE.md#unit-declaration). `validate` in `facts.py` checks a contract on admission and uses `check_structure` for the structure of facts and executions. `check_structure` is a public pure function that can be asked about a part of a contract alone. So that the side assembling a contract uses the engine's names without copying them, `facts.py` also publishes the keys of `unit` (`UNIT_KEYS`, `UNIT_OPTIONAL`), the items a run adds (`FACT_RUN_KEYS`, `EXECUTION_RUN_KEYS`), the values of a check's `expect` (`CHECK_EXPECT`) and the character sets of ids, names and commits (`ID_RE`, `CHECK_NAME_RE`, `COMMIT_RE`). The check adds these limits and character sets.
 
-## 契約
-
-契約の構造(事実の種類、実行の規則、参照)は [単位の宣言](../ARCHITECTURE.md#単位の宣言) にある。受付の検査は `facts.py` の `validate` が行い、事実と実行の構造には `check_structure` を使う。`check_structure` は公開の純粋関数で、契約の一部だけを問える。契約を組み立てる側が engine の名前を写さずに使えるよう、`unit` の key(`UNIT_KEYS`、`UNIT_OPTIONAL`)、run が加える項目(`FACT_RUN_KEYS`、`EXECUTION_RUN_KEYS`)、検査の `expect` の値(`CHECK_EXPECT`)と id・名前・commit の文字種(`ID_RE`、`CHECK_NAME_RE`、`COMMIT_RE`)も公開する。検査は次の上限と文字種を加える。
-
-| 対象 | 上限・文字種 |
+| Subject | Limit or character set |
 |---|---|
-| `unit_id`、事実・実行・受入条件の `id`、`agent`(下の文字種はどれも値の全体に当て、末尾の改行も受け付けない) | `^[a-z0-9][a-z0-9-]{0,62}$` |
-| `model`、`effort` | `null` か `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,95}$` |
-| 検査の名前 | `^[a-z0-9][a-z0-9_-]{0,31}$` |
-| `goal`、受入条件の `text`、`instructions` | 空でなく NUL を含まない 200,000 byte 以下の文字列 |
-| `criteria`、`scope`、`facts`、`executions`、検査 | 各 32 件以下。`facts` と `executions` は 1 件以上 |
-| `unit.base` | 40 桁の commit id |
-| `repository`、`scope` の path | `repository` は engine が動く machine の形(`path_style`)で正規化した絶対 path、`scope` は `/` で区切り `.`・`..`・空の要素を持たない相対 path。Windows では各要素が file の名前にできるもの(`\`・`:`・`*?"<>|`・制御文字を含まず、`.` か空白で終わらず、拡張子の有無を問わず大文字小文字を問わず `CON`・`PRN`・`AUX`・`NUL`・`COM1`〜`COM9`・`LPT1`〜`LPT9` でない)に限る。`.dev-skills/checks.json` の `test_paths` と `ignore` も同じ |
+| `unit_id`, the `id` of a fact, an execution and an acceptance criterion, `agent` (each character set below applies to the whole value, and a trailing newline is not accepted) | `^[a-z0-9][a-z0-9-]{0,62}$` |
+| `model`, `effort` | `null` or `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,95}$` |
+| Check name | `^[a-z0-9][a-z0-9_-]{0,31}$` |
+| `goal`, the `text` of an acceptance criterion, `instructions` | A non-empty string without NUL, of at most 200,000 bytes |
+| `criteria`, `scope`, `facts`, `executions`, checks | At most 32 each. `facts` and `executions` have at least one |
+| `unit.base` | A 40-digit commit id |
+| `repository`, `scope` paths | `repository` is a normalized absolute path in the form of the machine the engine runs on (`path_style`). A `scope` path is a relative path separated by `/` with no `.`, `..` or empty component. On Windows each component must be a name a file can have: it contains none of `\`, `:`, `*?"<>|` or control characters, does not end with `.` or a space, and is not `CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9` or `LPT1` to `LPT9`, in any letter case and with or without an extension. The same holds for `test_paths` and `ignore` in `.loop-engine/checks.json` |
 
-契約の key は過不足なく一致しなければならない(事実は `by` ごとの項目だけを持つ)。同じ `unit_id` で異なる契約を渡すと受け付けない。
+The keys of a contract must match exactly, with none missing and none extra (a fact has only the items of its `by`). A different contract under the same `unit_id` is not accepted.
 
-## agent の session
+## Checks
 
-実行ごとに 1 つの agent session を持つ。
+A project defines its checks in `.loop-engine/checks.json`. The engine reads only the file at the base revision.
 
-- 実行の最初の turn は新しい session を開始し、役の定型文に指示の全文を入れて送る。port は turn が動いた session の token を返し、engine は実行ごとに `state.json` に保存する。
-- 同じ実行が再び走るとき(差し戻し、回答、やり直し)は、その token で session を続け、役の続きの定型文(`protocol/<役>-follow-up.md`)を送る。続きのメッセージは、指摘とやり直しの理由、その session がまだ受け取っていない報告と依頼者の回答、評価役には今の変更 file の一覧、と返答の形式を持つ。指示、目的、受入条件は送り直さない。
-- 定型文は、役に渡す報告を、ほかの役がこの作業について見出したことで証拠として量るものとして渡し、その役が自分の turn に受けた規則は読む役も作業も縛らないと示す。書かない役(報告役・評価役)の定型文は、返答の形を決める節の規則がその turn だけの規則で、報告や指摘の対象ではないと示す。役の返答が別の役へ届くのは、書かない役の報告と評価役の指摘だけで、書く役の報告はどの役にも渡さない(`prompts.inputs`)。
-- 異なる実行は session を共有しない。評価役は作る役の session を見ない。
-- port が「session を続けられない」と返したら、engine はその turn を 1 回だけ、指示の全文で新しい session として起動し直す。その失敗はほかの失敗した turn と同じに扱う。
-- token は `state.json` にあるので、engine が再起動しても同じ session を続ける。
-- 単位が続けられない止まり方で終わると、engine は保っていた session をすべて閉じる。続けられる止まり方では保つ。engine の停止は、session をすべて解放してから、起動したすべての agent の process を終える。
-- agent 設定の検査、worktree より上の検査、取消は、続けた turn にも同じく当てる。事実の判定に使う実行記録は、その turn のものだけである。
+```json
+{"checks": {"unit": {"argv": ["python3", "-m", "unittest"], "test_paths": ["tests"]}}, "ignore": ["__pycache__"]}
+```
 
-transport への接続(`composition.py`)では、token は provider の session の識別子(Codex の thread、ACP と Pi の session)である。transport は turn が終わるたびに session を解放(unload)し、続けるときに識別子で読み込み直す。session を保つとは engine が token を `state.json` に持つことで、閉じるとは token を捨て、transport もその session を続ける対応を捨てることである。provider が保存した会話は消さない。
+List the caches a check writes (such as `__pycache__`) in `ignore`. Without that, the tree digest differs before and after the check, and the check is judged as "not run on the present tree".
 
-`composition.py` は transport の `ProviderSessions` を engine と同じ process で使う。
+Every time it starts, the engine copies its own `check_runner.py` to `check/<sha256 of the content>/check_runner.py` in the published root. It writes under a temporary name in the same directory and then gives the file its final name in a way that does not replace an existing file (`place_new`), so neither an engine started at the same time nor a half-written file replaces an existing file. When that path holds a file (a link included) whose content sha256 does not match the directory name, the engine does not start. After starting it checks the content again every time before handing out a command; on a mismatch it stops the unit with `unknown_result` and starts no agent.
 
-- 実行の最初の turn は provider、model、effort、cwd、prompt を渡して `start` し、同じ実行の後の turn は同じ session に `continue` する。engine の再起動後は、保存した識別子を `recover_binding` で束ねてから `continue` する。
-- どちらも `wait_turn` で待ち、`observe` で結果を読み、`wait_release` で session の解放を待ってから turn を返す。terminal view の `provider_thread_id` が session の token になる。
-- `continue` が `session_lost` か `recovery_pending` を返すか、session の bind が失敗したら、port は「session を続けられない」と返す。
-- `close` は単位が続けられない止まり方で終わったときと、続けられなかった session に使う。取消は `cancel` である。
+The command handed to an agent is `<the engine's Python> -I <published root>/check/<sha256>/check_runner.py <published root>/units/<unit_id>/checks.json <check name> [--base]`, with paths quoted by the platform's `quote`. The Python is the interpreter that runs the engine (`sys.executable`). The engine assumes that the agent's sandbox can read the published root and the engine's Python, cannot write the published root and cannot read the records root. It does not verify this.
 
-transport の各操作の意味と driver ごとの wire 手順は transport の文書([subsession の構造](../../docs/architecture/subsession.md))にある。
+The agent runs the command the engine gave. On the last line of its output, the check program prints the check name, the tree it ran on (candidate or base revision), the digest of the candidate tree and the exit code. For a check on the base revision it also prints the digest of the copied base revision tree (`base=`). The engine judges pass or fail from this line of the execution record alone. The engine and the check program compute the tree digest with the same function, and it does not include environment entries.
 
-## 指示文
+## Stop reasons and exit codes
 
-`prompts.py` が、実行ごとに `protocol/` の定型文から turn のメッセージを組み立てる。定型文は書く役(`writer`)、評価役(`reviewer`)、報告役(`reporter`)の 3 つで、`writes: true` の実行は書く役、`verdict` の事実を成立させる書かない実行は評価役、それ以外は報告役の定型文を使う(`prompts.kind`)。
-
-- 最初のメッセージは、定型文に実行の `instructions` をそのまま入れ、`## Goal` の節に `unit.goal`、受入条件の節に `criteria` を置き、与えられる報告、それまでの依頼者の回答、前回の指摘を加える。評価役には変更 file の一覧と元の commit の場所、書く役には範囲(`scope`)、検査の command、変えてはならない agent 設定の名前を加える。返答の形(報告、条件ごとの判定と指摘、質問)は定型文が決める。
-- 続きのメッセージの中身は [agent の session](#agent-の-session) にある。
-- engine は `instructions` の中身を解釈しない。呼出し元が役の振る舞いと判断の基準を `instructions` に書き、目的、受入条件、範囲、検査、返答の形は定型文が付ける。
-
-## turn の終わりと worktree
-
-port は、turn の agent session が解放されてから turn を返す。解放されるまでは、agent の process とその sandbox が worktree を使っていることがある。engine が worktree を読む(agent 設定の digest、候補の差分、変更された path、tree の digest)のは、port が turn を返した後だけである。
-
-- 解放が provider の上限時間内に終わらない、または失敗したら、port は完了していない turn を返す(`released: false`、detail は `agent-session-not-released: <理由>`)。engine はその turn では worktree を何も判定せず、`unknown_result` で止まる。session の token は保つ。
-- 次の turn の前の検査は、そのとき worktree にあるものすべてに当てる。engine は worktree の中のものを削除も変更もしない。判定から外すのは、次の節の環境の entry だけである。
-- engine は turn の後、役が書くかどうかに関わらず worktree の全体を読んでから判定する。読めない directory や file(一覧できない、たどれない、開けない)が 1 つでもあれば、その turn は完了しない(`unknown_result`、detail は `worktree-not-readable: <path>`)。読めないものを tree から外すと、候補、変更された path、`patch.diff`(git も読めないものを黙って外す)が縮むからである。agent 設定の中に読めないものがあれば `unsafe_agent_config` で止まる。検査 program も、読めない tree では digest を `none` とし、その状態の行はどの判定でも合格にならない。
-
-## 環境の entry
-
-agent の host は、作業 directory に空の file や directory を置くことがある。engine はそれらの名前も sandbox の方針も知らず、次の形だけで見分ける。
-
-環境の entry は、worktree の最上位の directory にある名前で、元の commit の最上位にも worktree を作った commit の最上位にもなく、通常 file(link ではない)で、大きさが 0 で、判定する process から書き込めないものである。
-
-- 環境の entry は、候補の tree とその digest、変更された path、範囲内の判定、書かない役の turn の前後の比較、`result/patch.diff`、検査の状態の行の digest、agent 設定の digest に含めない。git の index からも外す。
-- 外した名前は記録に残す。各 turn の `turn_finished` の `environment_entries` はその turn の判定で外した名前、`result/stop.json` の `environment_entries` は止まったときに worktree にあり `patch.diff` に入っていない名前である。どちらも止まったとき、または turn の後に worktree から読み、`{"count": 全部の数, "names": [...]}` の形で、名前は最大 32 個、各名前は 1000 文字までに切る。
-- それ以外(書き込める空の file、空でない file、どちらかの commit にある名前、link、最上位より下の file)は、すべて変更として数える。entry が中身を持つか書き込めるようになると、その時点から数える。
-- 判定は `check_runner.py` の 1 つの関数にあり、engine(`worktree.py`、`git.py` の patch への除外の指定)と検査 program が同じものを使う。2 つの commit の最上位の名前は、engine が単位の開始時に git から読み、`unit_started` の記録と `checks.json` の `committed` に書く。
-- 空の directory は、git も tree の digest も agent 設定の digest も数えない。agent 設定の名前(`.claude`、`.codex`、`.pi`、`.agents`、`.mcp.json`)は、directory、file、link、そのほかの種類を問わず digest に含める。外すのは環境の entry だけで、それ以外の空の file も含める。
-- engine の停止は、実行中の turn を止め、session を解放してから host の process を終える。process を signal で終えるのは、解放が上限時間内に終わらなかったときの最後の手段である。
-
-## 承認の要求
-
-agent が承認、permission、利用者の入力を求めたら、transport が明示的に拒否して答え、turn は続く。Codex には承認の指定を送らない。3 つの driver の答え方は [subsession の構造](../../docs/architecture/subsession.md)にある。
-
-拒否した要求は、種類(`command`、`file_change`、`permissions`、`input`)と短い説明で turn の実行記録(`actions.refused`)に残る。engine は turn の回数を実行ごとに足し、`status.json` と `result/stop.json` の `refused` に出す。拒否で単位を止めない。拒否されて実行できなかった検査は合格の行を残さないので、その事実は成立しない。
-
-## 記録
-
-記録の置き場所(`DEV_SKILLS_HOME` の下の `records/loop-engine/`)に、単位ごとの directory を作る。agent はこの場所を読まない。読めなくするのは環境の sandbox 設定である。
-
-| file | 内容 |
-|---|---|
-| `contract.json` / `admission.json` | 受け付けた契約と、受付時に固定した元の commit・検査の定義 |
-| `state.json` | 判断の状態(事実、評価、否定の指摘の数 `refuted`、依頼者の回答 `answers`、評価役が読んだ file `examined`)と、実行ごとの session の token と受け取った回答の数、拒否された要求の回数。engine が止まっても、ここから続ける |
-| `events.jsonl` | 開始、turn の開始(新しい session か続けた session か)と終了、続けられなかった session、要求、session を閉じたこと、停止の記録 |
-| `result/patch.diff` / `result/stop.json` | 元の commit との差分と、止まり方・事実の成否・指摘・実行ごとの拒否の回数・worktree にあって差分に入っていない環境の entry |
-| `result/turns/NN-<実行>.json` | 各 turn の返答、実行記録、session の token、拒否の件数 |
-
-記録の置き場所には、ほかに要求と応答(`inbox/`、`outbox/`)、`engine.lock`、transport の状態(`agents/`)がある。
-
-agent が読むものは、公開の置き場所(`DEV_SKILLS_HOME` の下の `loop-engine/`)に置く。
-
-| file | 内容 |
-|---|---|
-| `check/<sha256>/check_runner.py` | engine が公開した検査 program(次の「検査」の節) |
-| `units/<unit_id>/checks.json` | 検査 program が読む設定(worktree と元の commit の複製の path、検査の定義、無視する名前、2 つの commit の最上位の名前) |
-| `units/<unit_id>/base-<推測できない値>/` | 元の commit の複製。元の commit での検査はこの複製に候補の test を入れて実行し、評価役は元の版をここで読む。単位が続けられない止まり方で終わると消す |
-
-役に渡す path(検査の command、元の commit の場所)は公開の置き場所だけを指す。2 つの置き場所はどちらの path も他方の前方一致にならないので、一方を path の前方一致で許可または拒否する設定は他方に当たらない。
-
-worktree は 2 つの置き場所とは別の、agent の sandbox が書ける場所(`DEV_SKILLS_WORKTREES`)に作る。元の commit の複製は worktree の横に置かない。
-
-単位が続けられない止まり方(`waiting_for_answer`、`unknown_result`、`invalid_result` 以外)で終わると、engine は worktree と元の commit の複製を消す。変更は `result/patch.diff` に残る。
-
-この場所はどの agent も書けるので、そこにあるものを信用しない。
-
-- worktree の directory 名には、単位の id に推測できない値を付ける。先に同じ名前の directory を用意されても使わない。
-- 作った worktree が、途中に link を挟まず、engine が作った場所そのものにあることを確かめる。
-- worktree より上の directory には、engine が作る directory(repository ごとの directory と、単位の worktree)しか置かない。それ以外のものがあれば、agent を起動せずに止める。turn の前と後の両方で確かめる。
-- git は、worktree を作った時点で読んだ git directory を明示して起動する。agent が worktree の `.git` を書き換えても、その先を使わない。
-- agent 設定が link の場合は、link の先の内容まで digest に含める。読む量には上限があり、超える設定の単位は進めない。
-
-確認と agent の起動のあいだに別の agent が file を置く余地は残る。この場所を agent から書けなくする手段は、engine ではなく環境の sandbox 設定が持つ。
-
-## 差し戻しと回答
-
-- 否定された事実(評価、検査、範囲)は、対象を作った実行へ指摘を渡して戻す。戻すのは、指摘の数が同じ事実の前回の否定より少ないときだけである。数えるのは、評価では engine が計算した止める指摘、検査では落ちた検査、範囲では範囲外の path である。最初の否定は戻す。少なくなければ `stagnation` で止まり、`stop.json` の `stop` に事実、指摘、`detail`(今回と前回の数)を残す。事実ごとの前回の数は `state.json` の `refuted` にある。
-- 指摘を受けた作る役が候補を変えずに turn を終える、または報告役が同じ報告を返すと、`stagnation` で止まる(detail は `candidate unchanged` か `report unchanged`)。その指摘の事実を判定した後に回答があったときは止めず、事実を判定し直す。
-- 回答は `state.json` の `answers`(`id`、`question`、`answer`、`asked_by`)に順に残る。session は受け取った回答の数を持ち、続きのメッセージはまだ受け取っていない回答だけを運ぶ。評価の事実の根拠は回答の digest を `@answers` の key に持ち、回答が増えるとその評価は成立しなくなる。報告、検査、範囲の根拠には回答を含めない。
-- 差し戻した回数は `status.json` の `round` と `stop.json` の `rounds` に出す。止める条件には使わない。
-
-## 評価の返答の受付
-
-- 評価役の返答を数えないとき、engine は見つけた理由をすべて `; ` でつないで、続きのメッセージの指摘として返す。返答の形が読めない(最後の object がない、`criteria` が list でないなど)ときは、その理由だけを返す。
-- 変更 file を読んだ跡は、その turn の実行記録に加えて、同じ実行が同じ根拠で前の turn に読んだ file も数える(`state.json` の `examined`)。根拠が変わったら前の turn の分は数えない。読んだ跡のない file は、理由の中にすべて(32 個までと残りの数)挙げる。
-- 根拠の command は、その turn の実行記録にあるものだけを数える。file の引用は、今の file にあれば turn を問わない。
-
-## 止まり方と終了コード
-
-| 止まり方 | 終了コード | 続け方 |
+| Stop reason | Exit code | Continued by |
 |---|---|---|
 | `done` | 0 | |
 | `waiting_for_answer` | 10 | `answer` |
@@ -172,44 +55,178 @@ worktree は 2 つの置き場所とは別の、agent の sandbox が書ける�
 | `invalid_result` | 17 | `retry` |
 | `stuck` | 18 | |
 
-要求が受け付けられなかった場合は 2、engine を起動できなかった場合は 3 を返す。記録の置き場所の lock を取れない(権限、directory を作れない、lock のない filesystem)場合も 3 で、原因を stderr に示す。entry が起動した engine が応答の前に失敗で止まった場合も 3 で、待ち時間の終わりを待たず、その終了 status と engine の error 出力の末尾を示す。切り離して起動する engine の error 出力は、記録の置き場所の `engine.stderr` に残る。
+The CLI returns 2 when a request is not accepted and 3 when the engine cannot be started. Failing to take the lock of the records root (permissions, a directory that cannot be made, a filesystem without locks) also returns 3 and names the cause on stderr. An engine that the entry started and that stopped with a failure before responding also returns 3, without waiting for the timeout, and shows its exit status and the tail of the engine's error output. The error output of an engine started detached stays in `engine.stderr` in the records root.
 
-## 検査
+What each stop reason means for the caller is in [How a unit stops](../PRODUCT.md#how-a-unit-stops).
 
-project は `.dev-skills/checks.json` に検査を定義する。engine は元の commit にあるこの file だけを読む。
+## MCP entry
 
-```json
-{"checks": {"unit": {"argv": ["python3", "-m", "unittest"], "test_paths": ["tests"]}}, "ignore": ["__pycache__"]}
-```
+`python -I src/loop_engine/__main__.py mcp` is a stdio MCP server for the session connected at the directory it is started in. It serves the unit tools of `unit_tools.py`.
 
-検査が書き出す cache(`__pycache__` など)は `ignore` に書く。書かないと、検査の前後で tree の digest が変わり、検査が「現在の tree で実行されていない」と判定される。
+| Tool | Arguments | What it does |
+|---|---|---|
+| `unit_start` | `contract` | Hands the contract to the engine and returns the unit's status. The unit runs on |
+| `unit_status` | `unit_id` | Reads the unit's current status |
+| `unit_wait` | `unit_id`, `timeout_ms` (0 to 30000), optional `after_revision` | Waits until the unit stops or its revision passes `after_revision`. Timing out does not cancel the unit |
+| `unit_answer` | `unit_id`, `question_id`, `answer` | Answers the question a unit is waiting on |
+| `unit_retry` | `unit_id` | Runs again the turn whose result was unknown or could not be checked |
+| `unit_cancel` | `unit_id` | Cancels the unit. A unit that already ended keeps how it ended |
+| `unit_result` | `unit_id`, `name` (`stop.json` or `patch.diff`) | Reads a stopped unit's result, cut to 200,000 bytes with `truncated` set when it was longer |
 
-engine は起動するたびに、自分の `check_runner.py` を公開の置き場所の `check/<内容の sha256>/check_runner.py` に複製する。一時的な名前で同じ directory に書いてから、すでにある file を置き換えない方法(`place_new`)で最終の名前にするので、同時に起動した engine も、書きかけの file も、すでにある file を置き換えない。その path に内容の sha256 が directory 名と一致しない file(link を含む)があれば、engine は起動しない。起動した後も、command を渡す前に毎回内容を確かめ、一致しなければ単位を `unknown_result` で止め、agent を起動しない。
+- Every tool has a closed input schema, and a call outside it is refused before anything is sent. No tool takes a program, an argument list, an environment, a path or the state home.
+- A start is accepted only when the contract's `repository` is an existing directory inside the connection's directory, written as its resolved absolute path.
+- A unit that another connection started is answered as "no such unit" by every tool, and a start under its id is refused with "this unit_id cannot be used".
+- The entry does not open (exit code 2, the reason on stderr) for an agent the engine started, which carries the transport's execution role in its environment, or when the records root lies inside the connection's directory.
+- A refusal by the entry or the engine is a tool error (`isError`), distinct from a unit's stop. Reading a unit starts no engine; a request does, as with the CLI.
+- The server answers `initialize`, `ping`, `tools/list` and `tools/call` for the protocol revisions 2024-11-05, 2025-03-26 and 2025-06-18, one JSON-RPC message per line. It offers no resources or prompts and does not cancel a running call.
 
-agent に渡す command は `<engine の Python> -I <公開の置き場所>/check/<sha256>/check_runner.py <公開の置き場所>/units/<unit_id>/checks.json <検査の名前> [--base]` で、path は platform の `quote` で quote する。Python は engine を動かしている interpreter(`sys.executable`)である。engine は、公開の置き場所と engine の Python を agent の sandbox が読めて、公開の置き場所には書けないこと、記録の置き場所を読めないことを前提とし、それを確かめない。
+A caller with a server of its own mounts the same tools. `composition.unit_entry(environ, connection)` returns the tool group (`tools`, `instructions`, `invoke(name, arguments)`). A caller that composes contracts replaces `unit_start` with its own tool, calls `admit(repository, unit_id)` before composing and hands the contract to `start(contract)`.
 
-agent は engine が指定した command を実行する。検査 program は結果の最後の行に、検査の名前、対象(候補か元の commit か)、候補の tree の digest、終了コードを出す。元の commit での検査では、複製した元の commit の tree の digest(`base=`)も出す。engine は実行記録のこの行だけで合否を判定する。tree の digest は、engine と検査 program が同じ関数で計算し、環境の entry を含めない。
+## Records
 
-## 元の commit
+The engine makes one directory per unit in the records root (`records/` under `LOOP_ENGINE_HOME`). Agents do not read this place. What makes it unreadable is the environment's sandbox settings.
 
-判定が比べる元の commit は、agent が書ける tree から読まない。
-
-- 変更された path(範囲内の判定、評価役に渡す変更 file の一覧、評価役が変更 file を読んだかの割合)は、worktree の file と、worktree を作った時点で読んだ git directory にある元の commit の記録(`git ls-tree`)を、git の blob の id で比べる。書かない役の turn の前後の比較と `patch.diff` は、元の commit に対する git の差分である。
-- 元の commit での検査(`fails_on_base`)は agent が sandbox の中で実行するので、engine が保証できることは限られる。engine が保証するのは、検査 program が engine の置いた複製を読むこと、状態の行の `base=` が単位の開始時に engine が計算した複製の digest と一致しない実行を合格にしないこと(指摘は `not run on the base revision the engine placed`)、複製を作れない・検査を起動できない実行を合格にしないこと、`digest=` が実行の始めの候補の tree と一致することである。状態の行が示すのは、検査 program が実行の始めにその候補の tree を読み、その時点で engine の置いた内容の複製を写したことまでである。写した後の一時的な tree、実行中の test の振る舞い、検査 program の出力の後に同じ出力へ書く process は、agent の sandbox の中にあり、engine は確かめられない。
-
-## 検証の対応
-
-| 確かめること | テスト |
+| File | Content |
 |---|---|
-| 判断の規則、判定の規則、契約の受付、構造だけの検査、指摘が減る間だけ戻すこと、回答と評価の根拠、前の turn に読んだ file を数えること | `tests/test_facts.py` |
-| 実際の repository と engine での流れ、止まり方、再開、取消、役に渡す path が公開の置き場所だけを指すこと | `tests/test_unit_flow.py` |
-| session の継続、続きのメッセージ、続けられない session、session を閉じること、解放されなかった turn、拒否の回数 | `tests/test_sessions.py` |
-| 要求の受付、要求 file、CLI、engine process の起動 | `tests/test_service.py` |
-| 検査 program | `tests/test_check_runner.py` |
-| 検査 program の公開(内容の digest の directory、同時に起動した engine、書き換えられた複製を使わないこと)、役に渡す command が公開した複製を指すこと | `tests/test_check_program.py` |
-| 環境の entry を数えないこと、それ以外を数えること、digest の一致、空の directory と agent 設定の digest、外した名前の記録 | `tests/test_environment_entries.py` |
-| 元の commit を git の記録と engine の複製から読むこと、`fails_on_base` の判定、読めない tree で判定が失敗すること、agent 設定の名前の種類を問わないこと | `tests/test_judged_trees.py` |
-| 起動する process が git だけであること、純粋な module の範囲、repository の hook や filter が動かないこと | `tests/test_closed_paths.py` |
-| Windows の事実を値で渡した判断(絶対 path、repository の中の path、検査の command の quote)、platform を見分けるのが `platform_facts.py` だけであること、`place_new` と `lock` の adapter の契約、識別子が末尾の改行を受け付けないこと、評価役の返答の受け付けない理由 | `tests/test_platform_facts.py`、`tests/test_facts.py` |
-| agent の port の契約(transport への接続と台本の偽物の両方に当てる)、session の解放後に turn を返すこと、停止での解放と process の終了の順、解放後の worktree の判定 | `tests/test_transport_agents.py` |
-| 検証 tool | `tests/test_tools.py` |
+| `contract.json` / `admission.json` | The accepted contract, and the base revision and check definitions fixed on admission |
+| `state.json` | The decision state (facts, reviews, the finding counts of refutations `refuted`, the requester's answers `answers`, the files reviewers read `examined`), and per execution the session token, the number of answers delivered and the number of refused requests. When the engine stops, it continues from here |
+| `events.jsonl` | The record of the start, each turn's start (new session or continued session) and end, sessions that could not be continued, requests, closed sessions, and the stop |
+| `result/patch.diff` / `result/stop.json` | The diff against the base revision, and the stop reason, which facts hold, the findings, the refusal count per execution, and the environment entries that are in the worktree and not in the diff |
+| `result/turns/NN-<execution>.json` | Each turn's reply, execution record, session token and number of refusals |
+
+The records root also holds requests and responses (`inbox/`, `outbox/`), `engine.lock` and the transport's state (`agents/`).
+
+What agents read goes to the published root (`published/` under `LOOP_ENGINE_HOME`).
+
+| File | Content |
+|---|---|
+| `check/<sha256>/check_runner.py` | The check program the engine published (see [Checks](#checks)) |
+| `units/<unit_id>/checks.json` | The configuration the check program reads (the paths of the worktree and of the copy of the base revision, the check definitions, the names to ignore, the top-level names of the two commits) |
+| `units/<unit_id>/base-<unguessable value>/` | The copy of the base revision. A check on the base revision runs on this copy with the candidate's tests added, and reviewers read the original version here. It is removed when the unit ends with a stop that cannot be continued |
+
+Paths handed to a role (the check commands, the place of the base revision) point only into the published root. Neither root's path is a prefix of the other's, so a setting that allows or denies one by path prefix does not match the other.
+
+Worktrees are made in a third place, one that the agent's sandbox can write (`LOOP_ENGINE_WORKTREES`). The copy of the base revision is not placed next to the worktree.
+
+When a unit ends with a stop that cannot be continued (any other than `waiting_for_answer`, `unknown_result` and `invalid_result`), the engine removes the worktree and the copy of the base revision. The change stays in `result/patch.diff`.
+
+Every agent can write the worktrees root, so nothing in it is trusted.
+
+- The name of a worktree directory is the unit's id with an unguessable value added. A directory prepared in advance under the same name is not used.
+- The engine checks that the worktree it made is at the very place the engine made, with no link on the way.
+- The directories above a worktree hold only directories the engine makes (one per repository, and the units' worktrees). When anything else is there, the engine stops without starting an agent. It checks both before and after a turn.
+- git is started with the git directory that was read when the worktree was made, given explicitly. When an agent rewrites the worktree's `.git`, the engine does not follow it.
+- When an agent configuration is a link, the digest includes the content it points to. The amount read has a limit, and a unit whose configuration exceeds it does not proceed.
+
+A gap remains in which another agent places a file between the check and the start of an agent. The means to make this place unwritable to agents belongs to the environment's sandbox settings, not to the engine.
+
+## Sending work back and answers
+
+- A refuted fact (review, checks, scope) goes back, with its findings, to the execution that made the subject. It goes back only when the number of findings is smaller than at the previous refutation of the same fact. What is counted is the blocking findings the engine computed for a review, the failed checks for checks, and the out-of-scope paths for the scope. The first refutation goes back. When the number is not smaller, the unit stops with `stagnation` and leaves the fact, the findings and a `detail` (the number this time and the previous time) in `stop` of `stop.json`. The previous number per fact is in `refuted` of `state.json`.
+- When a writer that received findings ends its turn without changing the candidate, or a reporter returns the same report, the unit stops with `stagnation` (the detail is `candidate unchanged` or `report unchanged`). When an answer arrived after the fact of those findings was judged, the unit does not stop and the fact is judged again.
+- Answers stay in order in `answers` of `state.json` (`id`, `question`, `answer`, `asked_by`). A session holds the number of answers it has received, and a follow-up message carries only the answers not yet received. The basis of a verdict fact has the digest of the answers under the key `@answers`, so that verdict stops holding when an answer is added. The bases of reports, checks and the scope do not include answers.
+- The number of rounds is shown in `round` of `status.json` and `rounds` of `stop.json`. It is not used as a stop condition.
+
+## Accepting a reviewer's reply
+
+- When the engine does not count a reviewer's reply, it joins every reason it found with `; ` and returns them as the feedback of the follow-up message. When the form of the reply cannot be read (no final object, `criteria` is not a list, and so on), it returns only that reason.
+- The trace of having read the changed files counts, besides that turn's execution record, the files the same execution read in earlier turns on the same basis (`examined` of `state.json`). When the basis changed, earlier turns are not counted. Files with no trace of being read are all named in the reason (up to 32, and the number of the rest).
+- An evidence command counts only when it is in that turn's execution record. A quote of a file counts in any turn as long as it is in the present file.
+
+## Modules
+
+| Module | Responsibility |
+|---|---|
+| `facts.py` | Checking a contract on admission, choosing the next execution, establishing and invalidating facts, judging checks and reviews. Works on values only |
+| `prompts.py` | Assembling the prompt handed to an execution (a session's first message and its follow-up messages). Works on values only. It receives the names of the agent configuration a writer must not change as a value, from the list `worktree.py` observes |
+| `unit.py` | Carries one unit from its saved state to its next stop |
+| `service.py` | The engine process. Holds one thread per unit and takes requests |
+| `store.py` | A unit's records, publishing what agents read (the check program, the unit's `checks.json`), request and response files, and the process lock. Taking the lock tells three results apart: taken, held by another process, and cannot be taken (`LockFailed`, which names the cause). A lock that cannot be taken is not treated as another engine running |
+| `git.py` | Starting git. It always adds the arguments that disable hooks, filters and external diff |
+| `worktree.py` | Observing the worktree (the agent configuration digest, the tree digest, the changed paths compared with git's record) |
+| `check_runner.py` | The fixed check program an agent runs inside its sandbox. It owns how a tree is read (it fails when something cannot be read), the tree digest and the test for an environment entry; `worktree.py` uses the same code |
+| `agents.py` | The port that runs an agent's turn. A session is a token whose content is not interpreted |
+| `composition.py` | Connects the port to the provider transport, and opens the unit tools for a connection. The only module that touches the transport |
+| `client.py` / `cli.py` | The entry's client and the command line. Hand over requests and read records. Have no progress or judgment logic |
+| `unit_tools.py` | The unit tools and the boundary of a connection: closed schemas, the check of a call's arguments, whose a unit is. Entry code under the same rule as the client |
+| `mcp_stdio.py` | The stdio MCP server for a tool group, on the standard library alone. Decides nothing a tool decides |
+| `platform_facts.py` | The platform facts of the machine the engine runs on (table below). The only module that chooses between POSIX and Windows by `os.name` |
+
+A platform's facts are a `Platform` value, and `CURRENT` is that of the machine the engine runs on. `composition.py` hands it to `Engine`, and `Engine` hands the path form to `facts.validate` and `facts.checks_config` and the quoting to `Unit`. `git.py`, `store.py` and `client.py` use the values of `CURRENT`. `place_new` and `lock` are adapters for effects that differ by platform, and they receive the OS functions they call as arguments. The Windows adapters get the same contract test, against fake Windows functions, as the adapters of the machine the engine runs on.
+
+| Fact | POSIX | Windows | Used by |
+|---|---|---|---|
+| `path_style` (the form of an absolute path) | `/a/b` | `C:\a\b` or `\\server\share\a` (separated only by `\`) | `facts.py` |
+| `null_device` | `/dev/null` | `nul` | `git.py` (hooks, attributes, global configuration) |
+| `home` (the value handed to git when the environment has no `HOME`) | `/` | not handed | `git.py` |
+| `quote` (the check command line handed to an agent) | POSIX shell quoting | The form the Microsoft C runtime splits again (the same as `subprocess.list2cmdline`) | `unit.py` |
+| `detached` (starting the engine detached from the caller) | A new session | A new process group, no console | `client.py` |
+| `place_new` (creating a file without replacing an existing one) | hard link | rename | `store.py` (publishing the check program) |
+| `lock` (the process lock) | `flock` | `msvcrt.locking` | `store.py` |
+| `lock_held` (the errno when another process holds the lock; any other errno means the lock cannot be taken) | `EAGAIN`, `EWOULDBLOCK` | `EACCES` | `store.py` (`lock_contended`) |
+
+## Agent sessions
+
+Each execution has one agent session.
+
+- An execution's first turn starts a new session and sends the role's protocol text with the full instructions in it. The port returns the token of the session the turn ran in, and the engine saves it per execution in `state.json`.
+- When the same execution runs again (work sent back, an answer, a retry), the engine continues the session with that token and sends the role's follow-up protocol text (`protocol/<role>-follow-up.md`). A follow-up message has the findings and the reason for the retry, the reports and the requester's answers that the session has not yet received, for a reviewer the present list of changed files, and the form of the reply. The instructions, the goal and the acceptance criteria are not sent again.
+- A protocol text hands a role the reports it is given as what another role found about this work, to be weighed as evidence, and states that the rules that role received for its own turn bind neither the reader nor the work. The protocol texts of non-writing roles (reporter, reviewer) state that the rules in the section that fixes the form of the reply are rules for that turn only and are not a subject of reports or findings. A role's reply reaches another role only as a non-writing role's report or as a reviewer's findings; a writer's report is handed to no role (`prompts.inputs`).
+- Different executions do not share a session. A reviewer does not see the writer's session.
+- When the port reports that "the session cannot be continued", the engine starts that turn once more, as a new session with the full instructions. A failure of that turn is treated like any other failed turn.
+- The token is in `state.json`, so the same session continues after the engine restarts.
+- When the unit ends with a stop that cannot be continued, the engine closes every session it kept. On a stop that can be continued it keeps them. Stopping the engine releases every session and then ends every agent process it started.
+- The check of the agent configuration, the check of what is above the worktree, and cancellation apply to a continued turn alike. Only that turn's execution record is used to judge facts.
+
+In the connection to the transport (`composition.py`), a token is the provider's session identifier (a Codex thread, an ACP or Pi session). The transport releases (unloads) the session at the end of every turn and loads it again by the identifier to continue. Keeping a session means that the engine has the token in `state.json`; closing it means discarding the token, and the transport discards its mapping for continuing that session. The conversation the provider saved is not deleted.
+
+`composition.py` uses the transport's `ProviderSessions` in the engine's own process.
+
+- An execution's first turn calls `start` with the provider, model, effort, cwd and prompt; later turns of the same execution call `continue` on the same session. After an engine restart, the saved identifier is bound with `recover_binding` before `continue`.
+- Either way it waits with `wait_turn`, reads the result with `observe`, and waits for the session's release with `wait_release` before returning the turn. The `provider_thread_id` of the terminal view becomes the session token.
+- When `continue` returns `session_lost` or `recovery_pending`, or binding the session fails, the port reports that "the session cannot be continued".
+- `close` is used when the unit ends with a stop that cannot be continued, and for a session that could not be continued. Cancellation is `cancel`.
+
+The meaning of each transport operation and the wire procedure of each driver belong to the `cross-host-transport` package and its own documentation.
+
+## Prompts
+
+`prompts.py` assembles the message of a turn for each execution from the protocol texts in `protocol/`. There are three protocol texts: writer, reviewer and reporter. An execution with `writes: true` uses the writer's, a non-writing execution that establishes a `verdict` fact uses the reviewer's, and any other uses the reporter's (`prompts.kind`).
+
+- The first message puts the execution's `instructions` into the protocol text as they are, `unit.goal` under the `## Goal` section and `criteria` under the acceptance criteria section, and adds the reports given, the requester's answers so far and the findings of the previous round. A reviewer also gets the list of changed files and the place of the base revision; a writer gets the scope (`scope`), the check commands and the names of the agent configuration it must not change. The protocol text fixes the form of the reply (a report, a judgment per criterion with findings, a question).
+- The content of a follow-up message is in [Agent sessions](#agent-sessions).
+- The engine does not interpret `instructions`. The caller writes a role's behavior and judgment standards in `instructions`; the protocol text adds the goal, the acceptance criteria, the scope, the checks and the form of the reply.
+
+## End of a turn and the worktree
+
+The port returns a turn after the turn's agent session is released. Until the release, the agent's process and its sandbox may still be using the worktree. The engine reads the worktree (the agent configuration digest, the candidate's diff, the changed paths, the tree digest) only after the port returned the turn.
+
+- When the release does not finish within the provider's time limit, or fails, the port returns a turn that did not complete (`released: false`, with the detail `agent-session-not-released: <reason>`). The engine judges nothing of the worktree for that turn and stops with `unknown_result`. It keeps the session token.
+- The check before the next turn applies to everything in the worktree at that time. The engine neither removes nor changes anything inside the worktree. The only things left out of a judgment are the environment entries of the next section.
+- After a turn, whether or not the role writes, the engine reads the whole worktree before judging. When even one directory or file cannot be read (cannot be listed, traversed or opened), the turn does not complete (`unknown_result`, with the detail `worktree-not-readable: <path>`). Leaving what cannot be read out of the tree would shrink the candidate, the changed paths and `patch.diff` (git, too, silently leaves out what it cannot read). When something inside the agent configuration cannot be read, the unit stops with `unsafe_agent_config`. The check program also gives the digest `none` for a tree it cannot read, and such a status line passes no judgment.
+
+## Environment entries
+
+An agent's host may place empty files or directories in the working directory. The engine knows neither their names nor the sandbox policy and tells them apart only by this form.
+
+An environment entry is a name in the top-level directory of the worktree that is at the top level of neither the base revision nor the commit the worktree was made from, is a regular file (not a link), has size 0, and cannot be written by the judging process.
+
+- Environment entries are not included in the candidate's tree and its digest, the changed paths, the scope judgment, the before-and-after comparison of a non-writing role's turn, `result/patch.diff`, the digest in a check's status line, or the agent configuration digest. They are also left out of git's index.
+- The names left out are recorded. `environment_entries` in each turn's `turn_finished` has the names left out of that turn's judgment; `environment_entries` in `result/stop.json` has the names that were in the worktree at the stop and are not in `patch.diff`. Both are read from the worktree at the stop or after the turn, in the form `{"count": the total number, "names": [...]}`, with at most 32 names, each cut to 1000 characters.
+- Everything else (a writable empty file, a non-empty file, a name in either commit, a link, a file below the top level) counts as a change. Once an entry has content or becomes writable, it counts from then on.
+- The test is one function in `check_runner.py`, and the engine (`worktree.py`, and the exclusions `git.py` gives for the patch) and the check program use the same one. The engine reads the top-level names of the two commits from git when the unit starts and writes them to the `unit_started` record and to `committed` in `checks.json`.
+- Neither git, the tree digest nor the agent configuration digest counts an empty directory. The names of the agent configuration (`.claude`, `.codex`, `.pi`, `.agents`, `.mcp.json`) are included in the digest whatever their kind: directory, file, link or anything else. Only environment entries are left out; any other empty file is included.
+- Stopping the engine stops the running turns, releases the sessions and then ends the host processes. Ending a process with a signal is the last resort, for when the release did not finish within the time limit.
+
+## Approval requests
+
+When an agent asks for approval, permission or user input, the transport answers with an explicit refusal and the turn continues. No approval setting is sent to Codex. How each of the three drivers answers belongs to the `cross-host-transport` package and its own documentation.
+
+A refused request stays in the turn's execution record (`actions.refused`) with its kind (`command`, `file_change`, `permissions`, `input`) and a short description. The engine adds each turn's count per execution and shows it in `refused` of `status.json` and `result/stop.json`. A refusal does not stop the unit. A check that could not run because it was refused leaves no passing line, so its fact does not hold.
+
+## Base revision
+
+The base revision that judgments compare against is never read from a tree agents can write.
+
+- Changed paths (the scope judgment, the list of changed files handed to reviewers, the share of changed files a reviewer read) come from comparing the worktree's files with the base revision's record (`git ls-tree`) in the git directory read when the worktree was made, by git blob id. The before-and-after comparison of a non-writing role's turn and `patch.diff` are git diffs against the base revision.
+- A check on the base revision (`fails_on_base`) is run by the agent inside its sandbox, so what the engine can guarantee is limited. The engine guarantees that the check program reads the copy the engine placed; that a run whose status line's `base=` does not match the digest of the copy that the engine computed when the unit started does not pass (the finding is `not run on the base revision the engine placed`); that a run that cannot make the copy or cannot start the check does not pass; and that `digest=` matches the candidate tree at the start of the run. A status line shows no more than that the check program read that candidate tree at the start of the run and at that moment copied the content the engine placed. The temporary tree after the copy, what the tests do while running, and a process that writes to the same output after the check program's output are inside the agent's sandbox, and the engine cannot check them.

@@ -1,14 +1,17 @@
 ---
 id: change-20261112-loop-command-continuations
 kind: change
-title: 非対話コマンドと MCP tool で再開できる Loop の設計
+title: Design of a Loop that can be resumed with non-interactive commands and MCP tools
 status: draft
 created: '2026-11-12'
 profile: sdd@1
-intent: Loop の判断と副作用を分離し、sandbox の有限な処理と MCP tool による境界操作だけで、利用側ラッパーなしに継続できる構造へ変更する。
+intent: Separate the Loop's decisions from its side effects, and change to a structure that can continue with only finite
+  processing in the sandbox and boundary operations through MCP tools, without a wrapper on the using side.
 outcomes:
-- kernel は値だけを入力し、filesystem・controller・transport を呼ばず判断を返す。予約・回復だけでは producer を起動しない。
-- 通常の非対話コマンドとセッションの MCP tool だけで Loop が継続し、利用側の中継スクリプト・socket・FIFO・対話 stdin を必要としない。
+- The kernel takes only values as input and returns a decision without calling the filesystem, controller or transport.
+  Reservation and recovery alone do not start a producer.
+- The Loop continues with only ordinary non-interactive commands and the session's MCP tools, and needs no relay script,
+  socket, FIFO or interactive stdin on the using side.
 scope: []
 non_goals: []
 change_classes: []
@@ -31,8 +34,9 @@ tags: []
 owners: []
 relations: []
 source_paths: []
-summary: 構造改修を実装中。kernel の純粋な判断、観測・保存の orchestration、明示的な effect 実行を分離する。対話 stdin
-  の除去と非対話ホストでの検収までを完了条件とする。
+summary: The structural rework is being implemented. It separates the kernel's pure decisions, the orchestration of
+  observation and persistence, and explicit effect execution. The completion condition extends through the removal of
+  interactive stdin and acceptance on a non-interactive host.
 ---
 
 ## Summary

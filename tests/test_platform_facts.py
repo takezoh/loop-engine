@@ -26,8 +26,8 @@ class CheckCommandTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         home = os.path.join(os.path.realpath(temporary.name), "state home")
-        self.root = os.path.join(home, "records", "loop-engine")
-        self.published = os.path.join(home, "loop-engine")
+        self.root = os.path.join(home, "records")
+        self.published = os.path.join(home, "published")
         self.program = store.publish_check_program(self.published, RUNNER)
 
     def commands(self, platform, python):

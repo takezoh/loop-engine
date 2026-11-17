@@ -5,7 +5,7 @@ The records are contracts, states, events, turn records, results, requests and t
 Entries (CLI, MCP) read status and results from them and never write; agents must not read them,
 because a role judged independently of another must not see that role's account or record. They
 live apart from what agents read (the check program, each unit's check configuration and its copy of
-the base revision), which stays in the engine's directory of the dev-skills state home. A unit's
+the base revision), which stays in the published directory of the state home. A unit's
 events are the source of truth; status and results are derived views.
 """
 import hashlib
@@ -18,38 +18,38 @@ from threading import Lock
 from .facts import ID_RE
 from .platform_facts import CURRENT
 
-ROOT_NAME = "loop-engine"
+PUBLISHED_NAME = "published"
 RECORDS_NAME = "records"
 
 
 def _home(environ):
-    return os.path.abspath(environ.get("DEV_SKILLS_HOME") or os.path.join(os.path.expanduser("~"), ".dev-skills"))
+    return os.path.abspath(environ.get("LOOP_ENGINE_HOME") or os.path.join(os.path.expanduser("~"), ".loop-engine"))
 
 
 def home_root(environ):
-    """The engine's records: `<home>/records/loop-engine`. Agents must not read it.
+    """The engine's records: `<home>/records`. Agents must not read it.
 
     Neither this path nor the published one begins with the other, so a sandbox rule that grants
-    agents `<home>/loop-engine` or denies them `<home>/records` cannot reach the other by a prefix.
+    agents `<home>/published` or denies them `<home>/records` cannot reach the other by a prefix.
     """
-    return os.path.join(_home(environ), RECORDS_NAME, ROOT_NAME)
+    return os.path.join(_home(environ), RECORDS_NAME)
 
 
 def published_root(environ):
-    """What the engine publishes for agents to read: `<home>/loop-engine`."""
-    return os.path.join(_home(environ), ROOT_NAME)
+    """What the engine publishes for agents to read: `<home>/published`."""
+    return os.path.join(_home(environ), PUBLISHED_NAME)
 
 
 def worktrees_root(environ):
     """Where unit worktrees are made: a directory the agents' own sandboxes let them write.
 
     The engine's state home is read-only to agents, so worktrees do not live under it.
-    `DEV_SKILLS_WORKTREES` names the directory; the default is the user's cache directory.
+    `LOOP_ENGINE_WORKTREES` names the directory; the default is the user's cache directory.
     """
-    chosen = environ.get("DEV_SKILLS_WORKTREES")
+    chosen = environ.get("LOOP_ENGINE_WORKTREES")
     if not chosen:
         cache = environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
-        chosen = os.path.join(cache, "dev-skills", "worktrees")
+        chosen = os.path.join(cache, "loop-engine", "worktrees")
     return os.path.abspath(chosen)
 
 

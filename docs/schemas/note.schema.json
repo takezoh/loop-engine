@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-module.local/docs/note.schema.json",
   "title": "Loose note (memo, research log, ad-hoc record)",
-  "description": "決定・実装変更・作業項目として管理しない参考情報を保存する。",
+  "description": "Stores reference information that is not managed as a decision, an implementation change or a work item.",
   "allOf": [
     {
       "$ref": "_common.schema.json"
@@ -25,25 +25,25 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 80,
-      "description": "tags より粒度大きい単一ラベル (例: 'auth-flow', 'perf-investigation')。"
+      "description": "A single label coarser than tags (e.g. 'auth-flow', 'perf-investigation')."
     },
     "summary": {
       "type": "string",
       "maxLength": 280,
-      "description": "1-2 文の要約。索引から人間/agent が把握するためのもの。"
+      "description": "A summary of 1-2 sentences. It lets a human/agent grasp the note from the index."
     },
     "expires": {
       "type": "string",
       "format": "date",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
-      "description": "古くなる予定日。期限を過ぎたら status: archived に遷移する判断材料。"
+      "description": "The date on which the note is expected to become stale. Once it has passed, it is input for deciding to move to status: archived."
     },
     "record_type": {
       "enum": [
         "review-finding",
         "debug-experiment"
       ],
-      "description": "dev-evidence history producer 契約の record 種別。指定時は subject_paths 必須。"
+      "description": "The record type of the dev-evidence history producer contract. When specified, subject_paths is required."
     },
     "subject_paths": {
       "type": "array",
@@ -51,17 +51,17 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "record の対象 (repo 相対 path)。dev-evidence が履歴 view へ集計する。"
+      "description": "The subjects of the record (repo-relative paths). dev-evidence aggregates them into the history view."
     },
     "change_ref": {
       "type": "string",
       "minLength": 1,
-      "description": "関連する change id (任意)。"
+      "description": "The related change id (optional)."
     },
     "outcome": {
       "type": "string",
       "maxLength": 120,
-      "description": "短い結論 (debug なら refuted / confirmed、finding なら fixed / filed 等)。"
+      "description": "A short conclusion (refuted / confirmed for debug, fixed / filed and so on for a finding)."
     }
   },
   "dependentRequired": {
