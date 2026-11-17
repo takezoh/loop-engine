@@ -1,7 +1,7 @@
 ---
 id: adr-20261115-prompts-are-pure-and-unconfirmed-results-stop
 kind: adr
-title: 指示文の組み立ては値だけを扱い、確かめられない結果では止まって自分ではやり直さない
+title: Prompt composition works on values only, and on a result it cannot confirm the engine stops and does not retry by itself
 status: accepted
 created: '2026-11-15'
 decision_makers:
@@ -12,42 +12,43 @@ relations:
 - {type: references, target: adr-20261114-unit-completes-when-facts-hold}
 - {type: references, target: adr-20261114-agent-sessions-continue-and-approvals-are-refused}
 source_paths: []
-summary: engine の指示文の組み立て(prompts.py)は判断(facts.py)と同じく値だけを扱う。turn の結果を確かめられない単位は理由を付けて止まり、engine
-  は自分ではやり直さず、呼出し元の retry の要求だけでやり直す。
+summary: The engine's prompt composition (prompts.py) works on values only, like the decision logic (facts.py). A unit
+  whose turn result cannot be confirmed stops with a reason; the engine does not retry by itself and retries only on
+  the caller's retry request.
 updated: '2026-11-15'
 ---
 
-# 指示文の組み立ては値だけを扱い、確かめられない結果では止まって自分ではやり直さない
+# Prompt composition works on values only, and on a result it cannot confirm the engine stops and does not retry by itself
 
-## 背景
+## Context
 
-engine の規則のうち 2 つは、engine の決定として記録されていなかった。
+Two of the engine's rules were not recorded as decisions of the engine.
 
-- 「判断は値だけを扱う」は[事実による完了の決定](adr-20261114-unit-completes-when-facts-hold.md)の項目 8 が定めるが、対象は判断(`facts.py`)である。役に渡す指示文を組み立てる `prompts.py` も同じ規則で書かれ、`tests/test_closed_paths.py` が計算だけの module しか import しないことを検査しているが、それを定めた記述は engine を使う側の開発指針にしかなかった。
-- 「turn の結果を確かめられないときは止まり、自分ではやり直さない」は、engine の振る舞い(`unknown_result`、`invalid_result` と、やり直しの要求)として実装され文書化されているが、決定としての記録がなかった。
+- "The decision logic works on values only" is set by item 8 of [the decision on completion by facts](adr-20261114-unit-completes-when-facts-hold.md), but that item covers the decision logic (`facts.py`). `prompts.py`, which composes the prompts given to roles, is written under the same rule, and `tests/test_closed_paths.py` checks that it imports only computation-only modules, but the only text that set this was in the development guidelines of the side that uses the engine.
+- "When the result of a turn cannot be confirmed, the engine stops and does not retry by itself" is implemented and documented as the engine's behavior (`unknown_result`, `invalid_result`, and the retry request), but there was no record of it as a decision.
 
-engine の規則は engine の文書に置く。使う側の文書からこれらの規則を除いたので、engine の決定として記録する。
+The engine's rules belong in the engine's documents. These rules were removed from the documents of the side that uses the engine, so they are recorded here as decisions of the engine.
 
-## 決定
+## Decision
 
-1. **指示文の組み立て(`prompts.py`)は、判断(`facts.py`)と同じく値だけを扱う。** I/O、時計、乱数、process、global な実行文脈を持たない。定型文の本文と、指示文に入れる値(契約、状態、報告、指摘、検査の command、agent 設定の名前)は、呼び出す側が値として渡す。
-2. **turn の結果を確かめられない単位は、理由を付けて止まる。** 次の場合は `unknown_result` で止まる: agent の turn が完了しなかった、session の解放を確かめられなかった、作業用の複製を読めなかった、検査または判定の対象になる turn に実行記録がなかった、書かない役の turn の後に差分が変わっていた、engine 自身が判定の前に失敗した。判定の返答を決められた形として確かめられないときは、受け取らなかった理由を付けて同じ役に 1 回だけ出し直させ、同じ判定で 2 回続いたら `invalid_result` で止まる。
-3. **engine は、止まった単位を自分では再開しない。** やり直すのは、呼出し元が `retry` を要求したときだけである。engine は結果を推測せず、代わりの結果も作らない。
-4. **session を続けられない turn を、新しい session で 1 回だけ起動し直すことは、この規則の外とする。** それは[session の決定](adr-20261114-agent-sessions-continue-and-approvals-are-refused.md)の規則 4 が定める、同じ turn の届け直しである。
+1. **Prompt composition (`prompts.py`) works on values only, like the decision logic (`facts.py`).** It has no I/O, clock, randomness, process or global execution context. The body of the protocol texts and the values that go into a prompt (the contract, the state, reports, feedback, check commands, the names of the agent configuration) are passed in as values by its caller.
+2. **A unit whose turn result cannot be confirmed stops with a reason.** It stops with `unknown_result` in the following cases: the agent's turn did not complete, the release of the session could not be confirmed, the working copy could not be read, a turn that is subject to a check or a judgment had no execution record, the diff had changed after a turn of a role that does not write, the engine itself failed before the judgment. When a judgment reply cannot be confirmed to have the prescribed form, the engine has the same role submit it again exactly once, with the reason it was not accepted, and stops with `invalid_result` when this happens twice in a row for the same judgment.
+3. **The engine does not resume a stopped unit by itself.** It retries only when the caller requests `retry`. The engine does not guess a result and does not make a substitute result.
+4. **Starting a turn whose session cannot be continued again in a new session, exactly once, is outside this rule.** That is the redelivery of the same turn, which rule 4 of [the session decision](adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) sets.
 
-## 比較した案
+## Alternatives considered
 
-- **確かめられない turn を engine が自動でやり直す:** 採らない。原因が分からないまま同じ操作を繰り返すことになり、agent の利用枠を使い、作業用の複製の状態が分からないまま次の判定に進む。止まった理由を呼出し元が見て決めるほうが、何が起きたかを失わない。
-- **確かめられない結果を失敗として扱い、差し戻しに数える:** 採らない。差し戻しは、成立しなかった事実に対する指摘を作る役に返す仕組みである。結果が分からないことは指摘ではなく、役に返しても直せない。
-- **指示文の組み立てに file の読み込みを許す:** 採らない。定型文を読むのは配線の側だけにすると、組み立ては入力の値だけで決まり、test で入力と出力を突き合わせて確かめられる。
+- **The engine automatically retries a turn that cannot be confirmed:** Not adopted. It would repeat the same operation without knowing the cause, use the agent's quota, and move on to the next judgment without knowing the state of the working copy. When the caller looks at the reason for the stop and decides, what happened is not lost.
+- **Treat a result that cannot be confirmed as a failure and count it as sending work back:** Not adopted. Sending work back is the mechanism that returns the findings on a fact that did not hold to the writer. An unknown result is not a finding, and returning it to a role cannot fix it.
+- **Allow prompt composition to read files:** Not adopted. When only the wiring reads the protocol texts, composition is determined by its input values alone, and a test can confirm it by comparing input and output.
 
-## 結果
+## Consequences
 
-- 指示文は、同じ値からいつも同じ文になる。定型文の変更の影響は、組み立ての入力と出力の test で確かめられる。
-- 呼出し元は、`unknown_result` と `invalid_result` の単位について、止まった理由(`stop.json` の detail)を読んでから `retry` を決める。engine が止まっている間に、利用枠は使われない。
-- 一時的な障害(agent の一時的な失敗など)でも単位は止まる。続けるには呼出し元の要求が要る。
+- A prompt is always the same text for the same values. The effect of a change to a protocol text can be confirmed by tests of the composition's input and output.
+- For a unit in `unknown_result` or `invalid_result`, the caller reads the reason for the stop (the detail in `stop.json`) and then decides on `retry`. No quota is used while the engine is stopped.
+- A unit also stops on a transient fault (such as a temporary failure of the agent). Continuing requires the caller's request.
 
-## 確認方法
+## Verification
 
-- `tests/test_closed_paths.py` が、`facts.py` と `prompts.py` の import が計算だけの module(`re`、`json`、`shlex`、`hashlib`)に限られ、`open`、`print`、`exec` などを呼ばないことを検査する。
-- engine の test(`tests/test_unit_flow.py`、`tests/test_sessions.py`、`tests/test_judged_trees.py`、`tests/test_environment_entries.py`、`tests/test_facts.py`)が、決定 2 の各場合に単位が `unknown_result` または `invalid_result` で止まり、`retry` の要求があるまで次の turn が始まらないことを確かめる。
+- `tests/test_closed_paths.py` checks that the imports of `facts.py` and `prompts.py` are limited to computation-only modules (`re`, `json`, `shlex`, `hashlib`) and that they do not call `open`, `print`, `exec` and the like.
+- The engine's tests (`tests/test_unit_flow.py`, `tests/test_sessions.py`, `tests/test_judged_trees.py`, `tests/test_environment_entries.py`, `tests/test_facts.py`) confirm that in each case of decision 2 the unit stops with `unknown_result` or `invalid_result`, and that the next turn does not start until `retry` is requested.

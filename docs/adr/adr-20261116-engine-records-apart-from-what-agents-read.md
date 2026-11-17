@@ -1,7 +1,7 @@
 ---
 id: adr-20261116-engine-records-apart-from-what-agents-read
 kind: adr
-title: engine の記録を agent が読むものから分け、agent から読めない場所に置く
+title: The engine's records are separated from what agents read and placed where agents cannot read them
 status: accepted
 created: '2026-11-16'
 decision_makers:
@@ -12,51 +12,51 @@ relations:
 - {type: references, target: adr-20261114-loop-engine-host-boundary}
 - {type: references, target: adr-20261114-verdict-computed-from-checkable-findings}
 source_paths: []
-summary: 記録(契約、状態、出来事、turn の記録、結果、要求、transport の状態)を DEV_SKILLS_HOME/records/loop-engine に移し、agent の sandbox が読めなくする。agent が読む検査 program、単位の checks.json、元の commit の複製は DEV_SKILLS_HOME/loop-engine に残す。
+summary: The records (contracts, states, events, turn records, results, requests, transport state) move to DEV_SKILLS_HOME/records/loop-engine, which the agent's sandbox makes unreadable. What agents read (the check program, units' checks.json, the base revision copy) stays in DEV_SKILLS_HOME/loop-engine.
 ---
 
-# engine の記録を agent が読むものから分け、agent から読めない場所に置く
+# The engine's records are separated from what agents read and placed where agents cannot read them
 
-## 背景
+## Context
 
-engine は、状態の置き場所(`DEV_SKILLS_HOME/loop-engine`)を agent の sandbox から読めて書けない場所として使っていた。そこには agent が読むもの(検査 program、単位の `checks.json`、元の commit の複製)と、engine の記録(契約、状態、出来事、turn の記録、結果、transport の session の状態)が並んでいた。共通の sandbox 方針は `~/.dev-skills` 全体を読み取り許可にしていた。
+The engine used the state home (`DEV_SKILLS_HOME/loop-engine`) as a location that the agent's sandbox can read and cannot write. What agents read (the check program, each unit's `checks.json`, the copy of the base revision) and the engine's records (contracts, states, events, turn records, results, the state of the transport's sessions) sat there side by side. The shared sandbox policy allowed reading all of `~/.dev-skills`.
 
-2026-11-16 の記録では、評価役が 4 単位の 9 turn で、この場所の記録(`result/` の turn の記録と `state.json`)を読んでいた。作る役の turn の記録(`result/turns/02-implement.json`、作る役の返答と実行記録)を読んだ turn もある。元の commit の複製を読んだ turn は、渡された場所を読んだもので、ここに数えない。engine は評価役に作る役の報告を渡さない([評価の決定](adr-20261114-verdict-computed-from-checkable-findings.md)項目 5)が、file として読めていた。pi の session の記録(`agents/pi-sessions/`)も同じ場所にあった。
+In the records of 2026-11-16, reviewers read the records in this location (the turn records under `result/` and `state.json`) in 9 turns of 4 units. Some turns read the writer's turn record (`result/turns/02-implement.json`, the writer's reply and execution record). Turns that read the copy of the base revision read a location they were given, and are not counted here. The engine does not give the reviewer the writer's report (item 5 of [the review decision](adr-20261114-verdict-computed-from-checkable-findings.md)), but the reviewer could read it as a file. The pi session records (`agents/pi-sessions/`) were in the same location.
 
-## 決定
+## Decision
 
-1. engine の記録(契約、受付、状態、出来事、状態の要約、turn の記録、結果、要求と応答、lock、transport の状態)を `DEV_SKILLS_HOME/records/loop-engine` に置く。
-2. agent が読むもの、すなわち検査 program(`check/<sha256>/check_runner.py`)と、単位ごとの `checks.json` と元の commit の複製(`units/<unit_id>/`)は `DEV_SKILLS_HOME/loop-engine` に置く。役に渡す path(検査の command、元の commit の場所)はこの場所だけを指す。
-3. agent の sandbox は記録の場所を読めなくする。共通の sandbox 方針は、`~/.dev-skills` 全体ではなく `~/.dev-skills/loop-engine` だけを読み取り許可にし、`~/.dev-skills/records` を拒否する。読めなくするのは環境の sandbox 設定であり、engine は作らず、確かめない。
-4. 2 つの場所は、どちらの path も他方の前方一致にならない名前にする。path の前方一致で許可や拒否を判定する設定でも、一方の規則が他方に当たらないためである。
+1. The engine's records (contracts, admissions, states, events, state summaries, turn records, results, requests and responses, locks, transport state) are placed in `DEV_SKILLS_HOME/records/loop-engine`.
+2. What agents read, namely the check program (`check/<sha256>/check_runner.py`) and each unit's `checks.json` and copy of the base revision (`units/<unit_id>/`), is placed in `DEV_SKILLS_HOME/loop-engine`. The paths given to roles (the check commands, the location of the base revision) point only to this location.
+3. The agent's sandbox makes the records location unreadable. The shared sandbox policy allows reading only `~/.dev-skills/loop-engine`, not all of `~/.dev-skills`, and denies `~/.dev-skills/records`. What makes the location unreadable is the environment's sandbox configuration; the engine does not create it and does not confirm it.
+4. The two locations are named so that neither path is a prefix of the other. This is so that, even under a configuration that decides allow or deny by path prefix, a rule for one does not apply to the other.
 
-## 既存の判断との関係
+## Relation to existing decisions
 
-- [engine の境界の決定](adr-20261114-loop-engine-host-boundary.md)の項目 6(状態は `~/.dev-skills` に置き、書き手は engine だけ)は変えない。記録も公開物も `~/.dev-skills` の下にあり、engine だけが書く。sandbox を engine が持たない規則(同項目 2)も変えない。
-- 評価役に作る役の報告を渡さない規則(評価の決定の項目 5)を、file の読み取りでも保てるようにする。
+- Item 6 of [the engine boundary decision](adr-20261114-loop-engine-host-boundary.md) (state is placed in `~/.dev-skills`, and the engine is the only writer) is unchanged. Both the records and what is published are under `~/.dev-skills`, and only the engine writes them. The rule that the engine does not own a sandbox (item 2 of the same decision) is also unchanged.
+- The rule that the reviewer is not given the writer's report (item 5 of the review decision) can now be kept for file reads as well.
 
-## 必要な変更
+## Required changes
 
-- 共通の sandbox 方針(agent-environments の `modules/_lib/sandbox-policy.json`)の読み取り許可を `~/.dev-skills` から `~/.dev-skills/loop-engine` に狭め、`~/.dev-skills/records` を拒否に加える。共通 compiler は読み取り許可の内側の拒否を受け付けず、Codex は `~/` の拒否を allowlist の外として扱うので、許可を狭めることで 3 つの host で同じに読めなくなる。各 host の setup で反映する。
-- 以前の engine が `~/.dev-skills/loop-engine` に残した記録(`units/` の記録、`agents/`、`inbox/`、`outbox/`)は、記録の場所へ移すまで agent から読める。
-- sandbox の中で動くメインセッションも、記録と `~/.dev-skills` のほかの directory を直接読めなくなる。単位の状態と結果は、host の process が読む MCP の `unit_status`・`unit_result` で受け取る。
+- Narrow the read allowance of the shared sandbox policy (`modules/_lib/sandbox-policy.json` in agent-environments) from `~/.dev-skills` to `~/.dev-skills/loop-engine`, and add `~/.dev-skills/records` to the denials. The shared compiler does not accept a denial inside a read allowance, and Codex treats a denial of `~/` as outside the allowlist, so narrowing the allowance makes the records unreadable in the same way on the three hosts. Each host's setup applies it.
+- The records that an earlier engine left in `~/.dev-skills/loop-engine` (the records under `units/`, `agents/`, `inbox/`, `outbox/`) can be read by agents until they are moved to the records location.
+- A main session that runs inside the sandbox also can no longer read the records and the other directories of `~/.dev-skills` directly. It receives a unit's state and result through MCP `unit_status` and `unit_result`, for which a process on the host does the reading.
 
-## 比較した案
+## Alternatives considered
 
-- **engine が評価役の実行記録に記録を読んだ跡を探し、その評価を数えない。** 実行記録に path が現れない読み方を検出できず、読んだ後の session も残る。ユーザーが選ばなかった。
-- **記録を今の場所に残し、agent が読むものを別の場所へ移す。** 入口と検証 tool が読む場所は変わらず、以前の記録もそのまま読めなくなる。ユーザーが選んだ方式(記録を別の root へ移す)と異なるので採らなかった。
-- **`~/.dev-skills` の読み取り許可を残し、記録の場所だけを拒否する。** 共通 compiler が読み取り許可の内側の拒否を拒み、Codex はその拒否を表せない。採らなかった。
+- **The engine looks in the reviewer's execution record for traces of reading the records and does not count that review.** It cannot detect ways of reading in which the path does not appear in the execution record, and the session that has read them also remains. The user did not choose it.
+- **Leave the records in the present location and move what agents read to another location.** The location that the entries and the verification tools read does not change, and the earlier records also become unreadable as they are. It differs from the method the user chose (moving the records to another root), so it was not adopted.
+- **Keep the read allowance for `~/.dev-skills` and deny only the records location.** The shared compiler rejects a denial inside a read allowance, and Codex cannot express that denial. Not adopted.
 
-## 結果
+## Consequences
 
-- sandbox の設定が入ると、どの役も、ほかの役の返答、実行記録、session の記録を file から読めない。役が受け取るのは、契約が読むと宣言した事実と依頼者の回答だけになる。
-- 以前の Loop の記録(`~/.dev-skills` の下の `composition/`、`development-loop/` など)も agent から読めなくなる。
-- 記録を調べる作業(Loop の記録の調査など)は、sandbox の外の読み取りか MCP の tool を使う。
+- Once the sandbox configuration is in place, no role can read another role's reply, execution record or session record from files. What a role receives is only the facts the contract declares it reads and the requester's answers.
+- The records of the earlier Loop (`composition/`, `development-loop/` and others under `~/.dev-skills`) also become unreadable to agents.
+- Work that examines the records (such as the investigation of the Loop records) uses reads outside the sandbox or the MCP tools.
 
-## 確認方法
+## Verification
 
-`tests/test_unit_flow.py` が、役に渡すメッセージが記録の場所を指さず agent が読む場所を指すこと、2 つの場所が互いの内側にも前方一致にもならないこと、agent が読む場所に検査 program と `checks.json` しか残らないこと、記録の場所に `checks.json` と元の commit の複製がないことを確かめる。共通方針の翻訳は agent-environments の `modules/tests/test_sandbox_contracts.py` と `test_shared_sandbox.py` が確かめる。sandbox が記録を読めなくしていることは、各 host の setup の後に実機で確かめる。
+`tests/test_unit_flow.py` confirms that the messages given to roles do not point to the records location and point to the location agents read, that neither of the two locations is inside the other or a prefix of the other, that only the check program and `checks.json` remain in the location agents read, and that the records location has no `checks.json` and no copy of the base revision. The translation of the shared policy is confirmed by `modules/tests/test_sandbox_contracts.py` and `test_shared_sandbox.py` in agent-environments. That the sandbox makes the records unreadable is confirmed on a real machine after each host's setup.
 
-## ユーザーの決定
+## User's decision
 
-2026-11-16、項目 5 の方式を尋ねた問いに対し、ユーザーは「記録を分離し sandbox で遮断 (推奨)」を選んだ。問いの説明は「agent が読む物だけを今の場所に残し、記録を別の root へ移す。その root を agent-environments の共通 policy で deny にする」だった。最初の実装はこれと逆に公開物を移していたため、ユーザーの「sandbox 側の遮断(5)、5 の実装方式の変更を修正対応して」に従い、説明した方式に直し、共通の sandbox 方針も変更した。
+On 2026-11-16, to the question that asked about the method for item 5, the user chose "Separate the records and block them with the sandbox (recommended)" (translated from Japanese). The explanation of the question was "Leave only what agents read in the present location and move the records to another root. Make that root deny in the shared policy of agent-environments". The first implementation did the opposite and moved what is published, so, following the user's "Blocking on the sandbox side (5), fix the change of the implementation method of 5", it was corrected to the method that was explained, and the shared sandbox policy was also changed.

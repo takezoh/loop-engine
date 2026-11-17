@@ -1,7 +1,7 @@
 ---
 id: adr-20261114-unit-completes-when-facts-hold
 kind: adr
-title: 単位の完了は事実の成立で決め、engine は契約のデータから次の実行を導く
+title: A unit's completion is decided by its facts holding, and the engine derives the next execution from the contract's data
 status: accepted
 created: '2026-11-14'
 decision_makers:
@@ -11,79 +11,79 @@ owners: []
 relations:
 - {type: dependsOn, target: adr-20261114-loop-engine-host-boundary}
 source_paths: []
-summary: engine が受け取る契約は、成立させる事実と、それを成立させられる実行だけを宣言する。engine は役の数も順番も Profile も知らず、事実の依存から次の実行を選ぶ。
+summary: The contract the engine receives declares only the facts to establish and the executions that can establish them. The engine knows neither the number of roles, nor their order, nor the Profile, and chooses the next execution from the dependencies of the facts.
 updated: '2026-11-14'
 ---
 
-# 単位の完了は事実の成立で決め、engine は契約のデータから次の実行を導く
+# A unit's completion is decided by its facts holding, and the engine derives the next execution from the contract's data
 
-## 用語
+## Terms
 
-**事実**は、単位が完了するために成り立っていなければならない事柄を指す。「候補がある」「検査が通った」「独立に評価された」などである。**実行**は、agent の 1 turn を指す。**契約**は、engine が単位の開始時に受け取る唯一の入力を指す。
+A **fact** is something that must hold for the unit to complete, such as "a candidate exists", "the checks passed" or "it was reviewed independently". An **execution** is 1 turn of an agent. The **contract** is the only input the engine receives when a unit starts.
 
-## 背景
+## Context
 
-Profile は実行の順番を宣言していない。宣言しているのは、成立させる事実と、それを成立させられる実行である。順番は、実行が読む事実の依存から決まる。
+A Profile does not declare the order of executions. What it declares is the facts to establish and the executions that can establish them. The order is decided by the dependencies of the facts the executions read.
 
-2026-11-14 に書いた新しい engine の最初の版は、この仕組みを持たず、「作る役 → 検査 → 評価役」の 2 役を固定していた。これは implementation Profile の形を engine に焼き込むもので、review(作る役がない)や investigate(成果が報告だけ)を表せなかった。
+The first version of the new engine, written on 2026-11-14, did not have this mechanism and fixed 2 roles as "writer → checks → reviewer". This baked the shape of the implementation Profile into the engine, and it could not express review (which has no writer) or investigate (whose outcome is only a report).
 
-現行の判断関数(`runtime/loop_kernel/service/domain.py`)は事実から次の実行を選ぶが、次の問題がある。
+The current decision function (`runtime/loop_kernel/service/domain.py`) chooses the next execution from facts, but it has the following problems.
 
-- 無効化の方式が 3 つ重なっている。候補の digest との照合、試行回数による全消去、baseline 用の連鎖消去である。
-- 判断関数の中に Profile 固有の語がある(pursuit、baseline の snapshot、文書記録の gate、特定の実行名)。
-- 同じ関係を 3 か所に書く(役が所有する事実、事実を成立させる実行、実行の役)。
-- engine 自身が project の command を動かす実行がある。これは [engine の境界の決定](adr-20261114-loop-engine-host-boundary.md)に反する。
+- 3 invalidation schemes overlap: matching against the candidate's digest, clearing everything by attempt count, and cascading clearing for the baseline.
+- The decision function contains Profile-specific terms (pursuit, the baseline snapshot, the gate for document recording, specific execution names).
+- The same relation is written in 3 places (the facts a role owns, the executions that establish a fact, the role of an execution).
+- There are executions in which the engine itself runs project commands. This violates the [engine boundary decision](adr-20261114-loop-engine-host-boundary.md).
 
-Loop 記録 61 件では、engine が選んだ並びは Profile ごとに一本道とその繰り返しだけだった。一方、作り直さずに成立を確かめ直した記録は 149 回あった。順番の導出より、成立の管理が実際に働いている。
+In 61 Loop records, the sequences the engine chose were, for each Profile, only a single straight path and its repetition. On the other hand, the records show 149 times where holding was confirmed again without making the work again. What actually does the work is the management of holding, more than the derivation of order.
 
-## 決定
+## Decision
 
-1. 契約は `unit`(repository、目的、受入条件、変更範囲、上限)、`facts`、`executions` だけを持つ。Profile、skill、判断知識、配置 preset は契約を組み立てる側が扱い、engine は知らない。
-2. 事実は成立のさせ方を 1 つ宣言する。
+1. The contract has only `unit` (repository, goal, acceptance criteria, change scope, limits), `facts` and `executions`. Profiles, skills, judgment knowledge (Knowledge) and placement presets are handled by the side that assembles the contract, and the engine does not know them.
+2. A fact declares 1 way of being established.
 
-   | 種類 | engine が見るもの |
+   | Kind | What the engine looks at |
    |---|---|
-   | `given` | 開始時の tree。engine が観測する |
-   | `report` | 実行の turn が完了したこと |
-   | `checks` | その turn の実行記録にある検査の結果([検査の決定](adr-20261114-checks-judged-from-execution-record.md)) |
-   | `verdict` | 評価の実行が返した判定([評価の決定](adr-20261114-verdict-computed-from-checkable-findings.md)) |
-   | `git` | 変更 file が範囲内にあること、agent 設定が変わっていないこと |
+   | `given` | The tree at the start. The engine observes it |
+   | `report` | That the execution's turn completed |
+   | `checks` | The check results in that turn's execution record ([checks decision](adr-20261114-checks-judged-from-execution-record.md)) |
+   | `verdict` | The judgment the review execution returned ([review decision](adr-20261114-verdict-computed-from-checkable-findings.md)) |
+   | `git` | That the changed files are within scope, and that the agent configuration has not changed |
 
-3. 実行は、読む事実と、成立させる事実を宣言する。事実と実行の関係を書く場所はここだけにする。
-4. 事実は、成立したときの根拠(判定の対象と、読んだ事実の内容)を持つ。根拠が現在と同じ間だけ成立とする。無効化の規則はこれ 1 つにする。
-5. engine は、読む事実がすべて成立していて、成立させる事実に未成立が残る実行を選ぶ。必須の事実がすべて成立したら完了とする。
-6. `checks`・`verdict`・`git` の事実が否定されたら、その判定の対象を作った実行へ指摘を渡して戻す。対象に依存しない事実は残す。対象を作る実行がなければ、指摘を結果として単位を終える。
-7. 止まり方は、完了、不合格、質問待ち、回数切れ、停滞、結果不明、確かめられない結果の繰り返し、agent 設定の変更、取消とし、区別して返す。
-8. 判断は値だけを扱う関数にする。状態は JSON として保存でき、読み直して続きから進められる。
+3. An execution declares the facts it reads and the facts it establishes. This is the only place where the relation between facts and executions is written.
+4. A fact carries the basis it held on (the subject of the judgment and the content of the facts that were read). It holds only while the basis is the same as the present. This is the only invalidation rule.
+5. The engine chooses an execution whose read facts all hold and whose facts to establish include one that does not hold yet. The unit is complete when every required fact holds.
+6. When a `checks`, `verdict` or `git` fact is refuted, the engine sends the work back to the execution that made the subject of that judgment, handing it the findings. Facts that do not depend on the subject are kept. If no execution makes the subject, the unit ends with the findings as its result.
+7. The stop reasons are complete, rejected, waiting for an answer, out of rounds, stagnation, unknown result, repeated results that cannot be checked, changed agent configuration, and cancelled; they are returned distinctly.
+8. The decision logic is functions that work on values only (pure). State can be saved as JSON, read back, and continued from where it left off.
 
-## 既存の判断との関係
+## Relation to existing decisions
 
-- [engine の境界の決定](adr-20261114-loop-engine-host-boundary.md)と[検査の決定](adr-20261114-checks-judged-from-execution-record.md)の規則はそのまま守る。この決定は、その 2 件が「作る役」「評価役」と呼んでいるものを、契約のデータとして表す方法を決める。
-- engine が project の command を動かす実行(baseline の command 実行、commit と取り込み、文書の記録)は契約に置けない。変更前に落ちることの確認は `checks` の事実にし、commit と取り込みはメインセッションが行う。
+- The rules of the [engine boundary decision](adr-20261114-loop-engine-host-boundary.md) and the [checks decision](adr-20261114-checks-judged-from-execution-record.md) are kept as they are. This decision decides how to express, as contract data, what those 2 call the "writer" and the "reviewer".
+- Executions in which the engine runs project commands (running baseline commands, commit and integration, recording documents) cannot be placed in a contract. Confirming that something fails before the change becomes a `checks` fact, and the main session does the commit and integration.
 
-## 必要な変更
+## Required changes
 
-- `packages/loop-engine` の契約の検証、判断関数、指示文の組み立て、単位の実行を、この契約に合わせて書き直す。driver の実行記録、状態の保存、git、engine process と入口は変えない。
-- Profile から契約を組み立てる処理を、engine の外(MCP と CLI の入口の手前)に置く。
+- Rewrite the contract validation, the decision function, the prompt assembly and the running of units in `packages/loop-engine` to fit this contract. The drivers' execution records, state saving, git, the engine process and the entries do not change.
+- Place the processing that assembles a contract from a Profile outside the engine (in front of the MCP and CLI entries).
 
-## 比較した案
+## Alternatives considered
 
-- **2 役を固定する。** 単純だが、Profile ごとに engine を変えることになる。却下した。
-- **step の列を契約に書く。** Profile が宣言していない順番を誰かが書くことになり、候補が変わったときに何をやり直すかを別に決める必要がある。却下した。
-- **現行の判断関数を使い続ける。** 無効化の重複と Profile 固有の語が残る。却下した。
+- **Fix 2 roles.** Simple, but the engine would have to change for each Profile. Rejected.
+- **Write a sequence of steps in the contract.** Someone would have to write an order that the Profile does not declare, and what to redo when the candidate changes would have to be decided separately. Rejected.
+- **Keep using the current decision function.** The overlapping invalidation and the Profile-specific terms remain. Rejected.
 
-## 結果
+## Consequences
 
-- 形の違う単位(実装、評価だけ、報告と評価)を、engine を変えずに契約のデータで表せる。
-- 参照したハーネスと主要 framework には、変更で下流の成立を取り消す仕組みを持つものは確認できなかった。順番を導く方式が信頼性を上げたという測定結果も見つかっていない。この部分の利得は、成立の管理による。
-- 契約に誤り(成立させられない必須の事実)があると、進めなくなる。受付時の検証と、「進めない」止まり方で扱う。
+- Units of different shapes (implementation, review only, report and review) can be expressed as contract data without changing the engine.
+- Among the harnesses referenced and the major frameworks, none could be confirmed to have a mechanism by which a change revokes downstream holding. No measurement was found showing that deriving the order raised reliability either. The gain of this part comes from the management of holding.
+- If the contract has an error (a required fact that cannot be established), the unit cannot proceed. This is handled by validation at admission and by a "cannot proceed" stop reason.
 
-## 確認方法
+## Verification
 
-PoC(2026-11-14、repository の外)で次を確かめた。
+A PoC (2026-11-14, outside the repository) confirmed the following.
 
-- 同じ engine で、実装(調査、実装、評価 2 つ)、評価だけ、報告と評価の 3 つの契約が動いた。engine のコードに役の名前と順番はない。
-- 偽の agent での試験 13 件。評価の指摘をまとめて戻す、調査をやり直さない、検査が落ちたら評価に進まない、範囲外の変更を評価なしで戻す、止まり方を区別する、状態を読み直して続ける、turn の外で tree が変わると評価が成立でなくなる。
-- 実機(codex が実装、claude と pi が評価)で、実装 → 評価 → 評価 → 完了が通った。
+- With the same engine, 3 contracts ran: implementation (investigation, implementation, 2 reviews), review only, and report and review. The engine's code has no role names and no order.
+- 13 tests with a fake agent. Review findings are sent back together, the investigation is not redone, a failed check does not proceed to review, an out-of-scope change is sent back without review, stop reasons are distinguished, state is read back and continued, and when the tree changes outside a turn the review stops holding.
+- With real agents (codex implementing, claude and pi reviewing), implementation → review → review → complete went through.
 
-実装後は、同じ内容を `packages/loop-engine` のテストで確かめる。
+After implementation, the same content is confirmed by the tests of `packages/loop-engine`.

@@ -1,7 +1,7 @@
 ---
 id: adr-20261116-answers-reach-every-execution
 kind: adr
-title: 依頼者の回答はすべての実行に渡し、評価はその回答に照らして判定する
+title: The requester's answers are given to every execution, and reviews are judged against those answers
 status: accepted
 created: '2026-11-16'
 decision_makers:
@@ -13,45 +13,45 @@ relations:
 - {type: references, target: adr-20261114-agent-sessions-continue-and-approvals-are-refused}
 - {type: references, target: adr-20261116-work-goes-back-while-it-converges}
 source_paths: []
-summary: 回答は単位の記録に残り、すべての実行が受け取る。評価の事実は判定したときの回答を根拠に持ち、回答が増えると判定し直す。
+summary: Answers stay in the unit's record and every execution receives them. A verdict fact has the answers it was judged with in its basis and is judged again when an answer is added.
 ---
 
-# 依頼者の回答はすべての実行に渡し、評価はその回答に照らして判定する
+# The requester's answers are given to every execution, and reviews are judged against those answers
 
-## 背景
+## Context
 
-役が質問で turn を終えると、単位は `waiting_for_answer` で止まり、依頼者の回答で続く。回答は質問した実行への指摘として渡され、ほかの実行には届かなかった。
+When a role ends its turn with a question, the unit stops with `waiting_for_answer` and continues on the requester's answer. The answer was passed as feedback to the execution that asked, and did not reach the other executions.
 
-2026-11-16 の記録では、messenger-browser-gate-design の設計役が「実用の承認経路の選定を延期してよいか」を尋ね、依頼者の回答に従って計画を直した。評価役はその回答を受け取っておらず、「選定延期を認める最新回答は今回の入力・報告に存在せず」として blocker を出し、単位は止まった。依頼者の決定が、独立した評価に届かない形だった。
+In the records of 2026-11-16, the design role of messenger-browser-gate-design asked "May the selection of the approval route for practical use be deferred?" (translated from Japanese) and revised the plan according to the requester's answer. The reviewer had not received that answer, raised a blocker stating "the latest answer that permits deferring the selection does not exist in the current input or reports", and the unit stopped. The arrangement was one in which the requester's decision did not reach the independent review.
 
-## 決定
+## Decision
 
-1. engine は回答を、質問の id、質問、回答、質問した実行とともに、単位の状態(`state.json` の `answers`)に順に残す。質問した実行への指摘には入れない。
-2. すべての実行が回答を受け取る。session の最初のメッセージはそれまでのすべての回答を、続きのメッセージはその session がまだ受け取っていない回答を持つ。定型文は、回答を依頼者の決定として、作業と受入条件の判定に当てるものと示す。
-3. 評価(`verdict`)の事実の根拠に回答を含める。回答が増えると、それより前の判定は成立しなくなり、評価役は同じ対象をその回答に照らして判定し直す。報告、検査、範囲の事実の根拠には含めない。
-4. 指摘を受けた作る役が候補を変えずに turn を終えても、その指摘の事実を判定した後に回答があれば、停滞として止めない。事実は回答に照らして判定し直される。
+1. The engine keeps each answer, in order, in the unit's state (`answers` in `state.json`), together with the question's id, the question, the answer and the execution that asked. It does not put the answer into the feedback for the execution that asked.
+2. Every execution receives the answers. The first message of a session carries all the answers so far, and a follow-up message carries the answers that session has not yet received. The protocol text presents the answers as the requester's decisions, to be applied to the work and to the judgment of the acceptance criteria.
+3. The basis of a review (`verdict`) fact includes the answers. When an answer is added, the judgments made before it stop holding, and the reviewer judges the same subject again against that answer. The answers are not included in the basis of report, check or scope facts.
+4. Even when a writer that received feedback ends its turn without changing the candidate, the unit is not stopped for stagnation if there was an answer after the fact of that feedback was judged. The fact is judged again against the answer.
 
-## 既存の判断との関係
+## Relation to existing decisions
 
-- [評価の決定](adr-20261114-verdict-computed-from-checkable-findings.md)の項目 5(評価役へ渡すのは目的、受入条件、変更された file の一覧、元の版の場所だけ)に、依頼者の回答を加える。作る役の報告と呼出し側の diff を渡さない規則は変えない。
-- [session の決定](adr-20261114-agent-sessions-continue-and-approvals-are-refused.md)の項目 3(続きのメッセージは新しいもの、すなわち指摘、回答、変わった事実を運ぶ)は変えない。回答を運ぶ先が、質問した実行からすべての実行になる。
-- 契約の範囲(`scope`)は回答で変わらない。範囲を広げる回答は、新しい単位で扱う。
+- The requester's answers are added to item 5 of [the review decision](adr-20261114-verdict-computed-from-checkable-findings.md) (the reviewer is given only the goal, the acceptance criteria, the list of changed files and the location of the original versions). The rule that the writer's report and the caller's diff are not given is unchanged.
+- Item 3 of [the session decision](adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) (a follow-up message carries what is new, namely feedback, answers and changed facts) is unchanged. The destination of the answers changes from the execution that asked to every execution.
+- The contract's scope (`scope`) does not change with an answer. An answer that widens the scope is handled in a new unit.
 
-## 比較した案
+## Alternatives considered
 
-- **回答を、契約が宣言する報告の事実にする。** 回答は契約を作る時点では存在せず、Profile ごとに事実と読む関係の宣言が要る。却下した。
-- **回答を評価役のメッセージにだけ足し、根拠に含めない。** 回答の前に否定した判定が成立したまま残り、同じ候補を判定し直す経路がない。作る役が回答だけで足りると判断して候補を変えないと、停滞で止まる。却下した。
+- **Make the answer a report fact that the contract declares.** An answer does not exist when the contract is made, and each Profile would need declarations of the fact and of the read relations. Rejected.
+- **Add the answers only to the reviewer's message and leave them out of the basis.** A judgment that refuted before the answer stays in effect, and there is no path to judge the same candidate again. When the writer decides that the answer alone is enough and does not change the candidate, the unit stops for stagnation. Rejected.
 
-## 結果
+## Consequences
 
-- 評価役は、依頼者が決めたこと(範囲の解釈、決定の延期、受入条件の読み方)を受け取って判定する。
-- 回答のたびに、すでに判定した評価役がもう一度判定する。回答は少ないので、増える turn は回答の数と評価の実行の数の積に留まる。
-- 回答は作る役の報告ではないので、評価役が作る役の説明を読まない規則は保たれる。
+- The reviewer receives what the requester decided (the interpretation of the scope, the deferral of a decision, how to read the acceptance criteria) and judges with it.
+- On every answer, a reviewer that has already judged judges once more. Answers are few, so the added turns stay at the product of the number of answers and the number of review executions.
+- An answer is not the writer's report, so the rule that the reviewer does not read the writer's explanation is kept.
 
-## 確認方法
+## Verification
 
-`tests/test_facts.py` の `AnswerTest` が、回答の前の評価が成立しなくなること、候補を変えずに返しても回答の後なら判定し直すこと、報告と検査は回答で無効にならないことを確かめる。`tests/test_sessions.py` が、質問していない実行の最初のメッセージにも回答が入ることを確かめる。
+`AnswerTest` in `tests/test_facts.py` confirms that a review made before an answer stops holding, that a candidate returned unchanged is judged again when this comes after an answer, and that reports and checks are not invalidated by an answer. `tests/test_sessions.py` confirms that the answers also go into the first message of an execution that did not ask.
 
-## ユーザーの決定
+## User's decision
 
-2026-11-16、Loop 記録の調査で挙げた改善点の項目 3「ユーザーの回答が独立した review 役に届かない。回答を全役が読める事実として記録する必要がある。engine の設計判断なので要承認」に対し、ユーザーは「1,2,3,4,5,6 を対応する」と指示した。
+On 2026-11-16, in response to item 3 of the improvements listed in the investigation of the Loop records, "The user's answer does not reach the independent review role. The answer needs to be recorded as a fact that every role can read. This is an engine design decision, so it needs approval" (translated from Japanese), the user instructed "Address 1,2,3,4,5,6".

@@ -1,7 +1,7 @@
 ---
 id: adr-20261114-verdict-computed-from-checkable-findings
 kind: adr
-title: 評価の合否は engine が計算し、確かめられる結果だけを数える
+title: The engine computes the verdict of a review and counts only results that can be checked
 status: accepted
 created: '2026-11-14'
 decision_makers:
@@ -12,69 +12,69 @@ relations:
 - {type: dependsOn, target: adr-20261114-unit-completes-when-facts-hold}
 - {type: references, target: adr-20261114-checks-judged-from-execution-record}
 source_paths: []
-summary: 評価役は承認を宣言せず、受入条件ごとの判定と引用つきの指摘を返す。engine は引用と実行記録を確かめたうえで合否を計算する。
+summary: The reviewer does not declare approval; it returns a judgment for each acceptance criterion and findings with quotes. The engine computes the verdict after checking the quotes and the execution record.
 updated: '2026-11-14'
 ---
 
-# 評価の合否は engine が計算し、確かめられる結果だけを数える
+# The engine computes the verdict of a review and counts only results that can be checked
 
-## 背景
+## Context
 
-評価役がいても、評価が表面的な確認に留まることがある。複数 agent の失敗を分類した研究(MAST)は「検証役は万能ではない。多くは表面的な確認に留まる」と報告している。
+Even with a reviewer, a review can stop at a superficial confirmation. A study that classified the failures of multiple agents (MAST) reports that "a verifier is not a cure-all. Many stop at a superficial confirmation" (translated from Japanese).
 
-3 台分の Loop 記録でも、次が確認できた。
+The Loop records of 3 machines also showed the following.
 
-- 承認の出力は判定と要約だけで、何を調べたかの記録がない。
-- implementation の配置では、評価役が作る役と同じ model だった。
-- 差し戻し 77 件のうち 54 件は指摘が 1 件だけだった。同じ変更を 5 回評価した系列では、承認のたびに、それまでにない軽微な指摘が付いた。
-- 3 観点で 5 巡した系列では、2 観点が指摘なしで承認した巡に、残る 1 観点だけが重大な指摘を出した。
-- 判定と指摘が食い違う記録があった(指摘つきの承認 4 件、指摘のない差し戻し 5 件)。
+- The output of an approval is only a judgment and a summary, with no record of what was examined.
+- In the implementation placement, the reviewer was the same model as the writer.
+- Of 77 cases of work sent back, 54 had only 1 finding. In a series where the same change was reviewed 5 times, each approval came with a minor finding that had not been there before.
+- In a series that went 5 rounds with 3 viewpoints, in a round where 2 viewpoints approved with no findings, only the remaining 1 viewpoint raised a serious finding.
+- There were records where the judgment and the findings disagreed (4 approvals with findings, 5 cases of work sent back with no findings).
 
-研究で効果が測定されているのは、判定を実行結果と確かめられる根拠に結び付ける対策である。「徹底的に調べよ」と指示する類は効果が一貫しない。
+What research has measured as effective is measures that tie the judgment to execution results and to evidence that can be checked. Instructions of the "examine thoroughly" kind have no consistent effect.
 
-## 決定
+## Decision
 
-1. 評価役は承認か差し戻しかを宣言しない。返すのは、受入条件ごとの判定と根拠、および指摘である。受入条件は契約で開始時に固定する。
-2. 根拠は、現在の file からの引用か、その turn で実行した command とする。指摘は、対象の行の引用と重さ(minor、major、blocker)を持つ。
-3. engine は次をすべて確かめ、満たさない結果は成立にも否定にも数えず、理由を具体的に伝えてやり直させる。2 回続いたら単位を止める。
-   - すべての受入条件に判定がある。
-   - 「満たす」には根拠があり、「満たさない」にはその条件を指す指摘がある。
-   - 引用した文が、現在の候補の file に実在する。行番号は目安とし、一致を求めない。
-   - 根拠の command が、その turn の実行記録にある command に含まれる。
-   - 実行記録に、変更された file を調べた跡がある。
-4. engine は、条件がすべて「満たす」で、契約が定めた重さ以上の指摘がないときだけ、事実を成立にする。それより軽い指摘は記録するだけで、止めない。満たさない条件は、指摘の重さにかかわらず止める。
-5. 評価役へ渡すのは、目的、受入条件、変更された file の一覧、元の版の場所だけにする。作る役の報告と、呼び出し側が用意した diff は渡さない。評価の対象の tree は engine が記録する。
-6. 評価役は、対象を作った実行と agent・model の組が異なるものだけを受け付ける。同じ組を許すかは契約のデータで決め、受付時に検査する。
-7. 1 つの事実を複数の評価の実行が成立させる形を認める。engine は全員の結果を集めてから、指摘をまとめて戻す。
-8. 検査 program は、実行した時点の tree の digest を結果の行に出す。engine は turn 後の tree と照合する。agent は shell で file を書けるので、実行記録の順番からは「最後の変更より後の検査」を判定できないためである。
-9. 検査ごとに「元の commit に候補のテストだけを載せた状態では落ちる」ことを要求できる。実行するのは agent の sandbox の中の固定 program で、engine は記録を見る。
+1. The reviewer does not declare approval or sending back. What it returns is a judgment and evidence for each acceptance criterion, and findings. The acceptance criteria are fixed by the contract at the start.
+2. Evidence is either a quote from a present file or a command run in that turn. A finding carries a quote of the line it is about and a severity (minor, major, blocker).
+3. The engine checks all of the following. A result that does not satisfy them is counted neither as holding nor as refutation; the engine states the reason concretely and has it redone. If this happens 2 times in a row, the engine stops the unit.
+   - Every acceptance criterion has a judgment.
+   - A "met" has evidence, and a "not met" has a finding that names that criterion.
+   - The quoted text exists in a file of the present candidate. The line number is a guide, and a match is not required.
+   - The evidence command is contained in a command in that turn's execution record.
+   - The execution record has a trace of the changed files having been examined.
+4. The engine makes the fact hold only when every criterion is "met" and there is no finding at or above the severity the contract sets. Lighter findings are only recorded and do not block. A criterion that is not met blocks regardless of the severity of the finding.
+5. The reviewer is given only the goal, the acceptance criteria, the list of changed files, and the location of the original versions. The writer's report and a diff prepared by the caller are not given. The engine records the tree that is the subject of the review.
+6. As a reviewer, the engine accepts only an execution whose agent and model pair differs from that of the execution that made the subject. Whether the same pair is allowed is decided by contract data and checked at admission.
+7. A form in which multiple review executions establish 1 fact is allowed. The engine collects the results of all of them and then sends the findings back together.
+8. The check program prints the digest of the tree at the time it ran on the result line. The engine compares it with the tree after the turn. This is because an agent can write files through the shell, so "a check after the last change" cannot be judged from the order of the execution record.
+9. For each check, it can be required that "it fails in the state where only the candidate's tests are placed on the base revision". The fixed program inside the agent's sandbox runs it, and the engine looks at the record.
 
-## 既存の判断との関係
+## Relation to existing decisions
 
-- [検査の決定](adr-20261114-checks-judged-from-execution-record.md)の「検査 command の完全一致と最後の行で判定する」に、8 と 9 を加える。検査が通らなければ評価に進まない規則は変えない。
-- 事実と実行の表し方は[事実による完了の決定](adr-20261114-unit-completes-when-facts-hold.md)による。
+- This decision adds 8 and 9 to "judge by exact match of the check command and by the last line" of the [checks decision](adr-20261114-checks-judged-from-execution-record.md). The rule that work does not proceed to review if the checks do not pass is unchanged.
+- How facts and executions are expressed follows the [decision on completion by facts](adr-20261114-unit-completes-when-facts-hold.md).
 
-## 比較した案
+## Alternatives considered
 
-- **評価役が承認を宣言する(現行)。** 判定と指摘が食い違う記録を防げない。却下した。
-- **command の根拠を完全一致で確かめる。** 実機で、claude が実行した `… -v 2>&1 | tail -20` を根拠には `… -v` と書いた。中身の正しい評価を弾くので、含まれていれば可とした。
-- **引用の行番号の一致を求める。** 実機で、行番号なしで file を読んだ評価役は 4 行ずれた。文の実在で確かめることにした。
-- **既知の欠陥を仕込んで評価役を測る。** 評価役に対する効果の根拠が弱い。採らない。
+- **The reviewer declares approval (current).** This cannot prevent records where the judgment and the findings disagree. Rejected.
+- **Check command evidence by exact match.** With a real agent, claude ran `… -v 2>&1 | tail -20` and wrote `… -v` as the evidence. Exact match rejects a review whose content is correct, so being contained was made sufficient.
+- **Require the line number of a quote to match.** With a real agent, a reviewer that read the file without line numbers was off by 4 lines. The check was made on the existence of the text instead.
+- **Measure the reviewer by planting known defects.** The evidence for an effect on reviewers is weak. Not adopted.
 
-## 結果
+## Consequences
 
-- 「指摘つきの承認」と「指摘のない差し戻し」は起こらない。
-- 評価役を複数にすると、評価の turn が増える。
-- 限界は残る。研究では、repository を調べる評価役でも誤った patch の 39〜54% を通し、テストを通るのに挙動が正解と異なる patch が 29.6% あった。engine は、どの事実が機械検査で成立し、どれが判定で成立したかを結果に残す。全体の受入れはメインセッションが判断する。
-- 調べた跡の照合は、file 名が command に現れれば数える。読まずに名前だけを書く評価役は弾けない。
+- "Approval with findings" and "work sent back with no findings" do not occur.
+- With multiple reviewers, the number of review turns grows.
+- Limits remain. In research, even reviewers that examine the repository passed 39 to 54% of wrong patches, and 29.6% of patches passed the tests while their behavior differed from the correct answer. The engine keeps in the result which facts were established by mechanical checks and which by judgment. The main session judges overall acceptance.
+- The matching of examination traces counts a file if its name appears in a command. A reviewer that only writes the name without reading the file cannot be rejected.
 
-## 確認方法
+## Verification
 
-PoC(2026-11-14、repository の外)で次を確かめた。
+A PoC (2026-11-14, outside the repository) confirmed the following.
 
-- 過去の評価の出力 211 件に 4 の規則(重大以上の指摘があれば不成立)を当てると、203 件で記録された判定と一致した。食い違った 8 件は、判定と指摘が噛み合っていない記録だけだった。
-- 偽の agent で、確かめられない結果 6 種類(承認だけの返答、根拠のない「満たす」、file にない引用、調べた跡のない判定、条件の抜け、指摘のない「満たさない」)が数えられないこと。
-- 実機で、欠陥を仕込んだ候補を claude・pi・codex の 3 つが、該当行を引用して指摘した。欠陥のない候補は 2 つの評価役が通した。3 つとも決めた形で返し、引用は file に実在した。
-- 実機で、検査 program が codex の sandbox の中で動き、候補では通り、元の code に候補のテストを載せた状態では落ちた。
+- Applying the rule of 4 (does not hold if there is a finding of major or above) to 211 past review outputs matched the recorded judgment in 203. The 8 that disagreed were only records where the judgment and the findings did not fit together.
+- With a fake agent, that 6 kinds of results that cannot be checked (a reply with approval only, a "met" without evidence, a quote not in the file, a judgment with no trace of examination, a missing criterion, a "not met" without a finding) are not counted.
+- With real agents, claude, pi and codex, all 3, raised a finding on a candidate with a planted defect, quoting the line in question. 2 reviewers passed a candidate without the defect. All 3 replied in the decided form, and the quotes existed in the files.
+- With a real agent, the check program ran inside codex's sandbox, passed on the candidate, and failed in the state where the candidate's tests were placed on the original code.
 
-題材は関数 1 つ、受入条件 3 つである。大きな変更で同じ結果になるかは確かめていない。
+The material was 1 function and 3 acceptance criteria. Whether a large change gives the same result has not been confirmed.

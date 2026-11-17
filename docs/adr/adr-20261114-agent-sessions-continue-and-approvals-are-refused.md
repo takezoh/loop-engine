@@ -1,7 +1,7 @@
 ---
 id: adr-20261114-agent-sessions-continue-and-approvals-are-refused
 kind: adr
-title: 実行は自分の agent session を続け、承認の要求は明示的に拒否して turn を続ける
+title: An execution continues its own agent session, and approval requests are explicitly refused while the turn continues
 status: accepted
 created: '2026-11-14'
 decision_makers:
@@ -12,69 +12,69 @@ relations:
 - {type: dependsOn, target: adr-20261114-loop-engine-host-boundary}
 - {type: references, target: adr-20261114-unit-completes-when-facts-hold}
 source_paths: []
-summary: 同じ単位の同じ実行が再び走るときは、その実行の前の session に差分だけの続きのメッセージを送る。agent の承認の要求は 3 つの agent
-  で同じく明示的に拒否し、turn は続け、拒否の回数を単位の記録に残す。
+summary: When the same execution of the same unit runs again, a follow-up message with only the difference is sent to that execution's previous session. Agents' approval requests are explicitly refused,
+  the same for the 3 agents; the turn continues, and the number of refusals is kept in the unit's records.
 updated: '2026-11-14'
 ---
 
-# 実行は自分の agent session を続け、承認の要求は明示的に拒否して turn を続ける
+# An execution continues its own agent session, and approval requests are explicitly refused while the turn continues
 
-## 背景
+## Context
 
-Loop Engine は turn ごとに新しい agent session を開始し、閉じていた。同じ実行が差し戻し・回答・やり直しで再び走るたびに、指示の全文を送り直していた。
+The Loop Engine started a new agent session for each turn and closed it. Each time the same execution ran again because work was sent back, a question was answered or a retry was made, it sent the full instructions again.
 
-2026-11-13 より前の Loop は、実行が観測した agent の session を次の実行でも続け、その session がまだ受け取っていない内容だけを送っていた(`runtime/development_loop/agent_assignment_v2.py` の `mode: start | continue` と `delivered_prompts`)。失われた session は続けなかった。transport は今も継続の手段を持つ。provider session の `continue`、Codex の同じ thread での `turn/start` と process が無くなった後の `thread/resume`、ACP の `session/load` と `session/prompt`、Pi の `--session-id` である。
+The Loop before 2026-11-13 continued the agent session that an execution observed in the next execution as well, and sent only the content that session had not yet received (`mode: start | continue` and `delivered_prompts` in `runtime/development_loop/agent_assignment_v2.py`). It did not continue a lost session. The transport still has the means to continue: `continue` of a provider session, Codex's `turn/start` on the same thread and `thread/resume` after the process is gone, ACP's `session/load` and `session/prompt`, and Pi's `--session-id`.
 
-agent の承認の要求の扱いは 3 つの driver で違っていた。
+The handling of an agent's approval requests differed between the 3 drivers.
 
-- Codex には `thread/start` と `thread/resume` で常に承認なしの指定を送り、要求そのものを起こさせなかった。
-- ACP(claude)は permission の要求に `cancelled` を返すか、環境変数で許可が与えられていれば `allow_once` を選んでいた。この環境変数を設定するものは repository に無い。
-- Pi は extension の dialog に答えず、turn が戻らないことがあった。
+- To Codex, the driver always sent a no-approval setting in `thread/start` and `thread/resume`, so that no request arose at all.
+- ACP (claude) returned `cancelled` to a permission request, or chose `allow_once` if permission had been given through an environment variable. Nothing in the repository sets this environment variable.
+- Pi did not answer the extension's dialog, and the turn sometimes did not return.
 
-[engine の境界の決定](adr-20261114-loop-engine-host-boundary.md)の項目 2 と `DEVELOPMENT.md` §11 は、engine も transport も agent に sandbox や承認の指定を渡さず、利用者の設定のまま動かすと定めている。承認なしの指定は、この規則に反していた。
+Item 2 of the [engine boundary decision](adr-20261114-loop-engine-host-boundary.md) and `DEVELOPMENT.md` §11 state that neither the engine nor the transport passes a sandbox or approval setting to agents, and that agents run with the user's settings as they are. The no-approval setting violated this rule.
 
-## 決定
+## Decision
 
-ユーザーは 2026-11-14 に次を決めた。
+The user decided the following on 2026-11-14.
 
-### session の継続
+### Continuing sessions
 
-1. **同じ単位の同じ実行が再び走るとき(指摘の差し戻し、質問への回答、やり直し)、engine はその実行の前の session に続きのメッセージを送る。**
-2. **異なる実行は session を共有しない。** 評価役が作る役の session を見ることはない。
-3. **続きのメッセージが運ぶのは新しいもの(指摘、回答、変わった事実)と返答の形式だけである。** 指示の全文を送るのは session の最初のメッセージだけとする。
-4. **session を続けられないとき(engine が再起動して session を再開できない、provider が session を失った)は、engine は指示の全文で新しい session を開始する。**
-5. **engine は、実行ごとの session を再開するための token を、単位が最終的に止まるまで保つ。** agent 側の session は turn が終わるたびに解放し、同じ実行が再び走るときにその token で再開する。engine は解放を確かめてから作業用の複製を読む。単位が最終的に止まったら token を捨て、transport の束縛を閉じる。agent が保存した会話は消さない。
-6. **評価役も同じ規則に従う。** 評価役の後の評価は、評価役自身の session を続ける(ユーザー:「評価役： 続ける」)。
+1. **When the same execution of the same unit runs again (findings sent back, an answer to a question, a retry), the engine sends a follow-up message to that execution's previous session.**
+2. **Different executions do not share a session.** A reviewer never sees the writer's session.
+3. **A follow-up message carries only what is new (findings, answers, changed facts) and the reply format.** Only the first message of a session sends the full instructions.
+4. **When a session cannot be continued (the engine restarted and cannot resume the session, or the provider lost the session), the engine starts a new session with the full instructions.**
+5. **The engine keeps the token for resuming each execution's session until the unit finally stops.** The session on the agent side is released each time a turn ends, and is resumed with that token when the same execution runs again. The engine confirms the release before it reads the working copy. When the unit finally stops, the engine discards the tokens and closes the transport's bindings. Conversations the agent saved are not deleted.
+6. **Reviewers follow the same rules.** A reviewer's later review continues the reviewer's own session (user: "Reviewer: continue" (translated from Japanese)).
 
-### 承認の要求
+### Approval requests
 
-7. **agent の承認の要求には明示的な拒否で答え、turn は続ける。** claude、codex、pi で同じとする(ユーザー:「拒否を明示的に返し、turn は続ける」で 3 agent を揃える)。agent に承認の指定を渡さない。engine と transport が承認する経路を持たない。拒否した回数を単位の記録に残す。
+7. **An agent's approval request is answered with an explicit refusal, and the turn continues.** This is the same for claude, codex and pi (user: align the 3 agents on "return the refusal explicitly, and the turn continues"). No approval setting is passed to agents. The engine and the transport have no path that approves. The number of refusals is kept in the unit's records.
 
-## 比較した案
+## Alternatives considered
 
-- **turn ごとに新しい session を開始する(これまでの engine):** 規則 1 と 3 により採らない。再び走るたびに指示の全文を送り直し、agent はそれまでの作業の文脈を失う。
-- **評価役は毎回新しい session で評価する:** ユーザーが「評価役： 続ける」と決めた。独立性は規則 2(実行ごとに別の session)で保つ。
-- **承認の要求があったら単位を止める:** ユーザーの決定は「turn は続ける」である。要求を拒否されて実行できなかった検査は実行記録に合格の行を残さないので、その事実は成立しない。止めなくても、事実の成立で判断する[事実による完了の決定](adr-20261114-unit-completes-when-facts-hold.md)のまま扱える。
-- **要求をメインセッションへ上げて判断を待つ:** 承認するかを engine の外から決める経路になる。[engine の境界の決定](adr-20261114-loop-engine-host-boundary.md)は engine が sandbox と承認に関わらないことを求めており、agent の承認は利用者の設定が決める。engine は要求を拒否し、回数を記録して見えるようにするだけにする。
+- **Start a new session for each turn (the engine until now):** Not adopted, because of rules 1 and 3. Each time an execution runs again the full instructions are sent again, and the agent loses the context of its work so far.
+- **The reviewer reviews in a new session every time:** The user decided "Reviewer: continue" (translated from Japanese). Independence is kept by rule 2 (a separate session per execution).
+- **Stop the unit when there is an approval request:** The user's decision is "the turn continues". A check that could not be run because its request was refused leaves no passing line in the execution record, so that fact does not hold. Even without stopping, this can be handled as it is under the [decision on completion by facts](adr-20261114-unit-completes-when-facts-hold.md), which judges by facts holding.
+- **Raise the request to the main session and wait for a decision:** This becomes a path that decides from outside the engine whether to approve. The [engine boundary decision](adr-20261114-loop-engine-host-boundary.md) requires that the engine not be involved in the sandbox and approval, and the user's settings decide the agent's approvals. The engine only refuses the request, records the count and makes it visible.
 
-## 結果
+## Consequences
 
-- 差し戻し・回答・やり直しの turn は、指示の全文の代わりに差分だけを受け取る。続きのメッセージも返答の形式を含むので、engine は毎回の返答を同じ規則で検査できる。
-- engine は実行ごとの session の token を単位の記録に保存し、中身を解釈しない。engine が再起動しても、記録から同じ session を続けられる。
-- turn と turn の間、agent の session は解放されている。続けるときは、Codex は同じ thread を再開し、ACP は session を読み込み直し、Pi は同じ session id で起動する。解放を確かめられなかった turn は完了として扱わず、その turn では作業用の複製を判定しない。
-- session を続けられないことを transport が知らせると、engine はその turn を 1 回だけ新しい session でやり直す。新しい session の失敗は、ほかの失敗した turn と同じに扱う。
-- 実行記録は turn ごとに区切られる。続けた session でも、前の turn の検査の行が後の turn の事実を成立させることはない。
-- 承認を要する操作は、利用者の設定がその操作を許していない限り、agent の中で実行されない。利用者の設定で承認なしに動く操作は、要求そのものが起きない。
-- 拒否された要求の件数と内容(種類と短い説明)が turn の記録に残り、単位の状態・止まり方の記録・集計 tool に実行ごとの回数として出る。
-- 続きのメッセージを agent がどう解釈するか、各 provider が session をどこまで保つかは、実機で確かめる必要がある。
+- A turn for work sent back, an answer or a retry receives only the difference instead of the full instructions. Because a follow-up message also includes the reply format, the engine can check every reply by the same rules.
+- The engine stores each execution's session token in the unit's records and does not interpret its content. Even if the engine restarts, it can continue the same session from the records.
+- Between one turn and the next, the agent's session is released. To continue, Codex resumes the same thread, ACP reloads the session, and Pi starts with the same session id. A turn whose release could not be confirmed is not treated as completed, and the working copy is not judged in that turn.
+- When the transport reports that a session cannot be continued, the engine retries that turn only once, in a new session. A failure of the new session is treated the same as any other failed turn.
+- The execution record is delimited per turn. Even in a continued session, a check line of an earlier turn never establishes a fact of a later turn.
+- An operation that requires approval is not run inside the agent unless the user's settings allow that operation. For an operation that runs without approval under the user's settings, no request arises at all.
+- The number and content (kind and short description) of refused requests are kept in the turn's record, and appear as a count per execution in the unit's status, the record of the stop reason and the aggregation tool.
+- How agents interpret a follow-up message, and how far each provider keeps a session, need to be confirmed with real agents.
 
-## 確認方法
+## Verification
 
-- engine のテストで、差し戻しが作る役の session を差分だけのメッセージで続けること、回答が質問した実行の session を続けること、評価役の 2 回目が評価役自身の session を続けること、2 つの実行が同じ token を受け取らないこと、続けられない session が全文の新しい session 1 回に置き換わること、token が engine の再起動を越えて残ること、最終的な停止で token を捨てて束縛を閉じ、続けられる停止では token を保つこと、turn の結果を返す前に session の解放を待つこと、前の turn の検査の行が事実を成立させないこと、続けた turn を取消が中断すること、を確かめる。
-- transport のテストで、3 つの driver それぞれについて、agent が受け取る答えが明示的な拒否であること、turn がその後普通に終わること、turn の記録に拒否が残ることを確かめる。Codex の `thread/start` と `thread/resume` に承認の指定が無いこと、どの環境変数でも ACP が許可を選ばないことも確かめる。
-- skill-lint の `producer_environment`(C16)が、承認の指定を置くことを拒否する。
+- The engine's tests confirm that sending work back continues the writer's session with a message carrying only the difference, that an answer continues the session of the execution that asked the question, that a reviewer's second run continues the reviewer's own session, that 2 executions do not receive the same token, that a session that cannot be continued is replaced by 1 new session with the full text, that tokens remain across an engine restart, that a final stop discards the tokens and closes the bindings while a stop that can be continued keeps the tokens, that the release of the session is awaited before a turn's result is returned, that a check line of an earlier turn does not establish a fact, and that cancellation interrupts a continued turn.
+- The transport's tests confirm, for each of the 3 drivers, that the answer the agent receives is an explicit refusal, that the turn then ends normally, and that the refusal is kept in the turn's record. They also confirm that Codex's `thread/start` and `thread/resume` have no approval setting, and that ACP does not choose to allow under any environment variable.
+- skill-lint's `producer_environment` (C16) refuses the placing of an approval setting.
 
 
 {% transition from="proposed" to="accepted" date="2026-11-14" %}
-ユーザーが 2026-11-14 に承認した。session の継続は、提示した規則 1〜5 への返答「評価役： 続ける」。承認の要求は「1. 拒否を明示的に返し、turn は続ける」で 3 agent を揃える」。
+The user approved on 2026-11-14. For continuing sessions, the reply to the presented rules 1-5: "Reviewer: continue" (translated from Japanese). For approval requests: align the 3 agents on "1. return the refusal explicitly, and the turn continues".
 {% /transition %}

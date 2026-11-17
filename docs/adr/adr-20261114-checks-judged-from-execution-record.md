@@ -1,7 +1,7 @@
 ---
 id: adr-20261114-checks-judged-from-execution-record
 kind: adr
-title: 検査は agent が sandbox の中で実行し、engine は実行記録で合否を判定する
+title: Agents run checks inside the sandbox, and the engine judges pass or fail from the execution record
 status: accepted
 created: '2026-11-14'
 decision_makers:
@@ -11,71 +11,71 @@ owners: []
 relations:
 - {type: dependsOn, target: adr-20261114-loop-engine-host-boundary}
 source_paths: []
-summary: 検査 command は project の設定に人が置き、producer が sandbox の中で実行する。engine は agent の報告文ではなく実行記録から合否を判定し、通らなければ評価役を呼ばない。
+summary: A person places check commands in the project's configuration, and the producer runs them inside the sandbox. The engine judges pass or fail from the execution record, not from the agent's report text, and does not call the reviewer if the checks do not pass.
 updated: '2026-11-14'
 ---
 
-# 検査は agent が sandbox の中で実行し、engine は実行記録で合否を判定する
+# Agents run checks inside the sandbox, and the engine judges pass or fail from the execution record
 
-## 用語
+## Terms
 
-**検査**は、test、lint、型検査、build のように、command の終了状態だけで合否が決まる確認を指す。**評価**は、評価役の agent が契約と差分を読んで下す判断を指す。
+A **check** is a confirmation whose pass or fail is decided by the command's exit status alone, such as test, lint, type check or build. A **review** is the judgment a reviewer agent makes by reading the contract and the diff.
 
-## 背景
+## Context
 
-2026-11-08 の記録では、最初の実装候補が通常テストを実行しないまま提出され、差し戻しが 1 往復増えた。独立評価が実機の欠陥を見逃した例もある。現在の受入は評価役の判断に寄っていて、決定的な検査が受入の条件になっていない。
+In the records of 2026-11-08, the first implementation candidate was submitted without the regular tests having been run, and sending it back added 1 round trip. There is also a case where independent review missed a defect that appears in a real run. Acceptance currently leans on the reviewer's judgment, and deterministic checks are not a condition of acceptance.
 
-一方、engine が検査 command を自分で実行すると、producer が書き換えたコードが host の権限で動く。[engine の境界の決定案](adr-20261114-loop-engine-host-boundary.md)はこれを認めない。
+On the other hand, if the engine runs the check commands itself, code rewritten by the producer runs with the host's privileges. The [proposed engine boundary decision](adr-20261114-loop-engine-host-boundary.md) does not permit this.
 
-## 決定案
+## Proposed decision
 
-1. **検査 command は project の設定 file に人が置く。** 単位契約は名前で選ぶだけにする。
-2. **実行するのは producer で、agent の sandbox の中である。** engine は実行しない。
-3. **判定するのは engine である。** agent の報告文ではなく、agent の実行記録を使う。設定された command が成功し、その後に他の command も編集もないことを確かめる。
-4. **通らなければ評価役を呼ばずに差し戻す。**
-5. **検査は、導入時の複製にある固定の program 経由で実行させる。** engine は元の commit にある設定から、実行されるべき command の文字列を作り、producer への指示に含める。固定の program は検査 command を実行し、最後の行に終了状態を出力する。engine は、記録にある command が期待した文字列と完全に一致することと、出力の最後の行の終了状態を確かめる。agent が報告する成否や終了コードは判定に使わない。
-6. **実行記録を取れない場合は「未検証」とし、承認しない。** 読めない出力を合格にしない。
-7. **止まり方を区別して記録する。** 完了、質問待ち、回数切れ、同じ指摘の繰り返し、実行結果が不明、取消、agent 設定が安全でない、の 7 つとし、完了以外を完了に変えない。
+1. **A person places the check commands in the project's configuration file.** The unit contract only selects them by name.
+2. **The producer runs them, inside the agent's sandbox.** The engine does not run them.
+3. **The engine judges.** It uses the agent's execution record, not the agent's report text. It confirms that the configured commands succeeded and that no other command and no edit comes after them.
+4. **If the checks do not pass, the engine sends the work back without calling the reviewer.**
+5. **Checks are run through a fixed program in the installed copy.** From the configuration in the base revision, the engine builds the command string that should be run and includes it in the instructions to the producer. The fixed program runs the check command and prints the exit status on the last line. The engine confirms that the command in the record matches the expected string exactly, and confirms the exit status on the last line of the output. The success or failure and the exit code that the agent reports are not used for the judgment.
+6. **When the execution record cannot be obtained, the result is "unverified" and is not approved.** Output that cannot be read is not passed.
+7. **Stop reasons are recorded distinctly.** There are 7: complete, waiting for an answer, out of rounds, the same finding repeated, execution result unknown, cancelled, and agent configuration unsafe. Nothing other than complete is turned into complete.
 
-## 既存の判断との関係
+## Relation to existing decisions
 
-[成果の独立検収への統合](../../../docs/adr/adr-20261010-outcome-evidence-boundaries.md)は固定の検証段を廃止し、証拠の十分性を独立検収に任せた。本 ADR は独立検収を残したまま、その前に決定的な条件を 1 つ置く。同 ADR の Decision のうち「観測の実行を必須の中間工程にせず」の部分を、project が検査を設定している単位について本 ADR が変更する。同 ADR のほかの決定は変更しない。
+[Integration into independent acceptance of outcomes](../../../docs/adr/adr-20261010-outcome-evidence-boundaries.md) abolished the fixed verification stage and left the sufficiency of evidence to independent acceptance. This ADR keeps independent acceptance and places 1 deterministic condition before it. Of that ADR's Decision, this ADR changes the part "without making the running of observations a required intermediate step" (translated from Japanese), for units whose project has configured checks. It does not change that ADR's other decisions.
 
-本 ADR 全体は、2026-11-14 にユーザーが承認した(「2 approve」)。実装はまだ本 ADR に追従していない。
+The user approved this ADR as a whole on 2026-11-14 ("2 approve"). The implementation does not yet follow this ADR.
 
-## 必要な変更
+## Required changes
 
-今の agent 起動の契約では、turn の結果は本文と通信の状態だけで、実行した command の記録を持たない。protocol ごとの driver が実行記録を返すように、契約を広げる必要がある。
+In the current contract for starting agents, a turn's result is only the body text and the communication status, and has no record of the commands that were run. The contract has to be widened so that each protocol's driver returns an execution record.
 
-## 比較した案
+## Alternatives considered
 
-- **engine が検査を host で実行する:** 判定は最も確実だが、host で任意のコードが動く。
-- **agent の報告文を信じる:** テスト未実行の提出を防げない。
-- **検査専用の turn を別に起動する:** producer の省略は防げるが、往復が増える。必要になれば追加できる。
+- **The engine runs the checks on the host:** The judgment is the most certain, but arbitrary code runs on the host.
+- **Trust the agent's report text:** This cannot prevent a submission whose tests were not run.
+- **Start a separate turn dedicated to checks:** This prevents the producer from skipping them, but adds round trips. It can be added if it becomes necessary.
 
-## 結果
+## Consequences
 
-- テスト未実行の提出が、評価役を呼ぶ前に機械的に止まる。
-- 検査をごまかす余地(テスト自体の書き換えなど)は残る。差分に現れるので評価役が見る対象になる。
-- sandbox の中では環境要因でテストが失敗することがある。元の tree との比較で、悪化した分だけを不合格にする扱いが要る。
+- A submission whose tests were not run is stopped mechanically before the reviewer is called.
+- Room to cheat the checks (such as rewriting the tests themselves) remains. Because it appears in the diff, it is something the reviewer looks at.
+- Inside the sandbox, tests can fail for environmental reasons. A treatment is needed that compares with the original tree and fails only what got worse.
 
-## 確認方法
+## Verification
 
-- 検査が通らない候補で、評価役が起動されないことを確かめる試験。
-- 最後の編集より前に実行した検査、検査の後の編集が、合格にならないことを確かめる試験。
-- 実行記録がない turn が「不明」になることを確かめる試験。
+- A test that confirms that the reviewer is not started for a candidate whose checks do not pass.
+- A test that confirms that a check run before the last edit, and an edit after the checks, do not pass.
+- A test that confirms that a turn without an execution record becomes "unknown".
 
-PoC では偽の agent でこれらが成り立った。実機では、`codex exec` の出力から command と数値の終了コードを取り出せた。`claude -p` の出力には数値がなく、成否の flag と本文から読み取った。既存の抽象を通した実機確認(2026-11-14、各 agent 3 turn)の結果は次のとおりである。
+In the PoC, these held with a fake agent. With real agents, the commands and numeric exit codes could be extracted from the output of `codex exec`. The output of `claude -p` had no number, and the result was read from the success flag and the body text. The results of the check with real agents through the existing abstraction (2026-11-14, 3 turns per agent) are as follows.
 
-| protocol | 実行記録 | 現在の driver |
+| protocol | Execution record | Current driver |
 |---|---|---|
-| codex-app-server | command、成否、数値の終了コードがある。ただし sandbox で失敗した command 1 件は記録に現れなかった | 捨てている |
-| pi-rpc | command、成否、数値の終了コードがある | 捨てている |
-| acp-v1(claude) | 終了コードがない。失敗する command(`false`)も completed として届いた | 捨てている |
+| codex-app-server | Has the command, success or failure, and a numeric exit code. However, 1 command that failed in the sandbox did not appear in the record | Discards it |
+| pi-rpc | Has the command, success or failure, and a numeric exit code | Discards it |
+| acp-v1 (claude) | Has no exit code. A failing command (`false`) also arrived as completed | Discards it |
 
-項目 5 は、この結果を受けて 2026-11-14 に改めた(ユーザーの承認「accept」)。agent が報告する成否は、ACP 経由の claude では読めず、codex では抜けがありうるので、判定に使わない。改めた方法の前提は、次の事実で確かめた。
+Item 5 was revised on 2026-11-14 in response to this result (the user's approval: "accept"). The success or failure that the agent reports cannot be read for claude over ACP and can have gaps for codex, so it is not used for the judgment. The premises of the revised method were confirmed by the following facts.
 
-- 3 つの protocol とも、記録から command の文字列と出力本文を取り出せる。ACP 経由の claude でも、`echo ssh_rc=$?` の出力が command の文字列と一緒に届いた。
-- 導入時の複製(`~/.local/share/agent-module/plugins/dev-skills`)は、agent-environments の共通の sandbox 方針で 3 つの agent とも読み取り専用であり、producer は固定の program を書き換えられない。
+- For all 3 protocols, the command string and the output body can be extracted from the record. Even for claude over ACP, the output of `echo ssh_rc=$?` arrived together with the command string.
+- The installed copy (`~/.local/share/agent-module/plugins/dev-skills`) is read-only for all 3 agents under the common sandbox policy of agent-environments, and the producer cannot rewrite the fixed program.
 
-固定の program を 3 つの agent に実行させる通しの確認は、まだ行っていない。記録が抜けた検査は、項目 6 により「未検証」になる。
+An end-to-end confirmation of having the 3 agents run the fixed program has not been done yet. A check missing from the record becomes "unverified" under item 6.

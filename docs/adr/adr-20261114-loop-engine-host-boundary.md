@@ -1,7 +1,7 @@
 ---
 id: adr-20261114-loop-engine-host-boundary
 kind: adr
-title: Loop Engine は host で動き sandbox を管理せず、LLM と任意のコードを host で実行する経路を作らない
+title: Loop Engine runs on the host, does not manage a sandbox, and creates no path that runs an LLM or arbitrary code on the host
 status: accepted
 created: '2026-11-14'
 decision_makers:
@@ -10,85 +10,85 @@ tags: []
 owners: []
 relations: []
 source_paths: []
-summary: engine は host で動く固定のコードとし、sandbox は環境(claude・codex・pi の sandbox 設定)に任せる。project
-  のコードと LLM は agent の sandbox の中だけで動かす。MCP を agent との接続面にし、CI からも同じ engine を使う。
+summary: The engine is fixed code that runs on the host, and the sandbox is left to the environment (the sandbox settings of claude, codex and pi). Project
+  code and the LLM run only inside the agent's sandbox. MCP is the interface to agents, and CI uses the same engine too.
 updated: '2026-11-14'
 ---
 
-# Loop Engine は host で動き sandbox を管理せず、LLM と任意のコードを host で実行する経路を作らない
+# Loop Engine runs on the host, does not manage a sandbox, and creates no path that runs an LLM or arbitrary code on the host
 
-## 背景
+## Context
 
-2026-11-13 の変更(commit `0540f7a5`)は Loop を host の MCP service へ移し、project の command を実行するために bwrap による隔離を自前で持った。同じ変更が `DEVELOPMENT.md` §11 の規則を承認の記録なしに書き換えている。11 月 9 日から 13 日の間に、Loop の制御方式は 5 回変わった。
+The change of 2026-11-13 (commit `0540f7a5`) moved the Loop to an MCP service on the host and gave it its own bwrap isolation in order to run project commands. The same change rewrote the rules of `DEVELOPMENT.md` §11 without a record of approval. Between November 9 and 13, the way the Loop is controlled changed 5 times.
 
-sandbox は、姉妹 repository の agent-environments が claude、codex、pi に共通の方針で提供している。dev-skills が別の sandbox を持つ理由はない。その repository の決定は、sandbox の外で実行させる経路に「実行される program が固定で、呼び出し側が子 program を選べないこと」と「実体が sandbox から書ける場所にないこと」を求めている。
+The sandbox is provided by the sibling repository agent-environments, under a policy common to claude, codex and pi. There is no reason for dev-skills to have a separate sandbox. That repository's decision requires of a path that runs something outside the sandbox that "the program that runs is fixed, and the caller cannot choose a child program" (translated from Japanese) and that "the program itself is not in a place writable from the sandbox".
 
-調査の事実と実測は[調査記録](../note/note-20261114-loop-engine-redesign-investigation.md)にある。
+The facts and measurements of the investigation are in the [investigation record](../note/note-20261114-loop-engine-redesign-investigation.md).
 
-## ユーザーが述べた要件(2026-11-14)
+## Requirements the user stated (2026-11-14)
 
-- 「dev-skills は sandbox をもっていないはずだ。もっているとしたら、実装が元要件を破っている。」
-- 「CI的にも使えるようにしたい。MCP はエージェントとループエンジンの接続面としたらいいだろう。」
-- 「engine はホスト動作でいい。LLM や任意のコードがホスト側で実行される経路を作らないということだ。」
-- 「loop engine は sandbox を管理しません。sandbox は環境が用意するもの。現状で sandbox を用意する主体は claude, codex, pi のサンドボックス設定です。」
-- 「claude も codex も同じ振る舞いにし複雑性を入れない。止めるで統一する。対応する agent は claude, codex, pi の３つ」
-- 「agent の起動は現在と同じく抽象化(claude, codex, pi, ACP, AppServer)して」
+- "dev-skills should not have a sandbox. If it has one, the implementation is breaking the original requirement." (translated from Japanese)
+- "I want it to be usable for CI as well. MCP would do as the interface between the agent and the loop engine."
+- "The engine can run on the host. The point is not to create a path by which an LLM or arbitrary code is run on the host side."
+- "The loop engine does not manage a sandbox. The sandbox is something the environment provides. At present, what provides the sandbox is the sandbox settings of claude, codex, pi."
+- "Make claude and codex behave the same and add no complexity. Unify on stopping. The supported agents are the 3: claude, codex, pi"
+- "Keep the starting of agents abstracted as it is now (claude, codex, pi, ACP, AppServer)"
 
-## 決定案
+## Proposed decision
 
-1. **engine は host で動く固定のコードとし、MCP server とは別の 1 つの process として動く。** この process が複数の単位を実行し、単位ごとに process を作らない。CLI と MCP の入口は、engine に要求を渡し、状態の記録を読むだけで、進行・判定・記録の処理を持たない。CI では CLI が engine を起動し、渡した単位が止まるまで待って、止まり方を終了コードで受け取る。engine が止まったら、次の起動で記録から再開する。
-2. **engine は sandbox を作らず、確かめず、変えない。** bwrap などの隔離を持たない。起動する agent に sandbox や承認の指定を渡さず、利用者の設定のまま起動する。agent ごとの例外や、書き込み先を強制できるかによる選別を持たない。
-3. **LLM の出力と project の内容は、host で実行される program、引数、設定を決めない。** engine が起動するのは git と、導入済みの対応表にある agent の起動 command だけである。project の command(test、build、script)を engine は実行しない。
-4. **agent の起動は既存の抽象を使う。** provider の共通処理と、protocol ごとの driver(codex-app-server、acp-v1、pi-rpc)を維持する。engine は「turn の開始、進捗、結果、取消」という自分の言葉の port だけに依存する。
-5. **作業 directory の agent 設定は、変更されたときだけ止める。** 対象は `.claude/`、`.codex/`、`.pi/`、`.agents/`、`.mcp.json` とする。worktree を作った直後と agent を起動する直前で内容の hash を比べ、違えば止める。元からある定義は project の内容として読ませる。この扱いは 3 つの agent で同じにする。
-6. **状態は `~/.dev-skills` に置き、書き手は engine だけにする。** 契約と回答は MCP tool の入力として data で渡す。
-7. **engine は同じ repository の中の独立した package とし、導入時の複製から起動する。** 作業 tree のコードを読み込まない。将来は別の repository へ独立させる見込みなので、plugin 側のコードに依存させない。
+1. **The engine is fixed code that runs on the host, and it runs as one process separate from the MCP server.** This process runs multiple units and does not create a process per unit. The CLI and MCP entries only pass requests to the engine and read the state records; they hold no processing for progression, judgment or recording. In CI, the CLI starts the engine, waits until the unit it passed stops, and receives the stop reason as an exit code. If the engine stops, it resumes from the records at the next start.
+2. **The engine does not create, verify or change a sandbox.** It has no isolation such as bwrap. It passes no sandbox or approval setting to the agents it starts, and starts them with the user's settings as they are. It has no per-agent exceptions and no selection by whether write locations can be enforced.
+3. **LLM output and project content do not decide the programs, arguments or settings that run on the host.** The engine starts only git and the agent start commands in the installed catalog. The engine does not run project commands (test, build, script).
+4. **Agents are started through the existing abstraction.** The common provider processing and the per-protocol drivers (codex-app-server, acp-v1, pi-rpc) are kept. The engine depends only on a port in its own words: "start of a turn, progress, result, cancellation".
+5. **The engine stops for agent configuration in the working directory only when it has been changed.** The targets are `.claude/`, `.codex/`, `.pi/`, `.agents/` and `.mcp.json`. The engine compares the hash of their content right after creating the worktree and right before starting an agent, and stops if they differ. Definitions that were there from the start are left to be read as project content. This treatment is the same for the 3 agents.
+6. **State is placed in `~/.dev-skills`, and the engine is its only writer.** Contracts and answers are passed as data, as input to MCP tools.
+7. **The engine is an independent package inside the same repository and is started from the installed copy.** It does not load code from the working tree. Because it is expected to be split out into a separate repository in the future, it must not depend on the plugin's code.
 
-host で実行されうる経路は、MCP tool の入力、単位契約と検査の設定、agent の出力、起動引数、git、作業 directory の agent 設定、engine 自身のコード、実行 file の解決、の 8 つとして扱い、それぞれに拒否の試験を持つ。
+The paths by which something can be run on the host are treated as 8: MCP tool input, the unit contract and check configuration, agent output, start arguments, git, agent configuration in the working directory, the engine's own code, and executable resolution. Each has a refusal test.
 
-## 既存の判断との関係
+## Relation to existing decisions
 
-| 判断 | 扱い |
+| Decision | Treatment |
 |---|---|
-| [host MCP service](../../../docs/adr/adr-20261113-loop-host-mcp-service.md) | host で動かし目的別の MCP tool で接続する点は維持する。台帳と復旧の作りは縮小する |
-| [隔離実行](../../../docs/adr/adr-20261113-loop-effect-isolation.md) | 置き換える。engine が project の command を実行しないので、隔離の port は不要になる |
-| [producer の環境](../../../docs/adr/adr-20261113-producer-development-loop-skill.md) | 維持する。producer は利用者の環境で動き、外すのは Loop を開く skill だけ |
+| [host MCP service](../../../docs/adr/adr-20261113-loop-host-mcp-service.md) | Running on the host and connecting through purpose-specific MCP tools is kept. The ledger and recovery machinery is reduced |
+| [isolated execution](../../../docs/adr/adr-20261113-loop-effect-isolation.md) | Replaced. Because the engine does not run project commands, the isolation port is no longer needed |
+| [producer's environment](../../../docs/adr/adr-20261113-producer-development-loop-skill.md) | Kept. The producer runs in the user's environment, and only the skill that opens a Loop is excluded |
 
-項目 6 と 7 は、2026-11-14 にユーザーが承認した(「6. approve」「7. approve おそらく将来的には独立させるだろう」)。項目 1 の process の分け方は、ユーザーの指示による(「プロセスを分離した方が良いのでは？ シンプルな方を選べ」「タスクごとにプロセス化する必要ないだろ」)。
+The user approved items 6 and 7 on 2026-11-14 ("6. approve", "7. approve it will probably be made independent in the future" (translated from Japanese)). How processes are split in item 1 follows the user's instruction ("Wouldn't it be better to separate the process? Choose the simpler one", "There is no need to make a process per task").
 
-本 ADR 全体は、2026-11-14 にユーザーが承認した(「1 approve」)。この承認により[隔離実行](../../../docs/adr/adr-20261113-loop-effect-isolation.md)を置き換える。実装はまだ本 ADR に追従していない。`DEVELOPMENT.md` §11 と `AGENTS.md` の該当箇所の同期は、文面をユーザーが承認してから行う。agent-environments 側では、engine を sandbox の外で実行させる経路として棚卸しに加える必要がある。
+The user approved this ADR as a whole on 2026-11-14 ("1 approve"). With this approval it replaces [isolated execution](../../../docs/adr/adr-20261113-loop-effect-isolation.md). The implementation does not yet follow this ADR. The corresponding parts of `DEVELOPMENT.md` §11 and `AGENTS.md` are synchronized after the user approves the wording. On the agent-environments side, the engine needs to be added to the inventory as a path that is run outside the sandbox.
 
-## 比較した案
+## Alternatives considered
 
-- **Loop を sandbox の中の CLI に戻す:** sandbox の中からは git の書き込み、状態の保存、agent の起動ができない(実測)。この依存が、境界を越える経路を繰り返し生んだ。
-- **engine が検査 command を host で実行する:** 参照ハーネスの多くが採る形だが、producer が書き換えたコードが host の権限で動く。
-- **engine を MCP server の process の中で動かす:** 会話と CI で実行の形が 2 つになる。MCP server が止まると単位も止まり、MCP の入口が engine の処理を抱える。
-- **単位ごとに process を作る:** 必要がない。process の数が増え、agent の host process を単位の間で共有できない。
-- **agent の起動を非対話 CLI の直接起動に置き換える:** 既存の抽象を維持するという指示により採らない。
-- **元の commit に agent の定義があれば開始時に止める:** dev-skills を含め、定義を持つ repository を対象にできなくなる。
+- **Return the Loop to a CLI inside the sandbox:** From inside the sandbox, git writes, saving state and starting agents are not possible (measured). This dependency repeatedly produced paths that cross the boundary.
+- **The engine runs check commands on the host:** Many of the reference harnesses take this form, but code rewritten by the producer runs with the host's privileges.
+- **Run the engine inside the MCP server process:** There would be 2 forms of running, one for conversation and one for CI. When the MCP server stops the units stop too, and the MCP entry holds the engine's processing.
+- **Create a process per unit:** Not needed. The number of processes grows, and the agent's host process cannot be shared between units.
+- **Replace the starting of agents with direct launch of a non-interactive CLI:** Not adopted, because of the instruction to keep the existing abstraction.
+- **Stop at the start if the base revision has agent definitions:** Repositories that have definitions, dev-skills included, could no longer be targets.
 
-## 結果
+## Consequences
 
-- 自前の隔離、その中で動く worker、一度きり実行のための台帳が不要になる。
-- 元からある定義が repository 内の script を呼ぶ場合、producer が書き換えた script が host で動く余地は残る。普段のセッションと同じ扱いである。
-- agent の sandbox が有効かどうかは環境の責務であり、engine の側では保証しない。
-- engine の process は 1 つなので、agent の host process を単位の間で共有できる。
-- 入口から engine へ要求を渡す手段は、実装の設計で決める。
-- 会話や MCP server が終わっても、実行中の単位は進み続ける。
+- The engine's own isolation, the worker that runs inside it, and the ledger for run-once execution are no longer needed.
+- When a definition that was there from the start calls a script in the repository, room remains for a script rewritten by the producer to run on the host. This is the same treatment as an ordinary session.
+- Whether the agent's sandbox is in effect is the environment's responsibility, and the engine side does not guarantee it.
+- Because there is 1 engine process, the agent's host process can be shared between units.
+- The means by which an entry passes requests to the engine is decided in the implementation design.
+- Running units keep progressing even after the conversation or the MCP server ends.
 
-## 確認方法
+## Verification
 
-- 両 package に `bwrap` と `unshare` の記述がない。
-- 起動された実行 file を記録する試験で、一覧の外のものが 0 件である。
-- 8 つの経路それぞれに、command や path を混ぜた入力で何も起動されず状態も変わらないことを確かめる試験がある。
-- 進行と判定の module が file、時刻、process を import しない。
+- Neither package mentions `bwrap` or `unshare`.
+- In a test that records the executables that were started, 0 are outside the list.
+- For each of the 8 paths there is a test that confirms that input with commands or paths mixed in starts nothing and changes no state.
+- The modules for progression and judgment do not import file, time or process.
 
-PoC では、偽の agent を使った 38 件の試験でこれらが成り立った。CLI の入口が止まり方ごとに別の終了コードを返すことと、強制終了後に同じ command で再開できることも、この試験で確かめた。今の実装には MCP server 以外の入口がなく、CLI の入口は新たに作る必要がある。
+In the PoC, these held in 38 tests that used a fake agent. The same tests also confirmed that the CLI entry returns a different exit code for each stop reason and that the same command can resume after a forced termination. The current implementation has no entry other than the MCP server, so the CLI entry has to be newly built.
 
-既存の抽象を通した実機確認(2026-11-14、各 agent 3 turn)で、次を確かめた。
+A check with real agents through the existing abstraction (2026-11-14, 3 turns per agent) confirmed the following.
 
-- provider の共通処理は、MCP server なしで普通の process から組み立てて turn を動かせる。engine を別の process にできる。
-- 今の driver は、項目 2 に反する指定を渡している。codex には常に承認なし(`approvalPolicy: never`)と自前の sandbox(`workspace-write`)を送り、ACP では agent からの権限要求を自動で拒否する。
-- driver の `workspace-write` では `~/.ssh` を一覧できた。利用者の permission profile では見えなかった。自前の指定のほうが読み取りが緩い。
-- 作業 directory の設定の読み込みは agent ごとに違う。claude は hook と MCP server を起動し、codex は MCP server だけを起動し、pi はどちらも起動しない。項目 5 の検査は、この違いに関係なく同じ対象に適用する。
-- agent と sandbox 自身が、作業 directory に空の file や directory を作る。項目 5 の hash はこれらを除いて計算する必要がある。
+- The common provider processing can be assembled from an ordinary process, without the MCP server, and can run turns. The engine can be a separate process.
+- The current drivers pass settings that violate item 2. They always send codex no approval (`approvalPolicy: never`) and their own sandbox (`workspace-write`), and in ACP they automatically refuse permission requests from the agent.
+- Under the driver's `workspace-write`, `~/.ssh` could be listed. Under the user's permission profile it was not visible. The driver's own setting is looser on reads.
+- How configuration in the working directory is loaded differs by agent. claude starts hooks and MCP servers, codex starts only MCP servers, and pi starts neither. The check of item 5 applies to the same targets regardless of this difference.
+- The agents and the sandbox themselves create empty files and directories in the working directory. The hash of item 5 has to be computed excluding these.
