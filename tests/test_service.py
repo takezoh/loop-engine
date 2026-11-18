@@ -11,7 +11,7 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from engine_support import RUNNER, SRC, EngineCase, approve, changes, produced, published_runner, git, write
+from engine_support import RUNNER, SRC, EngineCase, approve, changes, produced, published_runner, git, git_out, write
 
 from loop_engine import cli, client, service, store
 from loop_engine.agents import TurnOutcome
@@ -282,7 +282,7 @@ class EngineProcessTest(EngineCase):
             self.contract(), producer="gamma")}, environ=environ)
         self.assertIn("installed catalog", unknown["error"])
         known = client.request(self.root, {"request": "start", "contract": self.with_agent(self.contract(
-            repository=os.path.dirname(os.path.dirname(SRC))), producer="codex", reviewer="claude")},
+            repository=git_out(SRC, "rev-parse", "--show-toplevel")), producer="codex", reviewer="claude")},
             environ=environ)
         self.assertIn("own code", known["error"])
         self.assertEqual([], store.list_units(self.root))
