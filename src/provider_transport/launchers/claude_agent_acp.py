@@ -1,13 +1,15 @@
-"""Start the Claude ACP adapter that the engine's install placed in the transport's runtime directory.
+"""Start the Claude ACP adapter of the user's environment.
 
-The adapter starts only after `claude_adapter.verify` confirms the pinned, patched package. node
-starts the package's entry script directly, so neither the ``.bin`` link nor a Windows ``.cmd``
-shim is involved. The adapter runs the ``claude`` on ``PATH``, the Claude Code the user runs, named
-to it as ``CLAUDE_CODE_EXECUTABLE``.
+The launcher starts the ``claude-agent-acp`` on ``PATH`` and names the ``claude`` on ``PATH`` to it as
+``CLAUDE_CODE_EXECUTABLE``, so the adapter runs the Claude Code the user runs. On Windows npm puts
+the adapter on ``PATH`` as a ``.cmd`` shim, which would run through cmd.exe and read the arguments
+again as a command line; the launcher starts the package's entry script beside the shim with the
+``node.exe`` on ``PATH`` instead.
 """
 
 from __future__ import annotations
 
+import ntpath
 import os
 from pathlib import Path
 import subprocess
@@ -15,9 +17,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from provider_transport import claude_adapter  # noqa: E402
 from provider_transport.host_platform import is_windows  # noqa: E402
 from provider_transport.command_search import (  # noqa: E402
+    CommandSearch,
     host_command_search,
     is_command_shim,
     resolve_command,
@@ -25,12 +27,10 @@ from provider_transport.command_search import (  # noqa: E402
 
 
 NOT_INSTALLED = 127
+ADAPTER = "claude-agent-acp"
 CLAUDE_CODE_EXECUTABLE = "CLAUDE_CODE_EXECUTABLE"
-
-
-def provider_command(runtime: Path, node: str, arguments: list[str]) -> list[str]:
-    """The adapter's argv: node and the package's entry script in ``runtime``."""
-    return [node, str(runtime / claude_adapter.ENTRY_RELATIVE_PATH), *arguments]
+# Where npm places the package's entry script relative to the directory of its Windows shim.
+SHIM_ENTRY = ("node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js")
 
 
 def provider_environment(environ: dict[str, str], claude: str) -> dict[str, str]:
@@ -38,28 +38,37 @@ def provider_environment(environ: dict[str, str], claude: str) -> dict[str, str]
     return {**environ, CLAUDE_CODE_EXECUTABLE: claude}
 
 
+def adapter_command(adapter: str, arguments: list[str], search: CommandSearch) -> list[str] | None:
+    """The adapter's argv, or None when a Windows shim's entry cannot be started."""
+    if not (search.windows and is_command_shim(adapter)):
+        return [adapter, *arguments]
+    entry = ntpath.join(ntpath.dirname(adapter), *SHIM_ENTRY)
+    node = resolve_command("node", search)
+    if node is None or is_command_shim(node) or not search.runnable(entry):
+        return None
+    return [node, entry, *arguments]
+
+
 def main(arguments: list[str]) -> int:
     windows = is_windows()
-    try:
-        runtime = claude_adapter.runtime_dir(windows=windows)
-        claude_adapter.verify(runtime)
-    except (OSError, RuntimeError, ValueError) as exc:
-        print(f"the Claude ACP adapter is not installed: {exc}", file=sys.stderr)
-        return NOT_INSTALLED
     search = host_command_search()
-    node = resolve_command("node", search)
-    if node is None or (windows and is_command_shim(node)):
-        # A batch shim would run through cmd.exe, which re-reads the arguments as a command line.
-        print(f"the Claude ACP adapter needs a node executable on PATH: {node}", file=sys.stderr)
-        return NOT_INSTALLED
     claude = resolve_command("claude", search)
     if claude is None or (windows and is_command_shim(claude)):
+        # A batch shim would run through cmd.exe, which reads the arguments again as a command line.
         print(f"the Claude ACP adapter needs a claude executable on PATH: {claude}", file=sys.stderr)
         return NOT_INSTALLED
-    command = provider_command(runtime, node, arguments)
+    adapter = resolve_command(ADAPTER, search)
+    if adapter is None:
+        print(f"the {ADAPTER} of the environment is not on PATH", file=sys.stderr)
+        return NOT_INSTALLED
+    command = adapter_command(adapter, arguments, search)
+    if command is None:
+        print(f"the {ADAPTER} shim needs its package entry and a node executable on PATH: {adapter}",
+              file=sys.stderr)
+        return NOT_INSTALLED
     environment = provider_environment(dict(os.environ), claude)
     if not windows:
-        os.execve(node, command, environment)
+        os.execve(command[0], command, environment)
     return subprocess.run(command, check=False, env=environment).returncode
 
 

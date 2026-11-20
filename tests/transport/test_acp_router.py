@@ -472,16 +472,6 @@ class AcpRouterTests(unittest.TestCase):
         self.assertEqual({"codex", "claude", "pi"}, set(document["providers"]))
         self.assertEqual(3, document["wire_version"])
 
-    def test_installer_packages_match_the_manifest_and_the_lock(self):
-        from provider_transport import claude_adapter
-
-        manifest = json.loads((claude_adapter.PACKAGE_ROOT / "package.json").read_text())["dependencies"]
-        lock = json.loads((claude_adapter.PACKAGE_ROOT / "package-lock.json").read_text())["packages"]
-        self.assertEqual(claude_adapter.VERSION, manifest[claude_adapter.PACKAGE])
-        locked = lock[f"node_modules/{claude_adapter.PACKAGE}"]
-        self.assertEqual(claude_adapter.VERSION, locked["version"])
-        self.assertTrue(locked["integrity"].startswith("sha512-"))
-
 
 if __name__ == "__main__":
     unittest.main()

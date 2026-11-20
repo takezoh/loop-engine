@@ -11,8 +11,8 @@
 | Wire | `codex_app_server.py`, `jsonl_rpc.py`, `acp_router.py`, `acp_client.py`, `pi_rpc.py`, `turn_actions.py`, `turn_result.py`, `provider_request.py` | Processes, wire records, sessions and threads, provider bindings, bounded turn output, action requests to a provider session |
 | Process admission | `cwd_authority.py`, `admitted_process.py`, `cell_membership.py`, `directory_authority.py`, `linux_process.py`, `posix_filesystem.py`, `windows_process.py`, `windows_filesystem.py`, `windows_security.py`, `command_search.py` | Reserving a child process and proving its ownership; the ports for the process cell and the working-directory authority, and their adapters per platform |
 | Catalog | `providers.json`, `provider_catalog.py`, `provider_drivers.py` | Each provider's command and bindings, the form in which it excludes skills, and the choice of driver per transport |
-| Claude adapter | `claude_adapter.py`, `launchers/claude_agent_acp.py`, `patches/` | Installing and verifying the Claude ACP adapter, and starting it |
-| Platform | `host_platform.py` | The one selection point of command search, the adapter's runtime layout and the launcher |
+| Claude launcher | `launchers/claude_agent_acp.py` | Starting the Claude ACP adapter of the user's environment |
+| Platform | `host_platform.py` | The one selection point of command search and the launcher |
 | Doubles | `testing/` | The fakes of the process cell and of the working-directory authority, for the tests of whoever uses those ports. They run the ports' contract tests |
 
 ## Provider sessions
@@ -87,7 +87,7 @@ The pure functions of `cwd_authority.py` (`owned_roots`, `process_gone`, `after_
 
 ## Catalog
 
-`providers.json` declares each provider's transport, command, bindings and the form in which it excludes skills, and `provider_catalog.py` reads it as a `ProviderSpec`. `provider_drivers.driver_for` chooses the driver for the transport (`codex-app-server`, `acp-v1`, `pi-rpc`). The name and version of the Claude ACP adapter are in `claude_adapter.py`, matching `package.json` and `package-lock.json` at the repository root; the catalog does not hold them.
+`providers.json` declares each provider's transport, command, bindings and the form in which it excludes skills, and `provider_catalog.py` reads it as a `ProviderSpec`. `provider_drivers.driver_for` chooses the driver for the transport (`codex-app-server`, `acp-v1`, `pi-rpc`).
 
 A provider runs in the user's environment: settings, sandbox, plugins and skills load as they do when the user runs the agent. A caller may name skills of one plugin that the provider must not load. The value is the contract's `unit.excluded_skills` (`{"plugin": ..., "names": [...]}`); `load_provider(provider, exclude=...)` turns it into the provider's own form, and without it nothing is excluded. The catalog names no caller's skills.
 
@@ -101,12 +101,11 @@ A provider that declares no form is not loaded (`malformed-provider-skill-exclus
 
 ## Claude ACP adapter
 
-The `claude` provider speaks ACP through the npm package `@agentclientprotocol/claude-agent-acp`, pinned to one version with one pinned patch. `claude_adapter.py` owns its installation and verification.
+The `claude` provider speaks ACP through the npm package `@agentclientprotocol/claude-agent-acp`, which the user's environment installs, as it installs the agents' own commands. The engine installs, pins and patches nothing; the adapter's version is the one the environment installed.
 
-- `python -I src/loop_engine/__main__.py install` copies `package.json` and `package-lock.json` into the transport's runtime directory, runs `npm ci --omit=dev --omit=optional` there, applies the patch and verifies the result. The optional dependencies are the Claude Code binaries that the adapter's SDK bundles, so none is installed. It needs Node.js 22 or later and npm. One install runs at a time, under the engine's process lock on `install.lock` in that directory. `check` verifies without installing.
-- The runtime directory is `LOOP_ENGINE_RUNTIME_DIR`, by default `~/.local/share/loop-engine` (`%LOCALAPPDATA%\loop-engine` on Windows). It holds only what the transport installs.
-- `verify` passes only when the installed package has the pinned name and version and the patched file has the pinned digest. The patch replaces fixed anchors in the package's `dist/acp-agent.js`; a package whose file is neither the pinned original nor the pinned result is refused.
-- The catalog's `command_base: "subsession-python"` makes the transport's own interpreter start `launchers/claude_agent_acp.py`. The launcher verifies the adapter and then starts the package's entry script (`dist/index.js`) with the `node` on `PATH`, setting `CLAUDE_CODE_EXECUTABLE` to the `claude` on `PATH`, so the adapter runs the Claude Code the user runs and offers that version's models. It uses neither the `.bin` link nor a Windows `.cmd` shim, for node or for claude, and it exits with 127 when the adapter is not installed or no runnable node or claude is found.
+- The catalog's `command_base: "subsession-python"` makes the transport's own interpreter start `launchers/claude_agent_acp.py`. The launcher starts the `claude-agent-acp` on `PATH`, setting `CLAUDE_CODE_EXECUTABLE` to the `claude` on `PATH`, so the adapter runs the Claude Code the user runs and offers that version's models rather than a Claude Code of its own SDK.
+- On Windows npm puts the adapter on `PATH` as `claude-agent-acp.cmd`, which runs only through cmd.exe. The launcher starts the package's entry script beside the shim (`node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js`) with the `node.exe` on `PATH` instead, and it refuses a `.cmd` shim for node or claude.
+- The launcher exits with 127 when no `claude` or adapter is on `PATH`, or when a Windows shim's entry or node cannot be started.
 
 ## Verification
 
@@ -116,4 +115,4 @@ The `claude` provider speaks ACP through the npm package `@agentclientprotocol/c
 - Process cell contract: `CellMembershipContract` in `test_cell_membership.py` applies to the Linux cell (real processes of this machine), the Windows cell (the fake Win32 API of `windows_api_fake.py`) and the fake in `provider_transport/testing/`. It includes not ending a root whose recorded identity does not match; the Linux tests reproduce a reused pid by placing an ended root's record under the pid of another group leader and confirm that that process stays.
 - Working-directory contract: `CwdAuthorityContract` in `test_cwd_authority.py` applies to the POSIX authority (real directories), the Windows authority (fake Win32 API) and the fake in `provider_transport/testing/`.
 - The real Windows API is confirmed by running `windows_native_checks.py` on Windows.
-- No test starts a real agent or runs npm. An install into a real runtime directory, and a turn with a real agent, are observed only by running them.
+- No test starts a real agent or adapter. The adapter of the user's environment, and a turn with a real agent, are observed only by running them.

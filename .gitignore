@@ -1,6 +1,3 @@
 # Python bytecode caches
 __pycache__/
 *.py[cod]
-
-# npm packages installed from package.json
-node_modules/

@@ -17,7 +17,7 @@
       "bindings": {"session": ["model", "effort"], "required": ["model"]},
       "skill_exclusion": "claude-disallowed-skills",
       "conformance": {
-        "generation": "claude-agent-acp:0.62.0:finite-consumer-join-v1:be4d60cd62ba"
+        "generation": "claude-agent-acp:v1"
       }
     },
     "pi": {
