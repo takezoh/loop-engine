@@ -259,18 +259,20 @@ def check_program_path(published, digest):
 
 
 def _content_digest(path):
-    """The sha256 of a regular file reached without following a link at its last component."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    handle = os.open(path, flags)
-    try:
-        if not stat.S_ISREG(os.fstat(handle).st_mode):
-            raise CheckProgramChanged(f"{path} is not a regular file")
+    """The sha256 of the regular file at `path` itself: its own entry must be a regular file, not a link,
+    and the file opened must be that entry, not one put in its place meanwhile. Both checks read the
+    file's identity, which every platform gives, rather than an open flag only POSIX has."""
+    entry = os.lstat(path)
+    if not stat.S_ISREG(entry.st_mode):
+        raise CheckProgramChanged(f"{path} is not a regular file")
+    with open(path, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if (opened.st_dev, opened.st_ino) != (entry.st_dev, entry.st_ino):
+            raise CheckProgramChanged(f"{path} was replaced while it was read")
         digest = hashlib.sha256()
-        for block in iter(lambda: os.read(handle, 1 << 16), b""):
+        for block in iter(lambda: handle.read(1 << 16), b""):
             digest.update(block)
         return digest.hexdigest()
-    finally:
-        os.close(handle)
 
 
 def verified_check_program(path):

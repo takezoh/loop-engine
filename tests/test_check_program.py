@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 
 from engine_support import RUNNER, SRC, EngineCase, approve, produced, published_runner
 
@@ -47,6 +48,17 @@ class PublishTest(unittest.TestCase):
         with self.assertRaises(CheckProgramChanged):
             store.publish_check_program(self.root, RUNNER)
         self.assertTrue(os.path.islink(path))
+
+    def test_a_program_put_in_place_of_the_one_checked_is_refused(self):
+        path = store.publish_check_program(self.root, RUNNER)
+        other = os.path.join(os.path.dirname(self.root), "other.py")
+        with open(other, "wb") as handle:
+            handle.write(self.read(path))  # the right content, but not the file whose entry was checked
+        real_lstat = os.lstat
+        with unittest.mock.patch.object(store.os, "lstat", lambda name: real_lstat(other if name == path else name)):
+            with self.assertRaisesRegex(CheckProgramChanged, "replaced while it was read"):
+                store.verified_check_program(path)
+        self.assertEqual(path, store.verified_check_program(path))
 
     def test_engines_publishing_at_once_all_end_with_the_one_correct_file(self):
         for attempt in range(10):
