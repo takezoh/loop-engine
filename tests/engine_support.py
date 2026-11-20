@@ -287,6 +287,11 @@ class EngineCase(unittest.TestCase):
 
 
 def run_command(command, cwd):
-    """Run a check command the way an agent's shell would, returning its output."""
-    done = subprocess.run(shlex.split(command), cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    """Run a check command the way an agent's shell would, returning its output.
+
+    The line was made by the platform's `quote`, and is undone by its counterpart: a POSIX shell splits
+    what `shlex.join` wrote; on Windows the line reaches the program as it is, and the program splits it
+    by the C runtime's rules that `windows_command_line` writes for."""
+    argv = shlex.split(command) if CURRENT.quote is shlex.join else command
+    done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     return done.stdout
