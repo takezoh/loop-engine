@@ -2,7 +2,8 @@
 
 The adapter starts only after `claude_adapter.verify` confirms the pinned, patched package. node
 starts the package's entry script directly, so neither the ``.bin`` link nor a Windows ``.cmd``
-shim is involved.
+shim is involved. The adapter runs the ``claude`` on ``PATH``, the Claude Code the user runs, named
+to it as ``CLAUDE_CODE_EXECUTABLE``.
 """
 
 from __future__ import annotations
@@ -24,11 +25,17 @@ from provider_transport.command_search import (  # noqa: E402
 
 
 NOT_INSTALLED = 127
+CLAUDE_CODE_EXECUTABLE = "CLAUDE_CODE_EXECUTABLE"
 
 
 def provider_command(runtime: Path, node: str, arguments: list[str]) -> list[str]:
     """The adapter's argv: node and the package's entry script in ``runtime``."""
     return [node, str(runtime / claude_adapter.ENTRY_RELATIVE_PATH), *arguments]
+
+
+def provider_environment(environ: dict[str, str], claude: str) -> dict[str, str]:
+    """The adapter's environment: the caller's, naming the Claude Code the adapter runs."""
+    return {**environ, CLAUDE_CODE_EXECUTABLE: claude}
 
 
 def main(arguments: list[str]) -> int:
@@ -39,15 +46,21 @@ def main(arguments: list[str]) -> int:
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"the Claude ACP adapter is not installed: {exc}", file=sys.stderr)
         return NOT_INSTALLED
-    node = resolve_command("node", host_command_search())
+    search = host_command_search()
+    node = resolve_command("node", search)
     if node is None or (windows and is_command_shim(node)):
         # A batch shim would run through cmd.exe, which re-reads the arguments as a command line.
         print(f"the Claude ACP adapter needs a node executable on PATH: {node}", file=sys.stderr)
         return NOT_INSTALLED
+    claude = resolve_command("claude", search)
+    if claude is None or (windows and is_command_shim(claude)):
+        print(f"the Claude ACP adapter needs a claude executable on PATH: {claude}", file=sys.stderr)
+        return NOT_INSTALLED
     command = provider_command(runtime, node, arguments)
+    environment = provider_environment(dict(os.environ), claude)
     if not windows:
-        os.execv(node, command)
-    return subprocess.run(command, check=False).returncode
+        os.execve(node, command, environment)
+    return subprocess.run(command, check=False, env=environment).returncode
 
 
 if __name__ == "__main__":

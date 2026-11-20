@@ -185,7 +185,7 @@ class InstallAndVerifyTests(unittest.TestCase):
 
             def fake_npm(argv, check, timeout):
                 self.assertEqual(
-                    ["npm", "ci", "--omit=dev", "--prefix", str(target)], argv
+                    ["npm", "ci", "--omit=dev", "--omit=optional", "--prefix", str(target)], argv
                 )
                 self.assertTrue(check)
                 self.assertEqual(claude_adapter.INSTALL_TIMEOUT_SECONDS, timeout)
@@ -278,12 +278,21 @@ class DecisionsFromValuesTests(unittest.TestCase):
 
 class LauncherTests(unittest.TestCase):
     def launch(self, environ, *, windows=False, verify=None, node_files=()):
-        """Run the Claude launcher's main in this process; returns (exit status, the argv it started)."""
-        started = []
+        """Run the Claude launcher's main in this process; returns (exit status, the argv it started).
 
-        def execv(path, argv):
+        The environment each start received is in `self.environments`."""
+        started = []
+        self.environments = []
+
+        def execve(path, argv, env):
             started.append(list(argv))
+            self.environments.append(dict(env))
             raise SystemExit(0)
+
+        def run(argv, check, env):
+            started.append(list(argv))
+            self.environments.append(dict(env))
+            return subprocess.CompletedProcess(argv, 0)
 
         search = search_values(
             environ, windows=windows, runnable=set(node_files).__contains__)
@@ -291,10 +300,8 @@ class LauncherTests(unittest.TestCase):
                 patch.object(launcher, "is_windows", return_value=windows), \
                 patch.object(launcher, "host_command_search", return_value=search), \
                 patch.object(claude_adapter, "verify", side_effect=verify) as verified, \
-                patch.object(launcher.os, "execv", side_effect=execv), \
-                patch.object(launcher.subprocess, "run",
-                             side_effect=lambda argv, check: started.append(list(argv)) or
-                             subprocess.CompletedProcess(argv, 0)):
+                patch.object(launcher.os, "execve", side_effect=execve), \
+                patch.object(launcher.subprocess, "run", side_effect=run):
             try:
                 status = launcher.main(["ok"])
             except SystemExit as exit:
@@ -303,8 +310,8 @@ class LauncherTests(unittest.TestCase):
         return status, started
 
     def test_bundled_launcher_starts_the_adapter_entry_from_the_runtime_directory(self):
-        status, started = self.launch({"HOME": "/home/test", "PATH": "/opt/node/bin"},
-                                      node_files={"/opt/node/bin/node"})
+        status, started = self.launch({"HOME": "/home/test", "PATH": "/opt/node/bin:/home/test/.local/bin"},
+                                      node_files={"/opt/node/bin/node", "/home/test/.local/bin/claude"})
         self.assertEqual(0, status)
         runtime = Path("/home/test/.local/share/loop-engine")
         self.assertEqual([[
@@ -314,10 +321,23 @@ class LauncherTests(unittest.TestCase):
         ]], started)
         self.assertEqual([runtime], self.verified)
 
+    def test_the_adapter_runs_the_claude_on_path(self):
+        environ = {"HOME": "/home/test", "PATH": "/opt/node/bin:/home/test/.local/bin", "KEEP": "1"}
+        status, _ = self.launch(environ, node_files={"/opt/node/bin/node", "/home/test/.local/bin/claude"})
+        self.assertEqual(0, status)
+        self.assertEqual({**environ, "CLAUDE_CODE_EXECUTABLE": "/home/test/.local/bin/claude"},
+                         self.environments[0])
+
+    def test_bundled_launcher_starts_nothing_without_a_claude_on_path(self):
+        status, started = self.launch({"HOME": "/home/test", "PATH": "/opt/node/bin"},
+                                      node_files={"/opt/node/bin/node"})
+        self.assertEqual(127, status)
+        self.assertEqual([], started)
+
     def test_bundled_launcher_uses_install_time_runtime_override(self):
         status, started = self.launch(
             {"HOME": "/home/test", "PATH": "/opt/node/bin", "LOOP_ENGINE_RUNTIME_DIR": "/srv/shared runtime"},
-            node_files={"/opt/node/bin/node"},
+            node_files={"/opt/node/bin/node", "/opt/node/bin/claude"},
         )
         self.assertEqual(0, status)
         self.assertEqual(str(Path("/srv/shared runtime") / claude_adapter.ENTRY_RELATIVE_PATH), started[0][1])
@@ -325,7 +345,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_bundled_launcher_starts_nothing_when_the_installed_adapter_fails_its_check(self):
         status, started = self.launch(
-            {"HOME": "/home/test", "PATH": "/opt/node/bin"}, node_files={"/opt/node/bin/node"},
+            {"HOME": "/home/test", "PATH": "/opt/node/bin"}, node_files={"/opt/node/bin/node", "/opt/node/bin/claude"},
             verify=RuntimeError("claude-adapter-bridge-generation-mismatch"),
         )
         self.assertEqual(127, status)
@@ -333,22 +353,30 @@ class LauncherTests(unittest.TestCase):
 
     def test_bundled_launcher_starts_nothing_when_no_adapter_is_installed(self):
         with TemporaryDirectory() as data:
-            search = search_values({"PATH": "/opt/node/bin"}, windows=False, runnable={"/opt/node/bin/node"}.__contains__)
+            search = search_values({"PATH": "/opt/node/bin"}, windows=False,
+                                   runnable={"/opt/node/bin/node", "/opt/node/bin/claude"}.__contains__)
             with patch.dict(os.environ, {"LOOP_ENGINE_RUNTIME_DIR": data, "PATH": "/opt/node/bin"}, clear=True), \
                     patch.object(launcher, "is_windows", return_value=False), \
                     patch.object(launcher, "host_command_search", return_value=search), \
-                    patch.object(launcher.os, "execv") as execv, \
+                    patch.object(launcher.os, "execve") as execve, \
                     patch.object(launcher.subprocess, "run") as run:
                 self.assertEqual(127, launcher.main(["ok"]))
-            execv.assert_not_called()
+            execve.assert_not_called()
             run.assert_not_called()
 
     def test_bundled_launcher_on_windows_starts_node_exe_and_refuses_a_node_shim(self):
         environ = {"LOCALAPPDATA": r"C:\Users\Test\AppData\Local", "Path": r"C:\shims;C:\node"}
-        status, started = self.launch(environ, windows=True, node_files={r"C:\node\node.exe"})
+        status, started = self.launch(environ, windows=True, node_files={r"C:\node\node.exe", r"C:\node\claude.exe"})
         self.assertEqual(0, status)
         self.assertEqual(r"C:\node\node.exe", started[0][0])
-        status, started = self.launch(environ, windows=True, node_files={r"C:\shims\node.cmd"})
+        self.assertEqual(r"C:\node\claude.exe", self.environments[0]["CLAUDE_CODE_EXECUTABLE"])
+        status, started = self.launch(environ, windows=True, node_files={r"C:\shims\node.cmd", r"C:\node\claude.exe"})
+        self.assertEqual(127, status)
+        self.assertEqual([], started)
+
+    def test_bundled_launcher_on_windows_refuses_a_claude_shim(self):
+        environ = {"LOCALAPPDATA": r"C:\Users\Test\AppData\Local", "Path": r"C:\shims;C:\node"}
+        status, started = self.launch(environ, windows=True, node_files={r"C:\node\node.exe", r"C:\shims\claude.cmd"})
         self.assertEqual(127, status)
         self.assertEqual([], started)
 

@@ -256,7 +256,9 @@ def install(target: Path, *, package_root: Path = PACKAGE_ROOT) -> None:
         if _is_reparse_point(destination):
             raise RuntimeError("claude-adapter-manifest-reparse-target")
         shutil.copyfile(source, destination)
-    subprocess.run([*npm_command(), "ci", "--omit=dev", "--prefix", str(target)], check=True,
+    # The optional dependencies are the Claude Code binaries the SDK bundles; the launcher runs the
+    # user's claude instead, so they are not installed.
+    subprocess.run([*npm_command(), "ci", "--omit=dev", "--omit=optional", "--prefix", str(target)], check=True,
                    timeout=INSTALL_TIMEOUT_SECONDS)
     apply_bridge_patch(target)
     verify(target)
