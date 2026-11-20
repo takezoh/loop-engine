@@ -44,10 +44,11 @@ class Git:
                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": CURRENT.null_device,
                     "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
 
-    def _run(self, cwd, *args, check=True):
+    def _run(self, cwd, *args, check=True, data=None):
+        given = {"stdin": subprocess.DEVNULL} if data is None else {"input": data}
         process = subprocess.run(
-            [self.executable, *SAFE, *args], cwd=cwd, env=self.env, stdin=subprocess.DEVNULL,
-            capture_output=True, timeout=TIMEOUT_SECONDS,
+            [self.executable, *SAFE, *args], cwd=cwd, env=self.env, capture_output=True, timeout=TIMEOUT_SECONDS,
+            **given,
         )
         if check and process.returncode != 0:
             name = next((arg for arg in args if not arg.startswith("-")), args[0])
@@ -115,15 +116,23 @@ class Git:
         """Forget worktrees whose directories are gone."""
         self._run(repository, "worktree", "prune", check=False)
 
-    def patch(self, worktree, base, git_dir, left_out):
+    def patch(self, worktree, base, git_dir, left_out, links=()):
         """Everything the worktree differs from `base` by, untracked files included, except `left_out`.
 
         `left_out` are top-directory names the environment placed in the worktree: they are taken out
         of the index too, so one that was counted before it became such an entry is not kept there.
+        `links` are the worktree's links (relative, with "/"). Each is recorded by its text, as git records
+        a symbolic link, and never added through: git would follow a junction into what it points at.
         """
         at = (f"--git-dir={git_dir}", f"--work-tree={worktree}")
-        self._run(worktree, *at, "add", "--all", "--", ".")
+        self._run(worktree, *at, "add", "--all", "--", ".", *(f":(exclude,literal){link}" for link in links))
         if left_out:
             self._run(worktree, *at, "--literal-pathspecs", "rm", "--cached", "--quiet", "--ignore-unmatch",
                       "--", *left_out)
+        for link in links:
+            self._run(worktree, *at, "--literal-pathspecs", "rm", "-r", "--cached", "--quiet", "--ignore-unmatch",
+                      "--", link)
+            text = os.fsencode(os.readlink(os.path.join(worktree, *link.split("/"))))
+            blob = self._run(worktree, *at, "hash-object", "-w", "--stdin", data=text).stdout.decode().strip()
+            self._run(worktree, *at, "update-index", "--add", "--cacheinfo", f"120000,{blob},{link}")
         return self._run(worktree, *at, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", base).stdout

@@ -123,6 +123,7 @@ Every agent can write the worktrees root, so nothing in it is trusted.
 - The directories above a worktree hold only directories the engine makes (one per repository, and the units' worktrees). When anything else is there, the engine stops without starting an agent. It checks both before and after a turn.
 - git is started with the git directory that was read when the worktree was made, given explicitly. When an agent rewrites the worktree's `.git`, the engine does not follow it.
 - When an agent configuration is a link, the digest includes the content it points to. The amount read has a limit, and a unit whose configuration exceeds it does not proceed.
+- A link in the worktree, a symbolic link or a junction (the link to a directory any Windows user can make), is a file of the tree known by its text (`check_runner.is_link`). The tree, the changed paths and the patch do not follow it, and the patch records each link by its text itself, because git would follow a junction into what it points at.
 
 A gap remains in which another agent places a file between the check and the start of an agent. The means to make this place unwritable to agents belongs to the environment's sandbox settings, not to the engine.
 

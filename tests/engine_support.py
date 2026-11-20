@@ -16,7 +16,7 @@ if SRC not in sys.path:
 
 from loop_engine import composition, facts, store  # noqa: E402
 from loop_engine.agents import TurnOutcome  # noqa: E402
-from loop_engine.check_runner import tree_digest  # noqa: E402
+from loop_engine.check_runner import is_link, tree_digest  # noqa: E402
 from loop_engine.git import Git  # noqa: E402
 from loop_engine.platform_facts import CURRENT  # noqa: E402
 from loop_engine.service import Engine  # noqa: E402
@@ -77,10 +77,12 @@ def passing(commands, cwd, *, before=()):
 
 
 def files_in(cwd):
+    """The files of the tree under cwd, as the engine counts them: a link to a directory is one of them."""
     found = []
     for folder, directories, files in os.walk(cwd):
-        directories[:] = [name for name in directories if name != ".git"]
-        found += [os.path.relpath(os.path.join(folder, name), cwd) for name in files if name != ".git"]
+        links = [name for name in directories if is_link(os.path.join(folder, name))]
+        directories[:] = [name for name in directories if name != ".git" and name not in links]
+        found += [os.path.relpath(os.path.join(folder, name), cwd) for name in [*files, *links] if name != ".git"]
     return sorted(found)
 
 
@@ -166,10 +168,22 @@ class ScriptedAgents:
 
 
 def write(cwd, name, text):
+    """The file `name` holding exactly `text`, with the same bytes on every platform."""
     path = os.path.join(cwd, name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
+    with open(path, "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
+
+
+def directory_link(target, path):
+    """A link at `path` to the directory `target`, as an agent can make one: a symbolic link, or where the
+    process may not make one, a junction (Windows lets any user make those). `target` may be relative
+    to the link's directory."""
+    try:
+        os.symlink(target, path, target_is_directory=True)
+    except OSError:
+        import _winapi  # only reached where a symbolic link needs a privilege: Windows
+        _winapi.CreateJunction(os.path.normpath(os.path.join(os.path.dirname(path), target)), path)
 
 
 class EngineCase(unittest.TestCase):

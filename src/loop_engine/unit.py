@@ -11,10 +11,11 @@ import shutil
 
 from . import facts, prompts
 from .agents import TurnRequest
+from .check_runner import is_link
 from .store import verified_check_program, worktree_path
 from .worktree import (
     AGENT_CONFIG_DIRS, AGENT_CONFIG_FILES, UNIT_DIRECTORY_RE, Unreadable, agent_config_digest, changed_paths, environment_entries, read_text,
-    tree_digest, unexpected_entries,
+    tree_digest, tree_links, unexpected_entries,
 )
 
 # Stops a later request can continue from keep their worktree; every other stop is final.
@@ -219,7 +220,7 @@ class Unit:
     def _patch(self, started):
         worktree = started["worktree"]
         return self.git.patch(worktree, started["base"], started["git_dir"],
-                              environment_entries(worktree, started["committed"]))
+                              environment_entries(worktree, started["committed"]), tree_links(worktree))
 
     def _candidate(self, started):
         return hashlib.sha256(self._patch(started)).hexdigest()
@@ -284,7 +285,7 @@ class Unit:
                 (worktree, os.path.dirname(os.path.dirname(worktree)) == root
                  and UNIT_DIRECTORY_RE.fullmatch(os.path.basename(worktree)) and os.path.realpath(worktree) == worktree),
                 (base_tree, os.path.dirname(base_tree) == self.store.published_dir)):
-            if not owned or os.path.islink(path):
+            if not owned or is_link(path):
                 removed = False
                 continue
             shutil.rmtree(path, ignore_errors=True)

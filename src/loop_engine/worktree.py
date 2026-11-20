@@ -10,7 +10,7 @@ import re
 import stat
 
 # the engine and the check program read a tree, and tell the environment's entries, the same way
-from .check_runner import Unreadable, environment_entry, read_blocks, refuse, tree_digest, tree_files
+from .check_runner import Unreadable, environment_entry, is_link, read_blocks, refuse, tree_digest, tree_files
 from .facts import inside
 from .platform_facts import CURRENT
 
@@ -59,8 +59,9 @@ def _target(path, depth, budget):
     if not os.path.isdir(resolved):
         return _content(resolved, budget, depth)
     for directory, directories, files in os.walk(resolved, followlinks=False, onerror=refuse):
-        directories.sort()
-        for name in sorted([*files, *[d for d in directories if os.path.islink(os.path.join(directory, d))]]):
+        links = [d for d in directories if is_link(os.path.join(directory, d))]
+        directories[:] = sorted(d for d in directories if d not in links)  # a link is not walked into
+        for name in sorted([*files, *links]):
             budget.entry()
             inner = os.path.join(directory, name)
             digest.update(f"{os.path.relpath(inner, resolved)}\0{_content(inner, budget, depth + 1)}\0".encode(
@@ -75,7 +76,7 @@ def _content(path, budget, depth):
         info = os.lstat(path)
     except OSError as error:
         refuse(error)
-    if stat.S_ISLNK(info.st_mode):
+    if is_link(path, info):
         try:
             text = os.readlink(path)
         except OSError as error:
@@ -114,13 +115,13 @@ def _agent_config_digest(root, committed):
             refuse(error)
         if environment_entry(root, top, committed):
             continue
-        if not stat.S_ISDIR(info.st_mode):
+        if is_link(path, info) or not stat.S_ISDIR(info.st_mode):
             relatives.append(top)
             continue
         for directory, directories, files in os.walk(path, followlinks=False, onerror=refuse):
-            for name in directories:
-                if os.path.islink(os.path.join(directory, name)):
-                    files.append(name)
+            links = [name for name in directories if is_link(os.path.join(directory, name))]
+            directories[:] = [name for name in directories if name not in links]  # a link is not walked into
+            files.extend(links)
             relatives.extend(os.path.relpath(os.path.join(directory, name), root) for name in files)
             if len(relatives) > MAX_CONFIG_ENTRIES:
                 raise TooLarge()
@@ -135,7 +136,7 @@ def _agent_config_digest(root, committed):
 def _object_id(path, info, object_format):
     """The id git gives the blob of a file of the tree: a link's text, or a file's content."""
     digest = hashlib.new(object_format)
-    if stat.S_ISLNK(info.st_mode):
+    if is_link(path, info):
         try:
             data = os.fsencode(os.readlink(path))
         except OSError as error:
@@ -161,6 +162,19 @@ def changed_paths(base_files, worktree, ignore, committed):
     after = {relative.replace(os.sep, "/"): _object_id(path, info, object_format)
              for relative, path, info in tree_files(worktree, ignore, committed)}
     return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+
+
+def tree_links(worktree):
+    """Every link under the worktree outside `.git`, relative with "/", in a fixed order; a link is not
+    walked into. git would follow a junction into what it points at, so the patch records each link by
+    its text itself. A part that cannot be read is left to the reading of the tree, which refuses it."""
+    links = []
+    for folder, directories, files in os.walk(worktree, followlinks=False):
+        found = [name for name in directories if name != ".git" and is_link(os.path.join(folder, name))]
+        directories[:] = [name for name in directories if name != ".git" and name not in found]
+        found += [name for name in files if name != ".git" and is_link(os.path.join(folder, name))]
+        links += [os.path.relpath(os.path.join(folder, name), worktree).replace(os.sep, "/") for name in found]
+    return sorted(links)
 
 
 def environment_entries(worktree, committed):
@@ -206,7 +220,7 @@ def unexpected_entries(worktrees, worktree):
             return [directory]
         for name in names:
             path = os.path.join(directory, name)
-            if not pattern.fullmatch(name) or os.path.islink(path) or not os.path.isdir(path):
+            if not pattern.fullmatch(name) or is_link(path) or not os.path.isdir(path):
                 found.append(path)
     if os.path.dirname(namespace) != root:
         found.append(namespace)

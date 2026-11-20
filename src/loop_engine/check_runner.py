@@ -60,6 +60,18 @@ def refuse(error):
     raise Unreadable(error.errno, error.strerror, error.filename) from error
 
 
+def is_link(path, info=None):
+    """Whether `path` is a link of the tree: a symbolic link, or a junction, the link to a directory any
+    Windows user can make (never one on POSIX). A link is a file of the tree, known by its text; what it
+    points at is not read. `info` is the path's lstat when the caller has it."""
+    if info is None:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return False
+    return stat.S_ISLNK(info.st_mode) or (stat.S_ISDIR(info.st_mode) and os.path.isjunction(path))
+
+
 def tree_files(root, ignore, committed):
     """(relative path, path, lstat) of every file of the tree under root, in a fixed order.
 
@@ -72,7 +84,7 @@ def tree_files(root, ignore, committed):
         for name in sorted(directories):
             if name == ".git" or name in ignore:
                 continue
-            if os.path.islink(os.path.join(folder, name)):
+            if is_link(os.path.join(folder, name)):
                 files.append(name)
             else:
                 kept.append(name)
@@ -85,7 +97,7 @@ def tree_files(root, ignore, committed):
                 info = os.lstat(path)
             except OSError as error:
                 refuse(error)
-            if stat.S_ISLNK(info.st_mode) or stat.S_ISREG(info.st_mode):
+            if is_link(path, info) or stat.S_ISREG(info.st_mode):
                 yield os.path.relpath(path, root), path, info
             # a sandbox shows devices where it hides a path; they are not part of the tree
 
@@ -105,7 +117,7 @@ def tree_digest(root, ignore, committed):
     digest = hashlib.sha256()
     for relative, path, info in tree_files(root, ignore, committed):
         digest.update(relative.encode("utf-8", "surrogateescape") + b"\0")
-        if stat.S_ISLNK(info.st_mode):
+        if is_link(path, info):
             try:
                 digest.update(b"link:" + os.readlink(path).encode("utf-8", "surrogateescape"))
             except OSError as error:

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from engine_support import SRC, EngineCase, approve, git, produced, recorded, write
+from engine_support import SRC, EngineCase, approve, directory_link, git, produced, recorded, write
 
 from loop_engine import git as engine_git
 from loop_engine.platform_facts import CURRENT
@@ -231,7 +231,7 @@ class WorktreePlacementTest(EngineCase):
         elsewhere = os.path.join(self.home, "elsewhere")
         os.makedirs(elsewhere)
         os.makedirs(os.path.dirname(namespace))
-        os.symlink(elsewhere, namespace)
+        directory_link(elsewhere, namespace)
         engine.handle({"request": "start", "contract": self.contract()})
         status = self.run_to_stop(engine)
         self.assertEqual("unknown_result", status["stop_reason"])
@@ -268,12 +268,23 @@ class LinkedConfigurationTest(EngineCase):
             return produced(request, commands)
         engine = self.engine(script)
         os.unlink(os.path.join(self.repo, ".claude", "settings.json"))
-        os.symlink("../config", os.path.join(self.repo, ".claude", "settings.json"))
+        directory_link("../config", os.path.join(self.repo, ".claude", "settings.json"))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "link to a directory")
         engine.handle({"request": "start", "contract": self.contract()})
         self.assertEqual("unsafe_agent_config", self.run_to_stop(engine)["stop_reason"])
         self.assertEqual(["producer"], calls)
+
+    def test_an_untouched_configuration_link_does_not_stop_the_unit(self):
+        def script(request, commands, cancelled):
+            return produced(request, commands) if request.role == "producer" else approve(request)
+        _engine, status = self.start(script)
+        self.assertEqual("done", status["stop_reason"])
+
+
+class DirectoryLinkTest(EngineCase):
+    """A link to a directory, of whatever kind the platform lets an agent make, is a file of the tree known
+    by its text: neither the tree, the changed paths nor the patch follow it."""
 
     def test_a_link_into_a_large_tree_among_the_changes_is_compared_by_its_text(self):
         from loop_engine import worktree
@@ -282,15 +293,31 @@ class LinkedConfigurationTest(EngineCase):
         base, candidate = os.path.join(self.home, "b"), os.path.join(self.home, "c")
         write(base, "a.txt", "same\n")
         write(candidate, "a.txt", "same\n")
-        os.symlink("/usr/lib", os.path.join(candidate, "big"))
+        large = os.path.join(self.home, "large")
+        for index in range(6):
+            write(large, f"{index}.txt", "x\n")
+        directory_link(large, os.path.join(candidate, "big"))
         self.assertEqual(["big"], worktree.changed_paths(recorded(base), candidate, [], ["a.txt"]))
-        self.assertEqual(worktree.tree_digest(candidate, [], ["a.txt"]), worktree.tree_digest(candidate, [], ["a.txt"]))
+        digest = worktree.tree_digest(candidate, [], ["a.txt"])
+        write(large, "6.txt", "what the link points at changed\n")
+        self.assertEqual(digest, worktree.tree_digest(candidate, [], ["a.txt"]))
 
-    def test_an_untouched_configuration_link_does_not_stop_the_unit(self):
+
+    def test_a_link_to_a_directory_an_agent_makes_is_recorded_by_its_text_not_followed(self):
+        outside = os.path.join(self.home, "outside")
+        write(outside, "secret.txt", "outside the worktree\n")
+
         def script(request, commands, cancelled):
-            return produced(request, commands) if request.role == "producer" else approve(request)
+            if request.role == "producer":
+                directory_link(outside, os.path.join(request.cwd, "big"))
+                return produced(request, commands)
+            return approve(request)
         _engine, status = self.start(script)
         self.assertEqual("done", status["stop_reason"])
+        patch = self.result("patch.diff")
+        self.assertIn(b"diff --git a/big b/big\nnew file mode 120000", patch)
+        self.assertNotIn(b"outside the worktree", patch)
+        self.assertNotIn(b"secret.txt", patch)
 
 
 if __name__ == "__main__":
