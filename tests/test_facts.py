@@ -313,7 +313,7 @@ class DecisionTest(unittest.TestCase):
         assess = sim.contract["executions"][1]
         self.assertEqual({"account": "cause: A, shown by the log"}, prompts.inputs(sim.contract, sim.state, assess))
         templates = {"reviewer": "{instructions}|{goal}|{criteria}|{changed}|{base}|{reports}|{answers}|{feedback}|"
-                                 "{scope}|{checks}"}
+                                 "{scope}|{checks}", "question": "ask"}
         text = prompts.compose(templates, sim.contract, assess, [{"fact": "assessed", "path": "a.py", "line": 3,
                                                                  "description": "wrong"}],
                                check_commands=[], changed=["a.py"], base="/base", reports={"account": "cause: A"},

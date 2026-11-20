@@ -28,7 +28,7 @@ Documents, code comments and protocol texts under `loop-engine/` are written in 
 | `src/loop_engine/` | The engine. `facts.py` and `prompts.py` work on values only, and only `platform_facts.py` tells the platforms (Linux and native Windows) apart |
 | `src/provider_transport/` | The provider transport: the catalog of agents, a driver per wire protocol, provider sessions, the admission of child processes, and the Claude ACP adapter with its launcher and patch |
 | `package.json`, `package-lock.json` | The pinned npm package of the Claude ACP adapter, which `install` places in the runtime directory |
-| `src/loop_engine/protocol/` | The protocol texts handed to agents (each role's first message of a session and its follow-up message, for the writer, the reviewer and the reporter) |
+| `src/loop_engine/protocol/` | The protocol texts handed to agents (each role's first message of a session and its follow-up message, for the writer, the reviewer and the reporter, and the question every message ends with) |
 | `tests/` | Tests that use real git repositories and a real engine process. Agents are scripted fakes |
 | `tests/transport/` | Tests of the provider transport, with fakes of the wire protocols and of the platform APIs |
 | `tools/` | Aggregating records, and running scenarios with real agents |
@@ -62,8 +62,8 @@ python tools/scenarios.py run tools/scenarios/median-fix
 | What is verified | Test |
 |---|---|
 | The decision rules, the judgment rules, whether a finished turn counts, admission of a contract, the structure-only check, sending work back only while findings decrease, answers and the basis of a review, counting files read in earlier turns | `tests/test_facts.py` |
-| The flow with a real repository and engine, stop reasons, resuming, cancellation, that paths handed to a role point only into the published root | `tests/test_unit_flow.py` |
-| Continuing a session, follow-up messages, a session that cannot be continued, closing sessions, a turn that was not released, refusal counts | `tests/test_sessions.py` |
+| The flow with a real repository and engine, stop reasons, resuming, cancellation, that paths handed to a role point only into the published root, that a reviewer's question waits for its answer and the review is judged again | `tests/test_unit_flow.py` |
+| Continuing a session, follow-up messages, a session that cannot be continued, closing sessions, a turn that was not released, refusal counts, that every message of every role ends with the one question form | `tests/test_sessions.py` |
 | Admission of requests, request files, the CLI, starting the engine process, the names of the state home and the check file | `tests/test_service.py` |
 | The unit tools (closed schemas, the boundary of a connection, passing requests and reading records), the MCP server's messages, the `mcp` process, refusing an agent running inside a unit | `tests/test_unit_tools.py` |
 | The check program | `tests/test_check_runner.py` |

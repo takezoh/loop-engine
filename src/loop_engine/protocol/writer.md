@@ -36,6 +36,4 @@ When you are finished changing files, run each of these commands exactly as writ
 
 A command without `--base` must end with `exit=0`. A command with `--base` runs your tests against the original code and must end with a non-zero exit: at least one of your tests has to fail without your change. Saying that checks passed does not count; only the record of these commands does. A check that cannot pass for a reason your change cannot address, such as the environment or a failure the original code already has, is not settled by a report: end with the question below, naming the check and what you observed.
 
-End with a short report of what you changed and why. If you cannot proceed without a decision from the requester, end your reply with only this JSON object instead of a report, using a short lowercase id:
-
-{{"question": "<what you need decided>", "id": "<q-short-id>"}}
+End with a short report of what you changed and why.

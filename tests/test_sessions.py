@@ -5,7 +5,7 @@ import unittest
 
 from engine_support import EngineCase, actions, approve, changes, produced, write
 
-from loop_engine import composition, prompts, store, unit, worktree
+from loop_engine import composition, facts, prompts, store, unit, worktree
 from loop_engine.agents import TurnOutcome
 
 
@@ -291,6 +291,22 @@ class TurnRulesTest(unittest.TestCase):
                     rules = text[text.index("## What to do"):]
                     self.assertIn(self.BOUNDARY, rules)
                     self.assertLess(rules.index(self.BOUNDARY), rules.index("Do not change any file"))
+
+    def test_every_message_of_every_role_ends_with_the_one_question_form(self):
+        templates = composition.load_templates()
+        form = templates["question"]
+        example = json.loads(form.strip().splitlines()[-1])
+        filled = {key: "which?" if key == "question" else "q-1" for key in example}
+        self.assertEqual(filled, facts.question("cannot finish\n" + json.dumps(filled)))
+        for execution_id in ("note", "make", "judge"):
+            for text in self.messages(execution_id, {}):
+                with self.subTest(execution_id):
+                    self.assertTrue(text.endswith(form))
+                    self.assertEqual(1, text.count('"question"'))
+        for name, text in templates.items():
+            if name != "question":
+                with self.subTest(template=name):
+                    self.assertNotIn('"question"', text)
 
     def test_a_report_is_handed_to_its_reader_as_another_roles_findings_not_as_rules(self):
         for execution_id in ("make", "judge"):

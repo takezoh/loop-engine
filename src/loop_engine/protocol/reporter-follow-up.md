@@ -20,6 +20,4 @@ Each answer is the requester's decision on a question asked during this work. It
 
 Your report is about the requested work. The rules in this section are the caller's rules for your turn only: they do not bind that work or any other role, so do not report them as constraints or findings.
 
-Do not change any file in the current directory. End with your full report as it stands now, not only what changed. If you cannot proceed without a decision from the requester, end your reply with only this JSON object instead of a report, using a short lowercase id:
-
-{{"question": "<what you need decided>", "id": "<q-short-id>"}}
+Do not change any file in the current directory. End with your full report as it stands now, not only what changed.

@@ -180,6 +180,25 @@ class FlowTest(EngineCase):
         self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
         self.assertIn("Answer: spaces", self.agents.requests[1].prompt)
 
+    def test_a_reviewer_question_waits_for_its_answer_and_the_review_is_judged_again(self):
+        def script(request, commands, cancelled):
+            if request.role != "reviewer":
+                return produced(request, commands)
+            if self.agents.nth["reviewer"] == 1:
+                return TurnOutcome(True, 'cannot judge c1\n{"question": "does c1 cover the cache?", "id": "q-scope"}',
+                                   actions())
+            return approve(request)
+        engine, status = self.start(script)
+        self.assertEqual("waiting_for_answer", status["stop_reason"])
+        self.assertEqual({"id": "q-scope", "text": "does c1 cover the cache?"}, status["question"])
+        self.assertTrue(engine.handle(
+            {"request": "answer", "unit_id": "u1", "question_id": "q-scope", "answer": "no"})["ok"])
+        self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
+        reviews = [request for request in self.agents.requests if request.role == "reviewer"]
+        self.assertEqual(2, len(reviews))
+        self.assertIn("Answer: no", reviews[-1].prompt)
+        self.assertEqual(1, self.agents.nth["producer"])  # the question does not send the writer back
+
     def test_changed_agent_config_stops_before_any_other_agent_starts(self):
         def script(request, commands, cancelled):
             write(request.cwd, ".claude/settings.json", '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x"}]}]}}')

@@ -71,14 +71,19 @@ def follow_up(templates, contract, execution, feedback, *, check_commands, chang
     `sent` is what the session was already given (`digests`); only reports it has not seen go in.
     `answers_sent` is how many of the requester's `answers` it was given; only the later ones go in.
     """
-    return templates[kind(contract, execution) + "-follow-up"].format(
+    return _ending(templates, templates[kind(contract, execution) + "-follow-up"].format(
         agent_config=_agent_config(agent_config),
         feedback=_bullets(map(_finding, feedback)),
         checks="\n".join(check_commands) if check_commands else "(no checks are configured for this turn)",
         changed=_bullets(changed),
         reports=_reports(changed_reports(reports, sent)),
         answers=_answers(answers[answers_sent:]),
-    )
+    ))
+
+
+def _ending(templates, text):
+    """Every message of every role ends with how to ask the requester instead of replying."""
+    return text.rstrip("\n") + "\n\n" + templates["question"]
 
 
 def _reports(reports):
@@ -92,9 +97,10 @@ def _answers(answers):
 
 def compose(templates, contract, execution, feedback, *, check_commands, changed, base, reports, answers,
             agent_config):
-    """`templates` maps writer | reviewer | reporter -> text with named fields."""
+    """`templates` maps writer | reviewer | reporter -> text with named fields, and question -> the
+    text every message ends with."""
     unit = contract["unit"]
-    return templates[kind(contract, execution)].format(
+    return _ending(templates, templates[kind(contract, execution)].format(
         agent_config=_agent_config(agent_config),
         instructions=execution["instructions"].strip(),
         goal=unit["goal"].strip(),
@@ -106,4 +112,4 @@ def compose(templates, contract, execution, feedback, *, check_commands, changed
         base=base,
         reports=_reports(reports),
         answers=_answers(answers),
-    )
+    ))

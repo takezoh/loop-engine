@@ -25,12 +25,13 @@ WAIT_SLICE_SECONDS = 0.5
 
 
 def load_templates():
-    """The protocol texts by name: each role's first message and its follow-up."""
+    """The protocol texts by name: each role's first message and its follow-up, and the question
+    every message ends with."""
+    roles = [name for role in ("writer", "reviewer", "reporter") for name in (role, f"{role}-follow-up")]
     templates = {}
-    for role in ("writer", "reviewer", "reporter"):
-        for name in (role, f"{role}-follow-up"):
-            with open(os.path.join(HERE, "protocol", f"{name}.md"), encoding="utf-8") as handle:
-                templates[name] = handle.read()
+    for name in (*roles, "question"):
+        with open(os.path.join(HERE, "protocol", f"{name}.md"), encoding="utf-8") as handle:
+            templates[name] = handle.read()
     return templates
 
 
