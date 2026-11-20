@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 from provider_transport.acp_router import CATALOG_PATH, AcpRouterFailure, CLOSE_TIMEOUT_SECONDS, load_provider, run_acp_request, validate_request
 from provider_transport.acp_client import AcpBinding, AcpOutcome, ParentAuthority
-from provider_transport.provider_catalog import provider_spec
 from provider_transport.turn_result import TurnCollector
 
 
@@ -36,19 +35,6 @@ class AcpRouterTests(unittest.TestCase):
         self.assertTrue(Path(argv[1]).is_file())
         self.assertNotIn("npx", argv)
         self.assertNotIn("npm", argv)
-        self.assertEqual(("--model", "claude-fable-5"), argv[2:])
-
-    def test_only_a_declared_launch_binding_reaches_the_command(self):
-        codex = load_provider("codex").argv(subsession_dir=CATALOG_PATH.parent, model="m", effort="low")
-        self.assertNotIn("--model", codex)
-        claude = load_provider("claude").argv(subsession_dir=CATALOG_PATH.parent, model="m", effort="low")
-        self.assertNotIn("--effort", claude)
-
-    def test_a_launch_binding_must_be_a_session_binding(self):
-        document = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-        document["providers"]["claude"]["bindings"] = {"session": ["effort"], "launch": ["model"]}
-        with self.assertRaisesRegex(ValueError, "malformed-acp-provider-bindings"):
-            provider_spec(document, "claude")
 
     def test_rejects_caller_supplied_command_fields_before_launch(self):
         with TemporaryDirectory() as cwd:
@@ -116,7 +102,7 @@ class AcpRouterTests(unittest.TestCase):
                 client_factory=Client,
             )
         self.assertEqual(("launchers", "claude_agent_acp.py"), Path(events[0][1][1]).parts[-2:])
-        self.assertEqual(["--model", "claude-fable-5"], list(events[0][1][2:]))
+        self.assertEqual(2, len(events[0][1]))
         self.assertIn("prompt", events)
         self.assertEqual("close", events[-1])
         self.assertEqual("probe-1", result.binding.session_id)

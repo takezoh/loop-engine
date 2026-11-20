@@ -66,7 +66,6 @@ class ProviderSpec:
     conformance_generation: str
     isolation_argv: tuple[str, ...] = ()
     isolation_session_meta: Mapping[str, object] | None = None
-    launch_bindings: frozenset[str] = frozenset()
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -90,22 +89,15 @@ class ProviderSpec:
         )
         if unsupported:
             raise ValueError("provider-binding-unsupported:" + ",".join(unsupported))
-        # A launch binding is also given to the provider's command, so the host can offer that exact
-        # value before the session binds it.
-        launch = tuple(
-            atom for key in sorted(self.launch_bindings) if values.get(key)
-            for atom in (f"--{key}", str(values[key]))
-        )
         command = self.command
         if self.command_base == "path":
-            return (*command, *launch)
+            return tuple(command)
         if self.command_base == "subsession-python":
             # A Python script beside the catalog, started by this interpreter on every platform.
             return (
                 sys.executable,
                 str((subsession_dir / command[0]).absolute()),
                 *command[1:],
-                *launch,
             )
         raise ValueError("provider-command-base-invalid")
 
@@ -152,18 +144,14 @@ def provider_spec(document: object, provider: str, *, exclude: object = None) ->
         raise ValueError("malformed-acp-provider-bindings")
     session_bindings = bindings.get("session", ())
     required_bindings = bindings.get("required", ())
-    launch_bindings = bindings.get("launch", ())
     if (
-        set(bindings) - {"session", "required", "launch"}
+        set(bindings) - {"session", "required"}
         or not isinstance(session_bindings, Sequence)
         or isinstance(session_bindings, (str, bytes))
         or not isinstance(required_bindings, Sequence)
         or isinstance(required_bindings, (str, bytes))
         or not all(key in {"model", "effort"} for key in session_bindings)
         or not all(key in {"model", "effort"} for key in required_bindings)
-        or not isinstance(launch_bindings, Sequence)
-        or isinstance(launch_bindings, (str, bytes))
-        or not all(key in session_bindings for key in launch_bindings)
     ):
         raise ValueError("malformed-acp-provider-bindings")
     conformance = raw.get("conformance")
@@ -183,7 +171,6 @@ def provider_spec(document: object, provider: str, *, exclude: object = None) ->
         str(conformance.get("generation", "")),
         tuple(isolation_argv),
         session_meta,
-        frozenset(str(key) for key in launch_bindings),
     )
 
 

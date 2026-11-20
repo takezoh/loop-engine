@@ -38,7 +38,7 @@ Codex makes threads inside one app-server host. An ACP provider makes several se
 The wire procedure per driver:
 
 - Codex (`codex_driver.py`): binds with `thread/start` or `thread/resume` on the shared app-server host and waits for the terminal notification of `turn/start`. Cancel is `turn/interrupt`; unload is `thread/unsubscribe` and the confirmation of `thread/closed`. A turn that ends right after binding is returned as a terminal view within the startup grace of 1 second.
-- ACP (`acp_driver.py`): `acp_router.run_acp_request` runs `session/new` or `session/load`, sets model and effort with `session/set_config_option` and reads them back, and runs `session/prompt`. Cancel is `session/cancel`; unload is `session/close`.
+- ACP (`acp_driver.py`): `acp_router.run_acp_request` runs `session/new` or `session/load`, sets model and effort with `session/set_config_option` and reads them back, and runs `session/prompt`. The values are sent as the contract gives them, so a model must be one of the values the provider offers; when the provider reads back another value, the turn fails with `acp-config-readback-mismatch:<key>:requested=…:bound=…`, naming the value it bound instead. Cancel is `session/cancel`; unload is `session/close`.
 - Pi (`pi_driver.py`): starts `pi --mode rpc` in the admitted directory and binds after `get_state` shows the session id, model and thinking level that were asked for. A turn runs from `prompt` to `agent_settled`; it is incomplete when the final assistant message's `stopReason` is `error` or `aborted`, on an abort, or when the transport is cut. Cancel is `abort`; unload is the end of the process.
 
 The transport passes an agent neither a sandbox nor an approval setting. Codex's `thread/start` and `thread/resume` send only the directory, the model and the effort, and the agent runs under the approvals and sandbox of the user's Codex settings. ACP and Pi start with the user's settings as well.
@@ -97,8 +97,6 @@ A provider runs in the user's environment: settings, sandbox, plugins and skills
 | `claude-disallowed-skills` | `disallowedTools` with `Skill(<plugin>:<skill>)` in the `_meta` of `session/new` and `session/load`, so that calling the skill is refused. Claude does not apply `skillOverrides` to a plugin's skills, so the names stay in the model's skill list |
 | `pi-exclude-skills` | `--exclude-skills <skill>,…`, read by the skill exclusion extension that the user's Pi launcher loads |
 
-A provider's `bindings` name what a session binds (`session`), what a turn must give (`required`) and what the provider's command also receives as `--<key> <value>` before the session binds it (`launch`, a subset of `session`). The ACP router sets each session binding with `session/set_config_option` and accepts it only when the provider reads back the exact value; otherwise the turn fails with `acp-config-readback-mismatch:<key>:requested=…:bound=…`, naming the value the provider bound instead. A launch binding is part of the argv, so turns with different values run on different hosts.
-
 A provider that declares no form is not loaded (`malformed-provider-skill-exclusion`). Skills are excluded where a provider's host starts, so the engine keeps separate provider sessions, and separate hosts, per set of excluded skills. A model or effort that does not fit the provider's bindings is an error before anything starts. Earlier schemas, aliases, old state and falling back to another transport are not interpreted.
 
 ## Claude ACP adapter
@@ -109,7 +107,6 @@ The `claude` provider speaks ACP through the npm package `@agentclientprotocol/c
 - The runtime directory is `LOOP_ENGINE_RUNTIME_DIR`, by default `~/.local/share/loop-engine` (`%LOCALAPPDATA%\loop-engine` on Windows). It holds only what the transport installs.
 - `verify` passes only when the installed package has the pinned name and version and the patched file has the pinned digest. The patch replaces fixed anchors in the package's `dist/acp-agent.js`; a package whose file is neither the pinned original nor the pinned result is refused.
 - The catalog's `command_base: "subsession-python"` makes the transport's own interpreter start `launchers/claude_agent_acp.py`. The launcher verifies the adapter and then starts the package's entry script (`dist/index.js`) with the `node` on `PATH`. It uses neither the `.bin` link nor a Windows `.cmd` shim, and it exits with 127 when the adapter is not installed or no runnable node is found.
-- The model is the provider's launch binding. The adapter's model picker lists only the aliases Claude Code offers and the user's settings select, and it resolves any other value to the nearest picker entry, which can be a different model. The launcher therefore takes `--model <id>` off its arguments and starts the adapter with `ANTHROPIC_CUSTOM_MODEL_OPTION=<id>`, Claude Code's custom model option, so the picker holds that exact id and the session binds and reads back the very model the contract names. A malformed `--model` exits with 2 before anything starts.
 
 ## Verification
 

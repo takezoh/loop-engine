@@ -3,11 +3,6 @@
 The adapter starts only after `claude_adapter.verify` confirms the pinned, patched package. node
 starts the package's entry script directly, so neither the ``.bin`` link nor a Windows ``.cmd``
 shim is involved.
-
-The catalog gives the launcher the model the session will bind (``--model <id>``). The adapter
-offers only its model picker and resolves any other value to the nearest entry, so the launcher
-adds the exact id to that picker as Claude Code's custom model option. The session then binds,
-and reads back, the very id that was asked for.
 """
 
 from __future__ import annotations
@@ -29,32 +24,6 @@ from provider_transport.command_search import (  # noqa: E402
 
 
 NOT_INSTALLED = 127
-MALFORMED = 2
-CUSTOM_MODEL_OPTION = "ANTHROPIC_CUSTOM_MODEL_OPTION"
-
-
-def launch_options(arguments: list[str]) -> tuple[str | None, list[str]]:
-    """The model the catalog gave (``--model <id>``, at most once) and the adapter's own arguments."""
-    model = None
-    rest: list[str] = []
-    index = 0
-    while index < len(arguments):
-        if arguments[index] == "--model":
-            if model is not None or index + 1 >= len(arguments) or not arguments[index + 1].strip():
-                raise ValueError("claude-launcher-model-malformed")
-            model = arguments[index + 1]
-            index += 2
-            continue
-        rest.append(arguments[index])
-        index += 1
-    return model, rest
-
-
-def provider_environment(environ: dict[str, str], model: str | None) -> dict[str, str]:
-    """The adapter's environment: the caller's, with the bound model offered as the custom option."""
-    if model is None:
-        return dict(environ)
-    return {**environ, CUSTOM_MODEL_OPTION: model}
 
 
 def provider_command(runtime: Path, node: str, arguments: list[str]) -> list[str]:
@@ -63,11 +32,6 @@ def provider_command(runtime: Path, node: str, arguments: list[str]) -> list[str
 
 
 def main(arguments: list[str]) -> int:
-    try:
-        model, arguments = launch_options(arguments)
-    except ValueError as exc:
-        print(f"the Claude ACP adapter launch is malformed: {exc}", file=sys.stderr)
-        return MALFORMED
     windows = is_windows()
     try:
         runtime = claude_adapter.runtime_dir(windows=windows)
@@ -81,10 +45,9 @@ def main(arguments: list[str]) -> int:
         print(f"the Claude ACP adapter needs a node executable on PATH: {node}", file=sys.stderr)
         return NOT_INSTALLED
     command = provider_command(runtime, node, arguments)
-    environment = provider_environment(dict(os.environ), model)
     if not windows:
-        os.execve(node, command, environment)
-    return subprocess.run(command, check=False, env=environment).returncode
+        os.execv(node, command)
+    return subprocess.run(command, check=False).returncode
 
 
 if __name__ == "__main__":
