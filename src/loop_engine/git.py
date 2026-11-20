@@ -116,6 +116,21 @@ class Git:
         """Forget worktrees whose directories are gone."""
         self._run(repository, "worktree", "prune", check=False)
 
+    def ignored(self, work_tree, git_dir, paths, index):
+        """The paths among `paths` that the ignore rules of `work_tree` exclude.
+
+        With `index`, git applies the rules as it does to the worktree: a path in the index is never
+        excluded. Without it, only the rules decide (`--no-index`).
+        """
+        if not paths:
+            return set()
+        at = (f"--git-dir={git_dir}", f"--work-tree={work_tree}")
+        process = self._run(work_tree, *at, "check-ignore", *(() if index else ("--no-index",)), "-z", "--stdin",
+                            check=False, data=b"".join(os.fsencode(path) + b"\0" for path in paths))
+        if process.returncode not in (0, 1):  # 1: none of the paths is ignored
+            raise GitError(f"git check-ignore failed: {process.stderr.decode(errors='replace')[:500]}")
+        return {os.fsdecode(path) for path in process.stdout.split(b"\0") if path}
+
     def patch(self, worktree, base, git_dir, left_out, links=()):
         """Everything the worktree differs from `base` by, untracked files included, except `left_out`.
 

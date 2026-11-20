@@ -94,14 +94,21 @@ class Unit:
         self._append(started)
 
     def _changed(self, started):
-        """The paths whose content differs from git's record of the base commit; raises `Unreadable`.
+        """The paths whose content differs from git's record of the base commit, except the new files
+        that git ignores by the base revision's rules and by the worktree's own; raises `Unreadable`.
 
-        The record is read from the git directory fixed when the worktree was made, never from a
-        tree an agent can write.
+        The record and the base revision's rules are read from the git directory fixed when the
+        worktree was made and from the engine's copy of the base revision, never from a tree an agent
+        can write. The worktree's rules can only keep a file counted: a file is left out only when both
+        rule sets exclude it, so whatever git would put in the patch is counted.
         """
         if self._base_files is None:
             self._base_files = self.git.tree_files(started["worktree"], started["git_dir"], started["base"])
-        return changed_paths(self._base_files, started["worktree"], self.ignore, started["committed"])
+        changed = changed_paths(self._base_files, started["worktree"], self.ignore, started["committed"])
+        new = [path for path in changed if path not in self._base_files[1]]
+        ignored = self.git.ignored(started["base_tree"], started["git_dir"], new, index=False)
+        ignored &= self.git.ignored(started["worktree"], started["git_dir"], sorted(ignored), index=True)
+        return [path for path in changed if path not in ignored]
 
     def _left_out(self, started):
         """The environment's entries now in the worktree, as the record lists them: names only, capped."""

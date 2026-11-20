@@ -216,7 +216,7 @@ sequenceDiagram
     U->>F: a turn that did not complete (the worktree is not read)
   else released
     U->>W: check the agent configuration and what is above the worktree again
-    U->>W: read the tree digest and the changed paths (environment entries are left out)
+    U->>W: read the tree digest and the changed paths (environment entries are left out, and new files git ignores are left out of the changed paths)
     alt something cannot be read
       U->>F: a turn that did not complete (worktree-not-readable)
     else everything was read
@@ -360,7 +360,7 @@ What the engine verifies:
 - Before handing out the check program's name, the engine checks that its content matches the sha256 of its directory name. A status line is tied to the digest of the present tree and to the digest of the copy of the base revision that the engine placed.
 - A reviewer's quotes are checked to be in the present file or in the report under judgment, and its evidence commands to be in that turn's execution record. A reviewing execution and the executions it must be independent of have different agent and model pairs unless the contract allows the same.
 - Nothing is judged for a turn whose session release cannot be confirmed, or on a worktree that cannot be read in full.
-- Only an empty read-only file that the environment places at the top level of the worktree (under a name in neither commit) is not counted as a change, and the names left out are recorded. The engine neither removes nor changes anything inside the worktree.
+- Two kinds of file are not counted as a change: an empty read-only file that the environment places at the top level of the worktree (under a name in neither commit), whose names are recorded, and a file the base revision does not have that git ignores by the base revision's rules and by the worktree's alike. The base revision's rules are read from the engine's copy, so a role cannot widen what is left out. The engine neither removes nor changes anything inside the worktree.
 
 What the engine does not verify and relies on the environment for:
 
@@ -383,6 +383,7 @@ The engine's tests run real git repositories and a real engine process, with age
 | The engine computes a review's verdict and counts only results it can check | [adr-20261114-verdict-computed-from-checkable-findings](docs/adr/adr-20261114-verdict-computed-from-checkable-findings.md) |
 | An execution continues its own session, and approval requests are refused while the turn continues | [adr-20261114-agent-sessions-continue-and-approvals-are-refused](docs/adr/adr-20261114-agent-sessions-continue-and-approvals-are-refused.md) |
 | An empty read-only file that the environment places is not counted as a role's change | [adr-20261115-environment-entries-are-not-changes](docs/adr/adr-20261115-environment-entries-are-not-changes.md) |
+| A new file that git ignores by the base revision's rules and by the worktree's own is not counted as a change | [adr-20261121-files-git-ignores-are-not-changes](docs/adr/adr-20261121-files-git-ignores-are-not-changes.md) |
 | Prompt assembly works on values only, and a unit with an unconfirmed result stops and does not retry by itself | [adr-20261115-prompts-are-pure-and-unconfirmed-results-stop](docs/adr/adr-20261115-prompts-are-pure-and-unconfirmed-results-stop.md) |
 | Work goes back only while the findings decrease, with no limit on the number of rounds | [adr-20261116-work-goes-back-while-it-converges](docs/adr/adr-20261116-work-goes-back-while-it-converges.md) |
 | The requester's answers reach every execution, and reviews are judged against them | [adr-20261116-answers-reach-every-execution](docs/adr/adr-20261116-answers-reach-every-execution.md) |
