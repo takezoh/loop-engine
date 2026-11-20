@@ -14,8 +14,7 @@
       "transport": "acp-v1",
       "command_prefix": ["launchers/claude_agent_acp.py"],
       "command_base": "subsession-python",
-      "bindings": {"session": ["effort"], "start": ["model"], "required": ["model"]},
-      "start_form": "claude-code-options",
+      "bindings": {"session": ["model", "effort"], "required": ["model"]},
       "skill_exclusion": "claude-disallowed-skills",
       "conformance": {
         "generation": "claude-agent-acp:v1"

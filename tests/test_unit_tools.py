@@ -86,8 +86,8 @@ class UnitToolsTest(ConnectionCase):
     def test_status_wait_and_result_only_read_records(self):
         self.assertEqual("done", self.tools.invoke("unit_status", {"unit_id": "u1"})["stop_reason"])
         self.assertEqual("stopped",
-                         self.tools.invoke("unit_wait", {"unit_id": "u1", "after_revision": 3, "timeout_ms": 1500})["state"])
-        self.assertEqual([("u1", 3, 1.5)], self.client.waits)
+                         self.tools.invoke("unit_wait", {"unit_id": "u1"})["state"])
+        self.assertEqual(["u1"], self.client.waits)
         result = self.tools.invoke("unit_result", {"unit_id": "u1", "name": "patch.diff"})
         self.assertEqual((True, unit_tools.MAX_RESULT_BYTES), (result["truncated"], len(result["text"])))
         with self.assertRaises(Refused):
@@ -96,7 +96,7 @@ class UnitToolsTest(ConnectionCase):
 
     def test_a_unit_of_another_connection_does_not_exist_for_this_one(self):
         for unit_id in ("theirs", "unknown"):
-            for name, extra in (("unit_status", {}), ("unit_wait", {"timeout_ms": 0}), ("unit_retry", {}),
+            for name, extra in (("unit_status", {}), ("unit_wait", {}), ("unit_retry", {}),
                                 ("unit_cancel", {}), ("unit_answer", {"question_id": "q", "answer": "a"}),
                                 ("unit_result", {"name": "patch.diff"})):
                 with self.assertRaisesRegex(Refused, "no such unit"):
@@ -107,8 +107,7 @@ class UnitToolsTest(ConnectionCase):
         for name, arguments in (
                 ("unit_exec", {"argv": ["sh"]}), ("unit_status", {"unit_id": "../u1"}),
                 ("unit_status", {"unit_id": "u1\n"}), ("unit_status", {}), ("unit_status", ["u1"]),
-                ("unit_wait", {"unit_id": "u1", "timeout_ms": 60000}), ("unit_wait", {"unit_id": "u1", "timeout_ms": True}),
-                ("unit_wait", {"unit_id": "u1", "timeout_ms": 1, "after_revision": -1}),
+                ("unit_wait", {"unit_id": "u1", "timeout_ms": 30000}), ("unit_wait", {"unit_id": "u1", "after_revision": 1}),
                 ("unit_answer", {"unit_id": "u1", "question_id": "q", "answer": ""}),
                 ("unit_result", {"unit_id": "u1", "name": "../../contract.json"}),
                 ("unit_start", {"contract": self.contract(), "env": {"X": "1"}}),
@@ -162,7 +161,7 @@ class EngineClientContract:
         host = self.open_host()
         self.assertIsNone(host.status(self.root, "absent"))
         self.assertIsNone(host.result(self.root, "absent", "stop.json"))
-        self.assertIsNone(host.wait(self.root, "absent", after_revision=None, timeout=0, environ=self.environ()))
+        self.assertIsNone(host.wait(self.root, "absent", environ=self.environ()))
         for kind in ("retry", "cancel"):
             response = self.call(host, {"request": kind, "unit_id": "absent"})
             self.assertEqual((False, str), (response["ok"], type(response["error"])), kind)
@@ -173,7 +172,7 @@ class EngineClientContract:
         self.assertIs(True, response["ok"], response)
         self.assertIn(response["result"]["state"], ("running", "stopped"))
         self.finish("u1")
-        status = host.wait(self.root, "u1", after_revision=None, timeout=60, environ=self.environ())
+        status = host.wait(self.root, "u1", environ=self.environ())
         self.assertEqual("stopped", status["state"])
         self.assertEqual(status["stop_reason"], host.status(self.root, "u1")["stop_reason"])
         self.assertEqual(status["stop_reason"], json.loads(host.result(self.root, "u1", "stop.json"))["stop_reason"])
@@ -270,7 +269,7 @@ class McpStdioTest(ConnectionCase):
         lines = [json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
                  json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}), "", "{not json",
                  json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                             "params": {"name": "unit_wait", "arguments": {"unit_id": "u1", "timeout_ms": 5}}})]
+                             "params": {"name": "unit_wait", "arguments": {"unit_id": "u1"}}})]
         writer = io.BytesIO()
         mcp_stdio.serve(self.tools, io.BytesIO("\n".join(lines).encode("utf-8") + b"\n"), writer)
         answers = [json.loads(line) for line in writer.getvalue().decode("utf-8").splitlines()]
@@ -278,7 +277,7 @@ class McpStdioTest(ConnectionCase):
         self.assertEqual(mcp_stdio.PARSE_ERROR, next(a for a in answers if a["id"] is None)["error"]["code"])
         waited = next(a for a in answers if a["id"] == 2)["result"]
         self.assertEqual("stopped", json.loads(waited["content"][0]["text"])["state"])
-        self.assertEqual([("u1", None, 0.005)], self.client.waits)
+        self.assertEqual(["u1"], self.client.waits)
 
     def run_entry(self, environ, text):
         base = {key: value for key, value in os.environ.items() if key != EXECUTION_ROLE_VARIABLE}

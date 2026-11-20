@@ -182,12 +182,10 @@ class AdapterContractTests(unittest.TestCase):
         [(_, opened)] = [event for event in events if isinstance(event, tuple)]
         return opened
 
-    def test_acp_session_carries_the_callers_exclusion_beside_the_model(self):
-        model = {"claudeCode": {"options": {"model": "claude-opus-5-5"}}}
-        excluded = {"claudeCode": {"options": {**CLAUDE_META["claudeCode"]["options"], "model": "claude-opus-5-5"}}}
-        self.assertEqual(excluded, self.open_acp_session(exclude=EXCLUDE)["meta"])
-        self.assertEqual(model, self.open_acp_session(exclude=None)["meta"])
-        self.assertEqual(model, self.open_acp_session()["meta"])
+    def test_acp_session_carries_the_callers_exclusion(self):
+        self.assertEqual(CLAUDE_META, self.open_acp_session(exclude=EXCLUDE)["meta"])
+        self.assertIsNone(self.open_acp_session(exclude=None)["meta"])
+        self.assertIsNone(self.open_acp_session()["meta"])
 
     def test_every_composed_driver_starts_its_provider_with_the_callers_exclusion(self):
         with TemporaryDirectory() as directory:

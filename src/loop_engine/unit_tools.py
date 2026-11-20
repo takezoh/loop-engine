@@ -31,9 +31,8 @@ TOOLS = {
                                             "inside this connection's directory."}}, ["contract"])),
     "unit_status": ("Read a unit's current status.", schema({"unit_id": UNIT}, ["unit_id"])),
     "unit_wait": (
-        "Wait at most 30 seconds for a unit to stop or move on. Timing out does not cancel the unit.",
-        schema({"unit_id": UNIT, "after_revision": {"type": "integer", "minimum": 0},
-                "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 30000}}, ["unit_id", "timeout_ms"])),
+        "Wait until a unit stops: it ended, or it waits for an answer. Returns its status.",
+        schema({"unit_id": UNIT}, ["unit_id"])),
     "unit_answer": (
         "Answer the question a unit is waiting on.",
         schema({"unit_id": UNIT, "question_id": TEXT, "answer": TEXT}, ["unit_id", "question_id", "answer"])),
@@ -44,9 +43,9 @@ TOOLS = {
         "Read a stopped unit's result: how it stopped and which facts held (stop.json), or its changes (patch.diff).",
         schema({"unit_id": UNIT, "name": {"enum": ["stop.json", "patch.diff"]}}, ["unit_id", "name"])),
 }
-INSTRUCTIONS = ("Use unit_start to run a unit from its contract, unit_wait or unit_status to follow it, "
-                "unit_answer when it asks a question, and unit_result once it stopped. "
-                "A wait that times out does not cancel the unit.")
+INSTRUCTIONS = ("Use unit_start to run a unit from its contract, unit_wait to wait until it stops and "
+                "unit_status to see where it is, unit_answer when it asks a question, and unit_result once "
+                "it stopped.")
 
 
 class Refused(ValueError):
@@ -66,8 +65,8 @@ class EngineClient(Protocol):
         """The unit's recorded status, or None for a unit nobody started."""
         ...
 
-    def wait(self, root, unit_id, *, after_revision, timeout, environ):
-        """The status once the unit stopped or moved past `after_revision`, else its present status."""
+    def wait(self, root, unit_id, *, environ):
+        """The status once the unit stopped: it ended, or it waits for an answer."""
         ...
 
     def result(self, root, unit_id, name):
@@ -173,8 +172,7 @@ class UnitTools:
         if name == "unit_status":
             return self.client.status(self.engine_root, unit_id)
         if name == "unit_wait":
-            return self.client.wait(self.engine_root, unit_id, after_revision=arguments.get("after_revision"),
-                                    timeout=arguments["timeout_ms"] / 1000, environ=self.environ)
+            return self.client.wait(self.engine_root, unit_id, environ=self.environ)
         if name == "unit_answer":
             return self._send({"request": "answer", "unit_id": unit_id, "question_id": arguments["question_id"],
                                "answer": arguments["answer"]})

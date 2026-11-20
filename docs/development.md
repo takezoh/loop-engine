@@ -26,7 +26,7 @@ Documents, code comments and protocol texts under `loop-engine/` are written in 
 | Path | Content |
 |---|---|
 | `src/loop_engine/` | The engine. `facts.py` and `prompts.py` work on values only, and only `platform_facts.py` tells the platforms (Linux and native Windows) apart |
-| `src/provider_transport/` | The provider transport: the catalog of agents, a driver per wire protocol, provider sessions, the admission of child processes, and the launcher of the Claude ACP adapter |
+| `src/provider_transport/` | The provider transport: the catalog of agents, a driver per wire protocol, provider sessions, the admission of child processes, and the Claude ACP adapter with its installer and launcher |
 | `src/loop_engine/protocol/` | The protocol texts handed to agents (each role's first message of a session and its follow-up message, for the writer, the reviewer and the reporter, and the question every message ends with) |
 | `tests/` | Tests that use real git repositories and a real engine process. Agents are scripted fakes |
 | `tests/transport/` | Tests of the provider transport, with fakes of the wire protocols and of the platform APIs |

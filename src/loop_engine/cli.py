@@ -31,11 +31,11 @@ def _send(root, payload, environ):
 
 
 def _until_stopped(root, unit_id, environ):
-    while True:
-        current = client.wait(root, unit_id, timeout=30.0, environ=environ)
-        if current is not None and current.get("state") == "stopped":
-            _print(current)
-            return EXIT.get(current.get("stop_reason"), EXIT["unknown_result"])
+    current = client.wait(root, unit_id, environ=environ)
+    _print(current)
+    if current is None:
+        return EXIT_INVALID
+    return EXIT.get(current.get("stop_reason"), EXIT["unknown_result"])
 
 
 def main(argv=None, environ=None):

@@ -7,6 +7,7 @@ The details behind [ARCHITECTURE.md](../ARCHITECTURE.md): contract limits, check
 | write a contract or define checks for a project | [Contract](#contract), [Checks](#checks) |
 | give a session the unit tools, or mount them in a server of your own | [MCP entry](#mcp-entry) |
 | handle a unit's result | [Stop reasons and exit codes](#stop-reasons-and-exit-codes), [Records](#records), [Sending work back and answers](#sending-work-back-and-answers), [Accepting a reviewer's reply](#accepting-a-reviewers-reply) |
+| install what the agents need | [Installing and checking](#installing-and-checking) |
 | change the engine | [Modules](#modules), [Agent sessions](#agent-sessions), [Prompts](#prompts), [End of a turn and the worktree](#end-of-a-turn-and-the-worktree), [Environment entries](#environment-entries), [Approval requests](#approval-requests), [Base revision](#base-revision) |
 
 ## Contract
@@ -68,7 +69,7 @@ What each stop reason means for the caller is in [How a unit stops](../PRODUCT.m
 |---|---|---|
 | `unit_start` | `contract` | Hands the contract to the engine and returns the unit's status. The unit runs on |
 | `unit_status` | `unit_id` | Reads the unit's current status |
-| `unit_wait` | `unit_id`, `timeout_ms` (0 to 30000), optional `after_revision` | Waits until the unit stops or its revision passes `after_revision`. Timing out does not cancel the unit |
+| `unit_wait` | `unit_id` | Waits until the unit stops: it ended, or it waits for an answer. Returns its status |
 | `unit_answer` | `unit_id`, `question_id`, `answer` | Answers the question a unit is waiting on |
 | `unit_retry` | `unit_id` | Runs again the turn whose result was unknown or could not be checked |
 | `unit_cancel` | `unit_id` | Cancels the unit. A unit that already ended keeps how it ended |
@@ -82,6 +83,10 @@ What each stop reason means for the caller is in [How a unit stops](../PRODUCT.m
 - The server answers `initialize`, `ping`, `tools/list` and `tools/call` for the protocol revisions 2024-11-05, 2025-03-26 and 2025-06-18, one JSON-RPC message per line. It offers no resources or prompts and does not cancel a running call.
 
 A caller with a server of its own mounts the same tools. `composition.unit_entry(environ, connection)` returns the tool group (`tools`, `instructions`, `invoke(name, arguments)`). A caller that composes contracts replaces `unit_start` with its own tool, calls `admit(repository, unit_id)` before composing and hands the contract to `start(contract)`.
+
+## Installing and checking
+
+`python -I src/loop_engine/__main__.py install` places what the catalog's agents need besides their own commands, the Claude ACP adapter, in the transport's runtime directory (`LOOP_ENGINE_RUNTIME_DIR`, by default `~/.local/share/loop-engine`) and prints that directory. It needs Node.js 22 or later and npm, and it waits up to 120 seconds for another install to finish. `check` verifies what is installed without changing it. Both exit with 1 and the reason on stderr when they fail. What is installed and how it is verified is in [Claude ACP adapter](transport.md#claude-acp-adapter).
 
 ## Records
 
@@ -153,7 +158,7 @@ A gap remains in which another agent places a file between the check and the sta
 | `worktree.py` | Observing the worktree (the agent configuration digest, the tree digest, the changed paths compared with git's record) |
 | `check_runner.py` | The fixed check program an agent runs inside its sandbox. It owns how a tree is read (it fails when something cannot be read), the tree digest and the test for an environment entry; `worktree.py` uses the same code |
 | `agents.py` | The port that runs an agent's turn. A session is a token whose content is not interpreted |
-| `composition.py` | Connects the port to the provider transport and opens the unit tools for a connection. The only module that touches the transport |
+| `composition.py` | Connects the port to the provider transport, opens the unit tools for a connection, and installs and checks what the agents need. The only module that touches the transport |
 | `client.py` / `cli.py` | The entry's client and the command line. Hand over requests and read records. Have no progress or judgment logic |
 | `unit_tools.py` | The unit tools and the boundary of a connection: closed schemas, the check of a call's arguments, whose a unit is, and the port for the entry's client (`EngineClient`). Entry code under the same rule as the client |
 | `mcp_stdio.py` | The stdio MCP server for a tool group, on the standard library alone. Decides nothing a tool decides |

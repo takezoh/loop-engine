@@ -107,16 +107,13 @@ def status(root, unit_id):
     return store.unit_status(root, unit_id)
 
 
-def wait(root, unit_id, *, after_revision=None, timeout=30.0, environ=None):
-    """The unit's status once it stopped or moved past `after_revision`, else its current status."""
-    deadline = time.monotonic() + timeout
+def wait(root, unit_id, *, environ=None):
+    """The unit's status once it stopped: it ended, or it waits for an answer. None when there is no
+    such unit."""
     checked = 0.0
     while True:
         current = status(root, unit_id)
-        if current is not None and (current.get("state") == "stopped" or (
-                after_revision is not None and current.get("revision", 0) > after_revision)):
-            return current
-        if time.monotonic() >= deadline:
+        if current is None or current.get("state") == "stopped":
             return current
         if environ is not None and time.monotonic() - checked >= RESPAWN_SECONDS:
             ensure_engine(root, environ)  # a running unit needs an engine to advance

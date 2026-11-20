@@ -267,6 +267,38 @@ def unit_entry(environ, connection):
     return tools
 
 
+INSTALL_WAIT_SECONDS = 120.0
+
+
+def install_agents(environ):
+    """Install what the catalog's agents need besides their own commands, the Claude ACP adapter, into
+    the transport's runtime directory, and return that directory. One install runs at a time."""
+    import time
+
+    from provider_transport import claude_adapter
+
+    from .store import ProcessLock
+    target = str(claude_adapter.runtime_dir(environ))
+    lock, deadline = ProcessLock(os.path.join(target, "install.lock")), time.monotonic() + INSTALL_WAIT_SECONDS
+    while not lock.acquire():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"another install holds {target}")
+        time.sleep(0.1)
+    try:
+        claude_adapter.install(claude_adapter.runtime_dir(environ))
+    finally:
+        lock.release()
+    return target
+
+
+def check_agents(environ):
+    """Raise unless what `install_agents` places is there as pinned; return the runtime directory."""
+    from provider_transport import claude_adapter
+    target = claude_adapter.runtime_dir(environ)
+    claude_adapter.verify(target)
+    return str(target)
+
+
 def build(environ):
     """The engine of this installation and the path of its process lock."""
     root = home_root(environ)

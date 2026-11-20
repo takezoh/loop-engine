@@ -39,8 +39,8 @@ class FakeEngineClient:
         unit = self.units.get(unit_id)
         return None if unit is None else dict(unit["status"])
 
-    def wait(self, root, unit_id, *, after_revision=None, timeout=30.0, environ=None):
-        self.waits.append((unit_id, after_revision, timeout))
+    def wait(self, root, unit_id, *, environ=None):
+        self.waits.append(unit_id)
         return self.status(root, unit_id)
 
     def result(self, root, unit_id, name):

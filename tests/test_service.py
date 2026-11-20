@@ -245,7 +245,7 @@ class ServeTest(EngineCase):
         engine, _thread, _served = self.serving(finishing)
         response = client.request(self.root, {"request": "start", "contract": self.contract()}, environ=self.environ())
         self.assertTrue(response["ok"], response)
-        status = client.wait(self.root, "u1", timeout=30)
+        status = client.wait(self.root, "u1")
         self.assertEqual("done", status["stop_reason"])
         self.assertEqual([], os.listdir(os.path.join(self.root, "inbox")))
         self.assertIn(b"+made by the producer", client.result(self.root, "u1", "patch.diff"))

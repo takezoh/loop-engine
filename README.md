@@ -51,7 +51,7 @@ The contract's shape is in [Unit declaration](ARCHITECTURE.md#unit-declaration);
 | Requirement | Why |
 |---|---|
 | git, and at least one of the agents claude, codex or pi, installed and configured for the user | They are the only processes the engine starts. Agents start with the user's own settings |
-| For `claude`: the Claude ACP adapter `claude-agent-acp` (npm package `@agentclientprotocol/claude-agent-acp`) on `PATH`, besides `claude` | `claude` speaks ACP through that adapter, and the adapter runs the `claude` on `PATH`. The engine installs nothing |
+| For `claude`: Node.js 22 or later and npm, and `python -I src/loop_engine/__main__.py install` run once | `claude` speaks ACP through the npm package `@agentclientprotocol/claude-agent-acp`, which `install` places, as its latest release, in the engine's runtime directory; the adapter runs the `claude` on `PATH`. `check` verifies the installation |
 | Python, and nothing else | The engine and its provider transport use only the standard library |
 | An agent sandbox that can read but not write `LOOP_ENGINE_HOME/published/`, cannot read `LOOP_ENGINE_HOME/records/`, and can write `LOOP_ENGINE_WORKTREES` | Agents read the check program and the copy of the base revision there. What a judgment relies on must not be writable by the agent being judged. The engine assumes this and does not verify it |
 | Checks defined in `.loop-engine/checks.json` at the base revision, when the contract names checks | The engine reads check definitions only from the base revision, never from the tree an agent can write |
@@ -61,6 +61,7 @@ The contract's shape is in [Unit declaration](ARCHITECTURE.md#unit-declaration);
 |---|---|---|
 | `LOOP_ENGINE_HOME` | The engine's state home. Records go under `records/`; the check program and the copy of the base revision that agents read go under `published/` | `~/.loop-engine` |
 | `LOOP_ENGINE_WORKTREES` | Where unit worktrees are made | `~/.cache/loop-engine/worktrees` |
+| `LOOP_ENGINE_RUNTIME_DIR` | Where `install` places the Claude ACP adapter and the launcher finds it | `~/.local/share/loop-engine` (`%LOCALAPPDATA%\loop-engine` on Windows) |
 
 ## Callers
 
