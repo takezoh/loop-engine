@@ -17,7 +17,6 @@ class ProducerRoleTests(unittest.TestCase):
         environment = producer_environment({'PATH': '/usr/bin', EXECUTION_ROLE_VARIABLE: 'other'})
         self.assertEqual({'PATH': '/usr/bin', EXECUTION_ROLE_VARIABLE: PRODUCER_ROLE}, environment)
 
-    @unittest.skipIf(os.name == 'nt', 'the fake cell starts POSIX sessions')
     def test_launched_provider_and_its_children_carry_the_producer_role(self):
         cell = FakeCellMembership()
         authority = create_cwd_authority()

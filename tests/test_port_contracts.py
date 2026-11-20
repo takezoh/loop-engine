@@ -106,6 +106,8 @@ def contract_violations(ports):
         first_test = min(name for name in dir(contract) if name.startswith('test_'))
         for implementation, test_class in sorted(row['implementations'].items()):
             case_class = _load(test_class)
+            if case_class is None:
+                continue  # an adapter that needs the real system, tested on the platform that selects it
             if not (issubclass(case_class, contract) and issubclass(case_class, unittest.TestCase)):
                 violations.append(f'{port}: {test_class} does not run {row["contract"]}')
                 continue

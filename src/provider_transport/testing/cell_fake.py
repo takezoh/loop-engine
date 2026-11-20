@@ -1,13 +1,16 @@
 """A process cell over this process's direct children, held to the cell port contract.
 
 It starts real processes, each the leader of its own session and process
-group, and accounts only for the roots it started or a test adopted; it has no
-kernel cell, so it cannot see a descendant that leaves its root's group.
+group on POSIX, and accounts only for the roots it started or a test adopted;
+it has no kernel cell, so it cannot see a descendant that leaves its root's
+group, or on Windows its root's process tree.
 """
 import os
 import signal
 import subprocess
 import time
+
+from ..host_platform import is_windows
 
 
 class FakeCellMembership:
@@ -38,6 +41,9 @@ class FakeCellMembership:
         process = self._processes.get(pid)
         if process is not None:
             return process.poll() is None
+        if is_windows():  # signal 0 would send Ctrl+C there
+            from ..windows_process import process_exists
+            return process_exists(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -85,6 +91,10 @@ class FakeCellMembership:
         """Signal a root's group only while its process is unreaped, so its PID is still its own."""
         process = self._processes.get(pid)
         if process is None or process.poll() is not None:
+            return
+        if is_windows():  # no process group to signal: end the root's process tree
+            subprocess.run(("taskkill", "/F", "/T", "/PID", str(pid)), capture_output=True,
+                           stdin=subprocess.DEVNULL)
             return
         try:
             os.killpg(pid, signal.SIGKILL)

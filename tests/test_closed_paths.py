@@ -1,13 +1,12 @@
 """The paths by which an LLM or project content could run on the host stay closed."""
 import ast
 import os
-import shlex
 import stat
 import subprocess
 import sys
 import unittest
 
-from engine_support import SRC, EngineCase, approve, directory_link, git, produced, recorded, write
+from engine_support import SRC, EngineCase, approve, directory_link, git, needs_file_links, produced, recorded, write
 
 from loop_engine import git as engine_git
 from loop_engine.platform_facts import CURRENT
@@ -23,7 +22,10 @@ def started(args):
     executable, command = args[0], args[1]
     if executable is not None:
         return executable
-    return shlex.split(command, posix=False)[0].strip('"') if isinstance(command, str) else command[0]
+    if not isinstance(command, str):
+        return command[0]
+    # the first word of the line `list2cmdline` made; the hook sees every start, so it never raises
+    return command[1:].partition('"')[0] if command.startswith('"') else command.partition(" ")[0]
 
 
 sys.addaudithook(lambda event, args: POPEN.append(started(args)) if event == "subprocess.Popen" else None)
@@ -253,6 +255,7 @@ class WorktreePlacementTest(EngineCase):
         self.assertEqual([], self.agents.requests)
 
 
+@needs_file_links
 class LinkedConfigurationTest(EngineCase):
     """Agent configuration reached through a link is watched at its target."""
 

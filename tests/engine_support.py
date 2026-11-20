@@ -230,6 +230,23 @@ def _denied(path, mode):
     return False
 
 
+def _file_links_can_be_made():
+    with tempfile.TemporaryDirectory() as directory:
+        target = os.path.join(directory, "target")
+        open(target, "w").close()
+        return file_link(target, os.path.join(directory, "link"))
+
+
+FILE_LINKS = _file_links_can_be_made()
+
+
+def needs_file_links(test_class):
+    """Keep a test class whose case is a symbolic link to a file where this process can make one. Where it
+    cannot (Windows without the privilege), no agent it starts can make one either, so the class is not a
+    test there: its name is bound to None, which test discovery passes over."""
+    return test_class if FILE_LINKS else None
+
+
 def remove_tree(path):
     """Remove a tree with read-only files in it, which Windows refuses to delete until they are writable."""
     def writable(function, name, _error):

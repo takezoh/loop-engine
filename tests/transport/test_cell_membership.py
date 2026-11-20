@@ -22,8 +22,23 @@ from provider_transport.linux_process import (
     process_table,
 )
 from provider_transport.windows_process import WindowsJobCell
+from provider_transport.windows_process import process_exists as windows_process_exists
 from provider_transport.testing.cell_fake import FakeCellMembership
+from .platform_selection import runs_on
 from .windows_api_fake import FakeProcessApi, any_program
+
+
+def ended_without_being_collected(process, timeout=5):
+    """Wait until a child of this process has ended, leaving its exit status for its owner to collect.
+
+    POSIX waits for the exit without reaping it. Windows keeps an exit status while a handle to the
+    process is open, which its Popen holds, so there it waits until the process is gone."""
+    if hasattr(os, "waitid"):
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        return
+    deadline = time.monotonic() + timeout
+    while windows_process_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
 
 
 class CellMembershipContract:
@@ -153,9 +168,7 @@ class CellMembershipContract:
         process = self.start(cell)
         other = subprocess.Popen((sys.executable, "-c", "raise SystemExit(7)"))
         self.addCleanup(other.wait)
-        deadline = time.monotonic() + 5
-        while process_table()[other.pid].state != "Z" and time.monotonic() < deadline:
-            time.sleep(0.01)  # ended, and not yet collected by the code that started it
+        ended_without_being_collected(other)
         cell.release_certain(process.pid, cell.process_identity(process.pid))
         cell.wait_empty(0.1)
         self.assertEqual(7, other.wait(timeout=5))
@@ -204,6 +217,7 @@ class RealProcessCellContract(CellMembershipContract):
         return self.directory
 
 
+@runs_on("posix")
 class LinuxCellContractTests(RealProcessCellContract, unittest.TestCase):
     def make_cell(self):
         return ProcSubreaperCell()
@@ -244,6 +258,7 @@ class WindowsJobCellContractTests(CellMembershipContract, unittest.TestCase):
         return "C:\\work"
 
 
+@runs_on("posix")
 class LinuxCellTests(unittest.TestCase):
     """The Linux cell's ancestry rules beyond the port contract."""
 

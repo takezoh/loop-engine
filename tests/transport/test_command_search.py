@@ -11,6 +11,7 @@ from provider_transport.command_search import (
     resolve_command,
     search_values,
 )
+from provider_transport.host_platform import is_windows
 from provider_transport.windows_process import WindowsJobCell, WindowsProcessError
 from .windows_api_fake import FakeProcessApi
 
@@ -70,18 +71,20 @@ class PosixCommandSearchTests(unittest.TestCase):
         self.assertEqual("/opt/b/codex", resolve_command("codex", search))
         self.assertIsNone(resolve_command("claude", search))
 
-    def test_the_host_search_skips_a_file_that_is_not_executable(self):
-        if os.name == "nt":
-            self.skipTest("POSIX executable bits")
+
+class HostCommandSearchTests(unittest.TestCase):
+    def test_the_host_search_skips_a_file_this_platform_cannot_run(self):
+        """POSIX runs a file that has its executable bit; Windows a file whose extension PATHEXT names."""
         with tempfile.TemporaryDirectory() as temporary:
             first, second = Path(temporary, "first"), Path(temporary, "second")
             first.mkdir()
             second.mkdir()
             (first / "agent").write_text("#!/bin/sh\n")
-            (second / "agent").write_text("#!/bin/sh\n")
-            (second / "agent").chmod(0o755)
-            search = host_command_search({"PATH": f"{first}{os.pathsep}{second}"})
-            self.assertEqual(str(second / "agent"), resolve_command("agent", search))
+            runnable = second / ("agent.exe" if is_windows() else "agent")
+            runnable.write_text("#!/bin/sh\n")
+            runnable.chmod(0o755)
+            search = host_command_search({"PATH": f"{first}{os.pathsep}{second}", "PATHEXT": ".exe"})
+            self.assertEqual(str(runnable), resolve_command("agent", search))
 
 
 class WindowsCellStartTests(unittest.TestCase):

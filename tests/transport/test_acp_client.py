@@ -123,7 +123,7 @@ for line in sys.stdin:
         print(json.dumps({"id": request["id"], "result": {"agentCapabilities": {"cwd": os.getcwd()}}}), flush=True)
 '''
         with TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             target = root / "target"; target.mkdir()
             authority = create_cwd_authority(root)
             cell = FakeCellMembership()
@@ -134,8 +134,12 @@ for line in sys.stdin:
                 cell_membership=cell,
             )
             renamed = root / "renamed"
-            target.rename(renamed)
-            target.mkdir()
+            try:
+                target.rename(renamed)
+            except PermissionError:  # Windows: the authority holds the admitted directory against a rename
+                renamed = None
+            else:
+                target.mkdir()
             connection = AcpStdioConnection.launch(
                 (sys.executable, "-c", script),
                 authority=ParentAuthority((root,)),
@@ -144,8 +148,12 @@ for line in sys.stdin:
                 host_cell_id="cell",
             )
             try:
-                self.assertEqual(str(renamed), connection.capabilities["cwd"])
-                self.assertNotEqual(str(target), connection.capabilities["cwd"])
+                cwd = connection.capabilities["cwd"]  # the directory itself, by whichever name the OS gives it
+                if renamed is None:
+                    self.assertTrue(os.path.samefile(target, cwd))
+                else:
+                    self.assertTrue(os.path.samefile(renamed, cwd))
+                    self.assertFalse(os.path.samefile(target, cwd))
             finally:
                 connection.rpc.close()
                 self.assertTrue(ledger.wait_empty(1))

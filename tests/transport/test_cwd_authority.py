@@ -21,6 +21,8 @@ from provider_transport.posix_filesystem import PosixDirectoryAuthority
 from provider_transport.windows_filesystem import WindowsDirectoryAuthority
 from provider_transport.testing.cell_fake import FakeCellMembership
 from provider_transport.testing.directory_fake import FakeCwdAuthority
+from provider_transport.host_platform import is_windows
+from .platform_selection import runs_on
 from .windows_api_fake import FakeFilesystemApi
 
 
@@ -114,6 +116,7 @@ class CwdAuthorityContract:
             authority.admit(".")
 
 
+@runs_on("posix")
 class PosixDirectoryAuthorityContractTests(CwdAuthorityContract, unittest.TestCase):
     """The POSIX authority over real directories."""
 
@@ -194,14 +197,19 @@ class FakeCwdAuthorityContractTests(CwdAuthorityContract, unittest.TestCase):
         return "/etc"
 
 
-class PosixDirectoryAuthorityTests(unittest.TestCase):
-    """The POSIX authority's descriptor rules beyond the port contract."""
-
-    def test_the_platform_authority_is_the_posix_one(self):
+class PlatformAuthorityTests(unittest.TestCase):
+    def test_the_platform_authority_is_the_one_of_this_platform(self):
         with TemporaryDirectory() as temporary:
             authority = create_cwd_authority(temporary)
-            self.assertIsInstance(authority, PosixDirectoryAuthority)
-            authority.close()
+            try:
+                self.assertIsInstance(authority, WindowsDirectoryAuthority if is_windows() else PosixDirectoryAuthority)
+            finally:
+                authority.close()  # before the directory it holds is removed
+
+
+@runs_on("posix")
+class PosixDirectoryAuthorityTests(unittest.TestCase):
+    """The POSIX authority's descriptor rules beyond the port contract."""
 
     def test_equal_and_descendant_are_admitted_by_identity(self):
         with TemporaryDirectory() as temporary:
