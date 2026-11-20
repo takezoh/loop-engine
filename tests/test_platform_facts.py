@@ -13,7 +13,7 @@ from engine_support import RUNNER, SRC
 from loop_engine import facts, platform_facts, store
 from loop_engine.platform_facts import POSIX, WINDOWS
 from loop_engine.unit import Unit
-from loop_engine.worktree import unexpected_entries
+from loop_engine.worktree import UNIT_DIRECTORY_RE, unexpected_entries
 
 PACKAGE = os.path.join(SRC, "loop_engine")
 CHECKS = {"id": "checks", "required": True, "by": "checks", "subject": "candidate",
@@ -172,23 +172,36 @@ class AdapterContractTest(unittest.TestCase):
                 self.assertTrue(store.lock_contended(refused.exception, platform.lock_held))
                 first.close()
                 lock(second)
+                second.close()  # Windows removes no directory that holds an open file
 
 
 class TrailingNewlineTest(unittest.TestCase):
     def test_store_unit_ids_and_unit_directories_refuse_a_trailing_newline(self):
+        self.assertIsNone(facts.ID_RE.fullmatch("u2\n"))
+        self.assertIsNone(UNIT_DIRECTORY_RE.fullmatch("u1-" + "0" * 16 + "\n"))
         with tempfile.TemporaryDirectory() as root:
             store.unit_dir(root, "u1")
             with self.assertRaises(ValueError):
                 store.unit_dir(root, "u1\n")
             os.makedirs(os.path.join(root, "units", "u1"))
-            os.makedirs(os.path.join(root, "units", "u2\n"))
-            self.assertEqual(["u1"], store.list_units(root))
             namespace = os.path.join(root, "worktrees", "0" * 64)
             worktree = os.path.join(namespace, "u1-" + "0" * 16)
             os.makedirs(worktree)
             self.assertEqual([], unexpected_entries(os.path.join(root, "worktrees"), worktree))
-            os.makedirs(worktree + "\n")
-            self.assertEqual([worktree + "\n"], unexpected_entries(os.path.join(root, "worktrees"), worktree))
+            # Where the filesystem can hold such a name (Windows cannot), the listings refuse it too.
+            if made(os.path.join(root, "units", "u2\n")):
+                self.assertEqual(["u1"], store.list_units(root))
+            if made(worktree + "\n"):
+                self.assertEqual([worktree + "\n"], unexpected_entries(os.path.join(root, "worktrees"), worktree))
+
+
+def made(path):
+    """Whether the directory `path` could be made: a filesystem that cannot hold its name never lists it."""
+    try:
+        os.makedirs(path)
+    except OSError:
+        return False
+    return True
 
 
 if __name__ == "__main__":

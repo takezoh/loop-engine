@@ -7,7 +7,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from engine_support import EngineCase, RUNNER, actions, approve, git, git_out, produced, recorded, run_command, write
+from engine_support import (
+    EngineCase, RUNNER, actions, approve, file_link, git, git_out, produced, recorded, remove_tree, run_command, write,
+)
 
 from loop_engine import check_runner, store
 from loop_engine.agents import TurnOutcome
@@ -98,18 +100,19 @@ class TreeTest(unittest.TestCase):
             "a committed file truncated and made read-only": lambda: read_only_empty(self.tree, "calc.py"),
             "an empty read-only file below the top directory": lambda: read_only_empty(self.tree, "pkg/__init__.py"),
             "a link to an empty read-only file": lambda: (read_only_empty(self.outside, "target"),
-                                                          os.symlink(os.path.join(self.outside, "target"),
-                                                                     os.path.join(self.tree, ".pi"))),
+                                                          file_link(os.path.join(self.outside, "target"),
+                                                                    os.path.join(self.tree, ".pi")))[-1],
         }
         for case, make in cases.items():
             with self.subTest(case):
-                make()
+                if make() is False:
+                    continue  # a link this process may not make, which no agent it starts can make either
                 digest, changed = self.observed()
                 self.assertNotEqual(self.clean, digest)
                 self.assertNotEqual(self.clean, self.program_digest())
                 self.assertTrue(changed)
                 self.assertEqual([], environment_entries(self.tree, self.committed))
-                shutil.rmtree(self.tree)
+                remove_tree(self.tree)
                 shutil.copytree(self.base, self.tree, ignore=shutil.ignore_patterns(".git"))
 
     def test_an_entry_that_later_holds_content_or_becomes_writable_is_counted(self):

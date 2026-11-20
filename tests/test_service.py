@@ -20,6 +20,11 @@ from loop_engine.platform_facts import CURRENT, POSIX, WINDOWS
 from loop_engine.service import Engine
 
 
+def absolute(*names):
+    """An absolute path of this platform under its root: /a/b on POSIX, a drive's a\\b on Windows."""
+    return os.path.join(os.path.abspath(os.sep), *names)
+
+
 def finishing(request, commands, cancelled):
     return produced(request, commands) if request.role == "producer" else approve(request)
 
@@ -319,19 +324,20 @@ class ServeTest(EngineCase):
         self.assertEqual(2, self.cli("run", os.path.join(self.home, "missing.json"))[0])
 
     def test_worktrees_live_where_agents_can_write_not_under_the_state_home(self):
-        self.assertEqual("/cache/loop-engine/worktrees", store.worktrees_root({"XDG_CACHE_HOME": "/cache"}))
-        self.assertEqual("/elsewhere/wt", store.worktrees_root({"LOOP_ENGINE_WORKTREES": "/elsewhere/wt",
-                                                                "LOOP_ENGINE_HOME": "/state"}))
-        default = store.worktrees_root({"LOOP_ENGINE_HOME": "/state"})
-        self.assertFalse(default.startswith("/state"))
+        cache, elsewhere, state = absolute("cache"), absolute("elsewhere", "wt"), absolute("state")
+        self.assertEqual(os.path.join(cache, "loop-engine", "worktrees"), store.worktrees_root({"XDG_CACHE_HOME": cache}))
+        self.assertEqual(elsewhere, store.worktrees_root({"LOOP_ENGINE_WORKTREES": elsewhere, "LOOP_ENGINE_HOME": state}))
+        default = store.worktrees_root({"LOOP_ENGINE_HOME": state})
+        self.assertFalse(default.startswith(state))
         self.assertTrue(default.endswith(os.path.join(".cache", "loop-engine", "worktrees")))
 
     def test_the_state_home_and_its_roots_carry_the_engines_own_names_and_no_callers(self):
-        environ = {"LOOP_ENGINE_HOME": "/state", "DEV_SKILLS_HOME": "/caller", "DEV_SKILLS_WORKTREES": "/caller/wt"}
-        self.assertEqual("/state/records", store.home_root(environ))
-        self.assertEqual("/state/published", store.published_root(environ))
-        self.assertFalse(store.worktrees_root(environ).startswith("/caller"))
-        default = store.home_root({"DEV_SKILLS_HOME": "/caller"})
+        state, caller = absolute("state"), absolute("caller")
+        environ = {"LOOP_ENGINE_HOME": state, "DEV_SKILLS_HOME": caller, "DEV_SKILLS_WORKTREES": os.path.join(caller, "wt")}
+        self.assertEqual(os.path.join(state, "records"), store.home_root(environ))
+        self.assertEqual(os.path.join(state, "published"), store.published_root(environ))
+        self.assertFalse(store.worktrees_root(environ).startswith(caller))
+        default = store.home_root({"DEV_SKILLS_HOME": caller})
         self.assertTrue(default.endswith(os.path.join(".loop-engine", "records")))
         self.assertEqual(".loop-engine/checks.json", service.CHECKS_FILE)
 
@@ -423,7 +429,8 @@ class EngineProcessTest(EngineCase):
             self.contract(), producer="gamma")}, environ=environ)
         self.assertIn("installed catalog", unknown["error"])
         known = client.request(self.root, {"request": "start", "contract": self.with_agent(self.contract(
-            repository=git_out(SRC, "rev-parse", "--show-toplevel")), producer="codex", reviewer="claude")},
+            repository=os.path.normpath(git_out(SRC, "rev-parse", "--show-toplevel"))), producer="codex",
+            reviewer="claude")},
             environ=environ)
         self.assertIn("own code", known["error"])
         self.assertEqual([], store.list_units(self.root))

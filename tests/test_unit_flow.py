@@ -46,7 +46,7 @@ class FlowTest(EngineCase):
         for request in self.agents.requests:
             self.assertNotIn(self.root + os.sep, request.prompt)
             self.assertIn(self.published + os.sep, request.prompt)  # the check program or the copy of the base
-        published = sorted(os.path.relpath(os.path.join(folder, name), self.published)
+        published = sorted(os.path.relpath(os.path.join(folder, name), self.published).replace(os.sep, "/")
                            for folder, _dirs, names in os.walk(self.published) for name in names)
         self.assertEqual(["units/u1/checks.json"], [name for name in published if not name.startswith("check/")])
         records = os.listdir(self.unit().dir)

@@ -1,6 +1,7 @@
 """The paths by which an LLM or project content could run on the host stay closed."""
 import ast
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -14,7 +15,18 @@ from loop_engine.platform_facts import CURRENT
 PACKAGE = os.path.join(SRC, "loop_engine")
 MODULES = sorted(name for name in os.listdir(PACKAGE) if name.endswith(".py"))
 POPEN = []
-sys.addaudithook(lambda event, args: POPEN.append(args[0]) if event == "subprocess.Popen" else None)
+
+
+def started(args):
+    """The program a subprocess.Popen audit event starts: its executable, else the first word of its command.
+    Windows audits the command line it made, with no executable."""
+    executable, command = args[0], args[1]
+    if executable is not None:
+        return executable
+    return shlex.split(command, posix=False)[0].strip('"') if isinstance(command, str) else command[0]
+
+
+sys.addaudithook(lambda event, args: POPEN.append(started(args)) if event == "subprocess.Popen" else None)
 
 
 def source(name):
@@ -132,9 +144,10 @@ class RepositoryProgramsTest(EngineCase):
     def seed(self):
         self.marker = os.path.join(os.path.dirname(self.repo), "ran")
         os.makedirs(self.marker)
-        script = self.evil = os.path.join(os.path.dirname(self.repo), "evil.sh")
-        with open(script, "w") as handle:
-            handle.write(f"#!/bin/sh\ntouch {self.marker}/$(basename $0)-$$\ncat\n")
+        # git runs these through sh, which reads a backslash as an escape: the paths are written with "/"
+        script = self.evil = os.path.join(os.path.dirname(self.repo), "evil.sh").replace(os.sep, "/")
+        with open(script, "w", newline="") as handle:
+            handle.write(f"#!/bin/sh\ntouch {self.marker.replace(os.sep, '/')}/$(basename $0)-$$\ncat\n")
         os.chmod(script, stat.S_IRWXU)
         write(self.repo, ".gitattributes", "* filter=evil diff=evil\n")
         for key, value in (("filter.evil.clean", script), ("filter.evil.smudge", script),
@@ -144,8 +157,8 @@ class RepositoryProgramsTest(EngineCase):
             git(self.repo, "config", key, value)
         hooks = os.path.join(self.repo, ".git", "hooks")
         for hook in ("post-checkout", "pre-commit", "post-index-change", "reference-transaction"):
-            with open(os.path.join(hooks, hook), "w") as handle:
-                handle.write(f"#!/bin/sh\ntouch {self.marker}/hook-{hook}\n")
+            with open(os.path.join(hooks, hook), "w", newline="") as handle:
+                handle.write(f"#!/bin/sh\ntouch {self.marker.replace(os.sep, '/')}/hook-{hook}\n")
             os.chmod(os.path.join(hooks, hook), stat.S_IRWXU)
 
     def test_no_repository_program_runs_and_only_git_is_started(self):
@@ -182,8 +195,9 @@ class RepositoryProgramsTest(EngineCase):
             git(os.path.dirname(trap), "init", "-q", trap)
             git(trap, "config", "filter.evil.clean", self.evil)
             write(os.path.join(trap, ".git"), "info/attributes", "* filter=evil\n")
-            with open(os.path.join(request.cwd, ".git"), "w") as handle:
-                handle.write(f"gitdir: {os.path.join(trap, '.git')}\n")
+            with open(os.path.join(request.cwd, ".git"), "r+") as handle:  # Windows git hides this file:
+                handle.write(f"gitdir: {os.path.join(trap, '.git')}\n")  # rewritten in place, not recreated
+                handle.truncate()
             subprocess.run(["git", "add", "--all"], cwd=request.cwd, capture_output=True, stdin=subprocess.DEVNULL)
             self.assertTrue(os.listdir(self.marker), "the trap is live: plain git ran the program")
             for name in os.listdir(self.marker):

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from engine_support import (
-    EngineCase, RUNNER, actions, approve, produced, published_runner, recorded, run_command, write,
+    EngineCase, RUNNER, actions, approve, produced, published_runner, recorded, run_command, unreadable, write,
 )
 
 from loop_engine import facts, store
@@ -144,19 +144,22 @@ class UnreadableTreeTest(unittest.TestCase):
                  "a file that cannot be read": (os.path.join(self.tree, "secret", "x.txt"), 0o000)}
         for case, (path, mode) in cases.items():
             with self.subTest(case):
-                os.chmod(path, mode)
-                self.addCleanup(os.chmod, path, 0o755)
+                restore = unreadable(path, mode)
+                if restore is None:
+                    continue  # a denial the platform does not make, which no agent can make there either
+                self.addCleanup(restore)
                 with self.assertRaises(Unreadable):
                     tree_digest(self.tree, [], ["kept.txt", "pkg"])
                 with self.assertRaises(Unreadable):
                     changed_paths(self.recorded, self.tree, [], ["kept.txt", "pkg"])
                 line = run_command(f"{sys.executable} -I {RUNNER} {self.config} ok", self.tree).strip().splitlines()[-1]
                 self.assertEqual("loop-engine-check ok tree=candidate digest=none exit=127", line)
-                os.chmod(path, 0o755 if stat.S_ISDIR(os.stat(path).st_mode) else 0o644)
+                restore()
 
     def test_a_base_revision_the_program_cannot_copy_shows_no_failure_on_it(self):
-        os.chmod(os.path.join(self.base, "kept.txt"), 0o000)
-        self.addCleanup(os.chmod, os.path.join(self.base, "kept.txt"), 0o644)
+        restore = unreadable(os.path.join(self.base, "kept.txt"), 0o000)
+        self.assertIsNotNone(restore)  # every platform can deny reading a file
+        self.addCleanup(restore)
         line = run_command(f"{sys.executable} -I {RUNNER} {self.config} ok --base", self.tree).strip().splitlines()[-1]
         self.assertEqual("loop-engine-check ok tree=base digest=none exit=127", line)
 
@@ -168,9 +171,8 @@ class UnreadableFlowTest(EngineCase):
                 write(request.cwd, os.path.join(directory, path), "written where the engine cannot look\n")
             outcome = produced(request, commands) if request.role == "producer" else approve(request)
             if request.role == role:  # after the turn's own record was made
-                hidden = os.path.join(request.cwd, directory)
-                os.chmod(hidden, 0o300)
-                self.addCleanup(lambda: os.path.isdir(hidden) and os.chmod(hidden, 0o755))
+                restore = unreadable(os.path.join(request.cwd, directory), 0o300)
+                self.addCleanup(lambda: restore and os.path.isdir(os.path.join(request.cwd, directory)) and restore())
             return outcome
         return script
 
@@ -225,9 +227,10 @@ class AgentConfigFileTest(EngineCase):
             content = agent_config_digest(root, [])
             self.assertNotIn(content, (clean, None))
             os.unlink(pi)
-            os.mkfifo(pi)
-            self.assertNotIn(agent_config_digest(root, []), (clean, content, None))
-            os.unlink(pi)
+            if hasattr(os, "mkfifo"):  # a special file only a POSIX filesystem holds
+                os.mkfifo(pi)
+                self.assertNotIn(agent_config_digest(root, []), (clean, content, None))
+                os.unlink(pi)
             os.mkdir(pi)
             self.assertEqual(clean, agent_config_digest(root, []))  # an empty directory defines nothing
             shutil.rmtree(pi)

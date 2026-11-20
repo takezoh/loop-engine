@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -173,6 +175,67 @@ def write(cwd, name, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
+
+
+def file_link(target, path):
+    """A symbolic link at `path` to the file `target`, or False where this process may not make one (Windows
+    without the privilege). No agent this process starts can make one there either."""
+    try:
+        os.symlink(target, path)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:  # ERROR_PRIVILEGE_NOT_HELD
+            return False
+        raise
+    return True
+
+
+def unreadable(path, mode):
+    """Deny this process what `mode` takes away from `path`, the way the platform allows, and return how to
+    undo it; None where the platform cannot deny it, so no agent can make the case arise there.
+
+    `mode` without the read bit: a directory cannot be listed, a file cannot be read; a directory without
+    the search bit: its entries cannot be reached. POSIX denies by the mode. Windows ignores those bits and
+    denies by an access control entry for this user, and lets every user traverse a directory."""
+    restored = 0o755 if os.path.isdir(path) else 0o644
+    os.chmod(path, mode)
+    if _denied(path, mode):
+        return lambda: os.chmod(path, restored)
+    os.chmod(path, restored)
+    if os.path.isdir(path) and mode & stat.S_IRUSR:
+        return None  # only the search bit is taken away, and Windows bypasses traverse checking
+    user = os.environ.get("USERNAME")
+    right = "RD" if os.path.isdir(path) else "R"  # list a directory, read a file
+    if not user or subprocess.run(["icacls", path, "/deny", f"{user}:({right})"], capture_output=True).returncode:
+        return None
+
+    def undo():
+        subprocess.run(["icacls", path, "/remove:d", user], capture_output=True)
+    if _denied(path, mode):
+        return undo
+    undo()
+    return None
+
+
+def _denied(path, mode):
+    try:
+        if not os.path.isdir(path):
+            open(path, "rb").close()
+        elif not mode & stat.S_IRUSR:
+            os.listdir(path)
+        else:
+            for name in os.listdir(path):
+                os.stat(os.path.join(path, name))
+    except PermissionError:
+        return True
+    return False
+
+
+def remove_tree(path):
+    """Remove a tree with read-only files in it, which Windows refuses to delete until they are writable."""
+    def writable(function, name, _error):
+        os.chmod(name, stat.S_IWRITE | stat.S_IREAD)
+        function(name)
+    shutil.rmtree(path, onexc=writable)
 
 
 def directory_link(target, path):
