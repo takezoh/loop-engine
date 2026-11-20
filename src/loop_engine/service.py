@@ -15,7 +15,7 @@ from . import facts
 from .facts import InvalidContract
 from .git import GitError
 from .store import (
-    ProcessLock, UnitStore, drop_old_responses, list_units, publish_check_program, read_json, take_requests,
+    ProcessLock, UnitStore, drop_old_responses, list_units, publish_check_program, take_requests,
     write_response,
 )
 from .unit import Unit
@@ -167,7 +167,7 @@ class Engine:
 
     @staticmethod
     def _state(store):
-        return read_json(store.path("state.json"))
+        return store.state()
 
     def answer(self, unit_id, question_id, answer):
         store = self._existing(unit_id)

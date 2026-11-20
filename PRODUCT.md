@@ -78,7 +78,7 @@ A fact marked `required: false` does not count toward completion; other facts ca
 | `unsafe_agent_config` | Agent configuration in the worktree changed after the worktree was made, or something the engine did not create is above the worktree | Final. No agent was started on that tree |
 | `cancelled` | The caller cancelled | Final |
 
-After a final stop the engine removes the worktree and the copy of the base revision; the change stays as `result/patch.diff`. The engine does not retry by itself. Exit codes are in the [technical reference](docs/architecture.md#stop-reasons-and-exit-codes).
+After a final stop the engine removes the worktree and the copy of the base revision; the change stays as the stop's `patch.diff`, which `unit_result` returns. The engine does not retry by itself. Exit codes are in the [technical reference](docs/architecture.md#stop-reasons-and-exit-codes).
 
 ## Who is responsible for what
 

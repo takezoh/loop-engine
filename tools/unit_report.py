@@ -19,7 +19,7 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
 
-from loop_engine.store import home_root, list_units, read_json, unit_dir  # noqa: E402
+from loop_engine.store import home_root, list_units, read_json, stop_result, unit_dir, unit_status  # noqa: E402
 
 
 def _seconds(start, end):
@@ -64,8 +64,9 @@ def load_unit(root, unit_id):
     if contract is None:
         return None
     events = _events(os.path.join(base, "events.jsonl"))
-    stop = read_json(os.path.join(base, "result", "stop.json")) or {}
-    status = read_json(os.path.join(base, "status.json")) or {}
+    stop_text = stop_result(root, unit_id, "stop.json")
+    stop = json.loads(stop_text) if stop_text else {}
+    status = unit_status(root, unit_id) or {}
     turns, open_turn = [], {}
     for event in events:
         if event.get("type") == "turn_started":

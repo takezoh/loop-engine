@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -167,6 +168,52 @@ class AdmissionTest(EngineCase):
                         {"request": "answer", "unit_id": "u1", "question_id": "q", "answer": "a", "path": "/x"}):
             self.assertFalse(engine.handle(payload)["ok"], payload)
         self.assertEqual([], self.agents.requests)
+
+
+class RecordReadersTest(unittest.TestCase):
+    """A record another process reads is never replaced, so reading it never holds up the engine."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.unit = store.UnitStore(self.root, os.path.join(self.root, "published"), "u1")
+        os.makedirs(self.unit.dir)
+
+    def test_a_status_another_process_keeps_reading_is_written_every_time(self):
+        self.unit.write_status({"state": "running", "revision": 0})
+        reader = subprocess.Popen([sys.executable, "-c", (
+            "import sys, time\n"
+            f"sys.path.insert(0, {SRC!r})\n"
+            "from loop_engine import store\n"
+            "seen, end = [], time.monotonic() + 60\n"
+            "while time.monotonic() < end and (not seen or not seen[-1] or seen[-1]['revision'] < 300):\n"
+            f"    seen.append(store.unit_status({self.root!r}, 'u1'))\n"
+            "print(sum(status is None for status in seen), max(status['revision'] for status in seen if status))\n")],
+            stdout=subprocess.PIPE, text=True)
+        time.sleep(0.3)  # the reader is reading
+        for revision in range(1, 301):
+            self.unit.write_status({"state": "running", "revision": revision})
+        unreadable, last = reader.communicate(timeout=30)[0].split()
+        self.assertEqual(("0", "300"), (unreadable, last))
+        self.assertEqual(300, self.unit.status()["revision"])
+
+    def test_a_torn_last_status_line_leaves_the_status_before_it(self):
+        self.unit.write_status({"state": "running", "revision": 1})
+        with open(self.unit.path(store.STATUS_LOG), "ab") as handle:
+            handle.write(b'{"state": "stop')  # what a kill in the middle of a write leaves
+        self.assertEqual(1, self.unit.status()["revision"])
+        self.unit.write_status({"state": "stopped", "revision": 2})
+        self.assertEqual({"state": "stopped", "revision": 2, "unit_id": "u1"}, store.unit_status(self.root, "u1"))
+
+    def test_each_stop_keeps_its_results_and_a_caller_reads_the_latest(self):
+        self.assertIsNone(store.stop_result(self.root, "u1", "stop.json"))
+        self.unit.write_stop(b"first", {"stop_reason": "waiting_for_answer"})
+        self.unit.write_stop(b"second", {"stop_reason": "done"})
+        os.makedirs(self.unit.path("result", "stops", "3"))  # a stop the engine did not finish writing
+        self.assertEqual(b"second", store.stop_result(self.root, "u1", "patch.diff"))
+        self.assertEqual("done", json.loads(store.stop_result(self.root, "u1", "stop.json"))["stop_reason"])
+        with open(self.unit.path("result", "stops", "1", "patch.diff"), "rb") as handle:
+            self.assertEqual(b"first", handle.read())
 
 
 class ServeTest(EngineCase):

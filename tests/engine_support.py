@@ -260,6 +260,9 @@ class EngineCase(unittest.TestCase):
         return self.unit(unit_id).events()
 
     def result(self, name, unit_id="u1"):
+        """A result file of the unit's latest stop, read as a caller reads it, or a turn's record."""
+        if name in ("stop.json", "patch.diff"):
+            return store.stop_result(self.root, unit_id, name)
         with open(os.path.join(store.unit_dir(self.root, unit_id), "result", name), "rb") as handle:
             return handle.read()
 

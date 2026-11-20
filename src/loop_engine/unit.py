@@ -11,7 +11,7 @@ import shutil
 
 from . import facts, prompts
 from .agents import TurnRequest
-from .store import read_json, verified_check_program, worktree_path
+from .store import verified_check_program, worktree_path
 from .worktree import (
     AGENT_CONFIG_DIRS, AGENT_CONFIG_FILES, UNIT_DIRECTORY_RE, Unreadable, agent_config_digest, changed_paths, environment_entries, read_text,
     tree_digest, unexpected_entries,
@@ -238,7 +238,6 @@ class Unit:
         started = self._started()
         reason = action["reason"]
         patch = self._patch(started) if started else b""
-        self.store.write_result("patch.diff", patch)
         stop = {"stop_reason": reason, "base": started["base"] if started else None,
                 "worktree": started["worktree"] if started else None,
                 "patch_sha256": hashlib.sha256(patch).hexdigest(),
@@ -246,7 +245,7 @@ class Unit:
                 "environment_entries": self._left_out(started) if started else None,
                 "stop": {key: value for key, value in action.items() if key != "do"},
                 **facts.summary(self.contract, state)}
-        self.store.write_result("stop.json", stop)
+        self.store.write_stop(patch, stop)
         self._append({"type": "stopped", "stop_reason": reason})
         if reason not in CONTINUABLE:
             self._end_sessions(state)
@@ -302,7 +301,7 @@ class Unit:
             if started is None:
                 self._prepare()
                 continue
-            state = read_json(self.store.path("state.json"))
+            state = self.store.state()
             if state["stop"] is None and any(event["type"] == "cancel_requested" for event in self.store.events()):
                 state = facts.cancel(state)  # a unit that already reached a stop keeps how it ended
             state, action = facts.decide(self.contract, state)

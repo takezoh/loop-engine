@@ -104,7 +104,7 @@ def request(root, payload, *, environ, timeout=30.0):
 
 
 def status(root, unit_id):
-    return store.read_json(os.path.join(store.unit_dir(root, unit_id), "status.json"))
+    return store.unit_status(root, unit_id)
 
 
 def wait(root, unit_id, *, after_revision=None, timeout=30.0, environ=None):
@@ -125,11 +125,7 @@ def wait(root, unit_id, *, after_revision=None, timeout=30.0, environ=None):
 
 
 def result(root, unit_id, name):
-    """The bytes of one result file of a unit, or None."""
+    """The bytes of one result file of the unit's latest stop, or None."""
     if name not in ("patch.diff", "stop.json"):
         raise ValueError("unknown result")
-    try:
-        with open(os.path.join(store.unit_dir(root, unit_id), "result", name), "rb") as handle:
-            return handle.read()
-    except OSError:
-        return None
+    return store.stop_result(root, unit_id, name)

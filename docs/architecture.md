@@ -97,8 +97,11 @@ The engine makes one directory per unit in the records root (`records/` under `L
 | `contract.json` / `admission.json` | The accepted contract, and the base revision and check definitions fixed on admission |
 | `state.json` | The decision state (facts, reviews, the finding counts of refutations `refuted`, the requester's answers `answers`, the files reviewers read `examined`), and per execution the session token, the number of answers delivered and the number of refused requests. When the engine stops, it continues from here |
 | `events.jsonl` | The record of the start, each turn's start (new session or continued session) and end, sessions that could not be continued, requests, closed sessions, and the stop |
-| `result/patch.diff` / `result/stop.json` | The diff against the base revision, and the stop reason, which facts hold, the findings, the refusal count per execution, and the environment entries that are in the worktree and not in the diff |
+| `status.jsonl` | The unit's status, one line per change; the last complete line is the current status |
+| `result/stops/<n>/patch.diff` / `result/stops/<n>/stop.json` | The diff against the base revision, and the stop reason, which facts hold, the findings, the refusal count per execution, and the environment entries that are in the worktree and not in the diff. Each stop gets the next number `<n>`; `stop.json` is written last, and a caller reads the stop with the highest number that has it |
 | `result/turns/NN-<execution>.json` | Each turn's reply, execution record, session token and number of refusals |
+
+A record another process reads is never replaced, because on Windows an open reader makes a replacement fail: the status is appended to, each stop's results get a directory of their own, and the engine's threads read `state.json` under the lock it is saved under.
 
 The records root also holds requests and responses (`inbox/`, `outbox/`), `engine.lock` and the transport's state (`agents/`).
 
@@ -116,7 +119,7 @@ Paths handed to a role (the check commands, the place of the base revision) poin
 
 Worktrees are made in a third place, one that the agent's sandbox can write (`LOOP_ENGINE_WORKTREES`). The copy of the base revision is not placed next to the worktree.
 
-When a unit ends with a stop that cannot be continued (any other than `waiting_for_answer`, `unknown_result` and `invalid_result`), the engine removes the worktree and the copy of the base revision. The change stays in `result/patch.diff`.
+When a unit ends with a stop that cannot be continued (any other than `waiting_for_answer`, `unknown_result` and `invalid_result`), the engine removes the worktree and the copy of the base revision. The change stays in the stop's `patch.diff`.
 
 Every agent can write the worktrees root, so nothing in it is trusted.
 
@@ -133,7 +136,7 @@ A gap remains in which another agent places a file between the check and the sta
 - A refuted fact (review, checks, scope) goes back, with its findings, to the execution that made the subject. It goes back only when the number of findings is smaller than at the previous refutation of the same fact. What is counted is the blocking findings the engine computed for a review, the failed checks for checks, and the out-of-scope paths for the scope. The first refutation goes back. When the number is not smaller, the unit stops with `stagnation` and leaves the fact, the findings and a `detail` (the number this time and the previous time) in `stop` of `stop.json`. The previous number per fact is in `refuted` of `state.json`.
 - When a writer that received findings ends its turn without changing the candidate, or a reporter returns the same report, the unit stops with `stagnation` (the detail is `candidate unchanged` or `report unchanged`). When an answer arrived after the fact of those findings was judged, the unit does not stop and the fact is judged again.
 - Answers stay in order in `answers` of `state.json` (`id`, `question`, `answer`, `asked_by`). A session holds the number of answers it has received, and a follow-up message carries only the answers not yet received. The basis of a verdict fact has the digest of the answers under the key `@answers`, so that verdict stops holding when an answer is added. The bases of reports, checks and the scope do not include answers.
-- The number of rounds is shown in `round` of `status.json` and `rounds` of `stop.json`. It is not used as a stop condition.
+- The number of rounds is shown in `round` of the status and `rounds` of `stop.json`. It is not used as a stop condition.
 
 ## Accepting a reviewer's reply
 
@@ -220,8 +223,8 @@ An agent's host may place empty files or directories in the working directory. T
 
 An environment entry is a name in the top-level directory of the worktree that is at the top level of neither the base revision nor the commit the worktree was made from, is a regular file (not a link), has size 0, and cannot be written by the judging process.
 
-- Environment entries are not included in the candidate's tree and its digest, the changed paths, the scope judgment, the before-and-after comparison of a non-writing role's turn, `result/patch.diff`, the digest in a check's status line, or the agent configuration digest. They are also left out of git's index.
-- The names left out are recorded. `environment_entries` in each turn's `turn_finished` has the names left out of that turn's judgment; `environment_entries` in `result/stop.json` has the names that were in the worktree at the stop and are not in `patch.diff`. Both are read from the worktree at the stop or after the turn, in the form `{"count": the total number, "names": [...]}`, with at most 32 names, each cut to 1000 characters.
+- Environment entries are not included in the candidate's tree and its digest, the changed paths, the scope judgment, the before-and-after comparison of a non-writing role's turn, the stop's `patch.diff`, the digest in a check's status line, or the agent configuration digest. They are also left out of git's index.
+- The names left out are recorded. `environment_entries` in each turn's `turn_finished` has the names left out of that turn's judgment; `environment_entries` in the stop's `stop.json` has the names that were in the worktree at the stop and are not in `patch.diff`. Both are read from the worktree at the stop or after the turn, in the form `{"count": the total number, "names": [...]}`, with at most 32 names, each cut to 1000 characters.
 - Everything else (a writable empty file, a non-empty file, a name in either commit, a link, a file below the top level) counts as a change. Once an entry has content or becomes writable, it counts from then on.
 - The test is one function in `check_runner.py`, and the engine (`worktree.py`, and the exclusions `git.py` gives for the patch) and the check program use the same one. The engine reads the top-level names of the two commits from git when the unit starts and writes them to the `unit_started` record and to `committed` in `checks.json`.
 - Neither git, the tree digest nor the agent configuration digest counts an empty directory. The names of the agent configuration (`.claude`, `.codex`, `.pi`, `.agents`, `.mcp.json`) are included in the digest whatever their kind: directory, file, link or anything else. Only environment entries are left out; any other empty file is included.
@@ -231,7 +234,7 @@ An environment entry is a name in the top-level directory of the worktree that i
 
 When an agent asks for approval, permission or user input, the transport answers with an explicit refusal and the turn continues. No approval setting is sent to Codex. How each of the three drivers answers is in [Approval requests](transport.md#approval-requests) of the provider transport.
 
-A refused request stays in the turn's execution record (`actions.refused`) with its kind (`command`, `file_change`, `permissions`, `input`) and a short description. The engine adds each turn's count per execution and shows it in `refused` of `status.json` and `result/stop.json`. A refusal does not stop the unit. A check that could not run because it was refused leaves no passing line, so its fact does not hold.
+A refused request stays in the turn's execution record (`actions.refused`) with its kind (`command`, `file_change`, `permissions`, `input`) and a short description. The engine adds each turn's count per execution and shows it in `refused` of the status and of the stop's `stop.json`. A refusal does not stop the unit. A check that could not run because it was refused leaves no passing line, so its fact does not hold.
 
 ## Base revision
 

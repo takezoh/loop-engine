@@ -20,6 +20,9 @@ from .platform_facts import CURRENT
 
 PUBLISHED_NAME = "published"
 RECORDS_NAME = "records"
+# A record another process reads is never replaced: the status is appended to, and each stop's results
+# get a directory of their own.
+STATUS_LOG = "status.jsonl"
 
 
 def _home(environ):
@@ -75,12 +78,67 @@ def read_json(path):
 
 
 def _write_atomic(path, data):
+    """Write a whole file under its final name at once. Only for a file no other process reads while
+    it is replaced: on Windows a reader's open handle makes the replacement fail."""
     temporary = path + ".tmp"
     with open(temporary, "wb") as handle:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def _append_line(path, data):
+    """Append one line, which a reader in another process may read meanwhile: an append replaces nothing."""
+    with open(path, "a+b") as handle:
+        if handle.tell() > 0:
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        handle.write(data + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def read_last_json(path):
+    """The last complete JSON object of a file written by `_append_line`, or None; a line torn by a kill
+    is skipped."""
+    try:
+        with open(path, "rb") as handle:
+            lines = handle.read().split(b"\n")
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def unit_status(root, unit_id):
+    """A unit's current status, the last line of its status log, or None."""
+    return read_last_json(os.path.join(unit_dir(root, unit_id), STATUS_LOG))
+
+
+def stop_result(root, unit_id, name):
+    """The bytes of a result file of the unit's latest stop, or None while it has none."""
+    stops = os.path.join(unit_dir(root, unit_id), "result", "stops")
+    try:
+        numbers = sorted((int(entry) for entry in os.listdir(stops) if entry.isdigit()), reverse=True)
+    except OSError:
+        return None
+    for number in numbers:
+        directory = os.path.join(stops, str(number))
+        if os.path.isfile(os.path.join(directory, "stop.json")):  # written last: the stop is complete
+            try:
+                with open(os.path.join(directory, name), "rb") as handle:
+                    return handle.read()
+            except OSError:
+                return None
+    return None
 
 
 def _dump(value):
@@ -145,25 +203,38 @@ class UnitStore:
 
     def append(self, event):
         with self._lock:
-            with open(self.path("events.jsonl"), "a+b") as handle:
-                if handle.tell() > 0:
-                    handle.seek(-1, os.SEEK_END)
-                    if handle.read(1) != b"\n":
-                        handle.write(b"\n")
-                handle.write(_dump(event) + b"\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            _append_line(self.path("events.jsonl"), _dump(event))
 
     def write_status(self, status):
+        """Add the unit's status to its status log, which callers read from other processes."""
         with self._lock:
-            _write_atomic(self.path("status.json"), _dump(dict(status, unit_id=self.unit_id)))
+            _append_line(self.path(STATUS_LOG), _dump(dict(status, unit_id=self.unit_id)))
 
     def status(self):
-        return read_json(self.path("status.json"))
+        return read_last_json(self.path(STATUS_LOG))
 
     def write_json(self, name, value):
+        """Save a record only the engine's threads read, under the lock they read it under."""
         with self._lock:
             _write_atomic(self.path(name), _dump(value))
+
+    def state(self):
+        """The decision state, read under the lock it is saved under."""
+        with self._lock:
+            return read_json(self.path("state.json"))
+
+    def write_stop(self, patch, stop):
+        """Record one stop's results in a directory of their own, the patch first and `stop.json` last.
+
+        A stop never replaces the results of an earlier one, which a caller may be reading."""
+        with self._lock:
+            stops = self.path("result", "stops")
+            os.makedirs(stops, exist_ok=True)
+            numbers = [int(entry) for entry in os.listdir(stops) if entry.isdigit()]
+            directory = os.path.join(stops, str(max(numbers, default=0) + 1))
+            os.mkdir(directory)
+            _write_atomic(os.path.join(directory, "patch.diff"), patch)
+            _write_atomic(os.path.join(directory, "stop.json"), _dump(stop))
 
     def publish_json(self, name, value):
         with self._lock:

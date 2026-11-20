@@ -23,7 +23,7 @@ flowchart LR
     Never["What the engine never starts<br/>project commands, code in the worktree<br/>creating or changing a sandbox"]
   end
   Entry -->|"request files: contract, answer, retry, cancel"| Home
-  Home -->|"status.json, stop.json, patch.diff"| Entry
+  Home -->|"status.jsonl, stop.json, patch.diff"| Entry
   Entry -.->|"starts the engine with a fixed command when none runs"| Engine
   Engine -->|"takes requests, writes records"| Home
   Engine -->|"publishes the check program, checks.json and the copy of the base revision"| Pub
@@ -291,7 +291,7 @@ sequenceDiagram
   D-->>G: an explicit refusal
   Note over G: the turn continues
   D-->>U: actions.refused in the execution record (kind and short description)
-  U->>U: add to the execution's refusal count in state.json, status.json and stop.json
+  U->>U: add to the execution's refusal count in state.json, status.jsonl and stop.json
 ```
 
 There is one session per execution, shared with no other execution (reviewers and writers included). Approval requests are refused alike for the three agents and do not stop the unit. A check that could not run because it was refused leaves no passing line, so its fact does not hold. Details are in [Agent sessions](docs/architecture.md#agent-sessions) and [Approval requests](docs/architecture.md#approval-requests).
@@ -309,7 +309,7 @@ flowchart LR
     Lock["engine.lock"]
     AgentState["agents/ (the transport's state)"]
     subgraph UnitDirG["units/unit_id/"]
-      Rec["contract.json, admission.json<br/>state.json, events.jsonl, status.json"]
+      Rec["contract.json, admission.json<br/>state.json, events.jsonl, status.jsonl"]
       Res["result/<br/>patch.diff, stop.json, turns/"]
     end
   end
@@ -333,7 +333,7 @@ flowchart LR
   Eng -->|"holds"| Lock
   Eng -->|"writes"| Rec
   Eng -->|"writes"| Res
-  Rec -->|"reads status.json"| Cal
+  Rec -->|"reads status.jsonl"| Cal
   Res -->|"reads stop.json, patch.diff"| Cal
   Eng -->|"publishes under the sha256 of its content"| Check
   Eng -->|"the transport writes"| AgentState
