@@ -103,6 +103,13 @@ class NpmCommandTests(unittest.TestCase):
 
 
 class InstallAndVerifyTests(unittest.TestCase):
+    """What install asks npm for; which program runs npm on each platform is `NpmCommandTests`' subject."""
+
+    def setUp(self):
+        npm = patch.object(claude_adapter, "npm_command", return_value=["npm"])
+        npm.start()
+        self.addCleanup(npm.stop)
+
     def test_install_places_the_latest_release_without_optional_dependencies_and_verifies(self):
         with TemporaryDirectory() as data:
             target = Path(data) / "loop-engine"
