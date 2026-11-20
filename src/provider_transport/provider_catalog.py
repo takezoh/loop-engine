@@ -18,6 +18,8 @@ from typing import Mapping, Sequence
 
 CATALOG_PATH = Path(__file__).resolve().parent / "providers.json"
 SKILL_EXCLUSION_FORMS = frozenset({"codex-skills-config", "claude-disallowed-skills", "pi-exclude-skills"})
+START_FORMS = frozenset({"claude-code-options"})
+BINDING_KEYS = frozenset({"model", "effort"})
 
 
 def skill_exclusion(
@@ -39,6 +41,32 @@ def skill_exclusion(
     if form == "pi-exclude-skills":
         return ("--exclude-skills", ",".join(names)), None
     raise ValueError("malformed-provider-skill-exclusion")
+
+
+def start_options(form: str, values: Mapping[str, str]) -> Mapping[str, object]:
+    """The session metadata that gives a provider the values it binds when a session starts.
+
+    Claude Code takes them as its own options, as its command line takes `--model`; the adapter
+    hands `_meta.claudeCode.options` of `session/new` and `session/load` to it unchanged.
+    """
+    if form == "claude-code-options":
+        return {"claudeCode": {"options": dict(values)}}
+    raise ValueError("malformed-provider-start-form")
+
+
+def merged_meta(
+    first: Mapping[str, object] | None, second: Mapping[str, object] | None
+) -> Mapping[str, object] | None:
+    """Two session metadata documents as one; nested mappings are merged key by key."""
+    if first is None or second is None:
+        return first if second is None else second
+    merged = dict(first)
+    for key, value in second.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = merged_meta(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def excluded_skills(raw: object) -> tuple[str, tuple[str, ...]]:
@@ -66,6 +94,8 @@ class ProviderSpec:
     conformance_generation: str
     isolation_argv: tuple[str, ...] = ()
     isolation_session_meta: Mapping[str, object] | None = None
+    start_bindings: frozenset[str] = frozenset()
+    start_form: str | None = None
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -85,7 +115,8 @@ class ProviderSpec:
         if missing:
             raise ValueError("provider-binding-required:" + ",".join(missing))
         unsupported = sorted(
-            key for key, value in values.items() if value and key not in self.session_bindings
+            key for key, value in values.items()
+            if value and key not in self.session_bindings | self.start_bindings
         )
         if unsupported:
             raise ValueError("provider-binding-unsupported:" + ",".join(unsupported))
@@ -100,6 +131,13 @@ class ProviderSpec:
                 *command[1:],
             )
         raise ValueError("provider-command-base-invalid")
+
+    def session_meta(self, *, model: str | None = None, effort: str | None = None) -> Mapping[str, object] | None:
+        """The metadata of `session/new` and `session/load`: the skills to exclude and the start bindings."""
+        values = {key: value for key, value in (("model", model), ("effort", effort))
+                  if value and key in self.start_bindings}
+        start = start_options(str(self.start_form), values) if values else None
+        return merged_meta(self.isolation_session_meta, start)
 
     def command_fingerprint(self, *, argv: Sequence[str]) -> str:
         payload = json.dumps(
@@ -144,16 +182,21 @@ def provider_spec(document: object, provider: str, *, exclude: object = None) ->
         raise ValueError("malformed-acp-provider-bindings")
     session_bindings = bindings.get("session", ())
     required_bindings = bindings.get("required", ())
+    start_bindings = bindings.get("start", ())
     if (
-        set(bindings) - {"session", "required"}
-        or not isinstance(session_bindings, Sequence)
-        or isinstance(session_bindings, (str, bytes))
-        or not isinstance(required_bindings, Sequence)
-        or isinstance(required_bindings, (str, bytes))
-        or not all(key in {"model", "effort"} for key in session_bindings)
-        or not all(key in {"model", "effort"} for key in required_bindings)
+        set(bindings) - {"session", "required", "start"}
+        or not all(
+            isinstance(keys, Sequence) and not isinstance(keys, (str, bytes))
+            and all(key in BINDING_KEYS for key in keys)
+            for keys in (session_bindings, required_bindings, start_bindings)
+        )
+        or set(session_bindings) & set(start_bindings)
     ):
         raise ValueError("malformed-acp-provider-bindings")
+    # Values bound when a session starts need the provider's form for them, and only they do.
+    start_form = raw.get("start_form")
+    if (start_form not in START_FORMS) if start_bindings else (start_form is not None):
+        raise ValueError("malformed-provider-start-form")
     conformance = raw.get("conformance")
     if not isinstance(conformance, Mapping):
         raise ValueError("provider-conformance-missing")
@@ -171,6 +214,8 @@ def provider_spec(document: object, provider: str, *, exclude: object = None) ->
         str(conformance.get("generation", "")),
         tuple(isolation_argv),
         session_meta,
+        frozenset(str(key) for key in start_bindings),
+        start_form,
     )
 
 

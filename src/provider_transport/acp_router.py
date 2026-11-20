@@ -154,8 +154,8 @@ def admit_provider_route(
     except ValueError as exc:
         raise AcpRouterFailure("binding_blocked", exc) from exc
     binding_source = (
-        "router_session_config"
-        if "model" in provider.session_bindings
+        "router_session_config" if "model" in provider.session_bindings
+        else "session_start" if "model" in provider.start_bindings
         else "session_observation"
     )
     return {
@@ -255,11 +255,11 @@ def run_acp_request(
             message_capture=message_capture,
         )
         session_id = request.get("session_id")
+        meta = provider.session_meta(model=model, effort=effort)
         binding = (
-            client.load_session(str(session_id), cwd=str(request["cwd"]),
-                                meta=provider.isolation_session_meta)
+            client.load_session(str(session_id), cwd=str(request["cwd"]), meta=meta)
             if isinstance(session_id, str)
-            else client.new_session(cwd=str(request["cwd"]), meta=provider.isolation_session_meta)
+            else client.new_session(cwd=str(request["cwd"]), meta=meta)
         )
         if isinstance(session_id, str) and binding.session_id != session_id:
             raise AcpRouterFailure(

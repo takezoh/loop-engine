@@ -156,7 +156,7 @@ class AcpRouterTests(unittest.TestCase):
             def set_config_option(self, *args, **kwargs): pass
             def __init__(self, *args, **kwargs): pass
             def new_session(self, **kwargs):
-                events.append("session")
+                events.append(("session", kwargs["meta"]))
                 return AcpBinding("claude-child-1", "claude", provider.conformance_generation)
             def set_config_option(self, binding, *, config_id, value):
                 events.append(("config", config_id, value))
@@ -169,22 +169,26 @@ class AcpRouterTests(unittest.TestCase):
         def observe(started):
             proof = started.binding_proof
             events.append("proof")
-            self.assertEqual("router_session_config", proof.binding_source)
-            self.assertEqual("opus[1m]", proof.model)
+            self.assertEqual("session_start", proof.binding_source)
+            self.assertEqual("claude-opus-5-5", proof.model)
             self.assertEqual("claude-child-1", proof.session_id)
 
         with TemporaryDirectory() as cwd:
             result = run_acp_request(
                 {"wire_version": 3, "provider": "claude",
                  "cwd": cwd, "prompt": "work", "generation": provider.conformance_generation,
-                 "model": "opus[1m]", "effort": "high", "boundary_kind": "host_approved"},
+                 "model": "claude-opus-5-5", "effort": "high", "boundary_kind": "host_approved"},
                 authority=ParentAuthority((Path(cwd),)),
                 connection_factory=lambda *args, **kwargs: Connection(),
                 client_factory=Client,
                 started_observer=observe,
             )
-        self.assertEqual("router_session_config", result.binding_proof.binding_source)
-        self.assertLess(events.index(("config", "model", "opus[1m]")), events.index("proof"))
+        self.assertEqual("session_start", result.binding_proof.binding_source)
+        # The model reaches Claude Code as its own option when the session starts, unchanged; only the
+        # effort goes through the session configuration and is read back.
+        self.assertEqual(("session", {"claudeCode": {"options": {"model": "claude-opus-5-5"}}}), events[0])
+        self.assertNotIn("model", [event[1] for event in events if event[0] == "config"])
+        self.assertLess(events.index(("config", "effort", "high")), events.index("proof"))
         self.assertLess(events.index("proof"), events.index("prompt"))
 
     def test_fresh_claude_config_failure_produces_no_receipt_or_prompt(self):
@@ -213,7 +217,7 @@ class AcpRouterTests(unittest.TestCase):
                 run_acp_request(
                     {"wire_version": 3, "provider": "claude",
                      "cwd": cwd, "prompt": "work", "generation": provider.conformance_generation,
-                     "model": "opus[1m]", "boundary_kind": "host_approved"},
+                     "model": "claude-opus-5-5", "effort": "high", "boundary_kind": "host_approved"},
                     authority=ParentAuthority((Path(cwd),)),
                     connection_factory=lambda *args, **kwargs: Connection(),
                     client_factory=Client,
@@ -242,6 +246,7 @@ class AcpRouterTests(unittest.TestCase):
             def __init__(self, *args, **kwargs): pass
             def load_session(self, identity, **kwargs):
                 events.append(("load", identity))
+                events.append(("load-meta", kwargs["meta"]))
                 return AcpBinding(identity, "claude", provider.conformance_generation)
             def set_config_option(self, binding, *, config_id, value):
                 events.append(("config", config_id, value))
@@ -254,7 +259,7 @@ class AcpRouterTests(unittest.TestCase):
         def observe(started):
             proof = started.binding_proof
             events.append("proof")
-            self.assertEqual("router_session_config", proof.binding_source)
+            self.assertEqual("session_start", proof.binding_source)
             self.assertEqual("current-B", proof.model)
             self.assertEqual("high", proof.effort)
             self.assertEqual("same-session", proof.session_id)
@@ -278,7 +283,8 @@ class AcpRouterTests(unittest.TestCase):
                 started_observer=observe,
             )
         self.assertLess(events.index(("load", "same-session")), events.index("proof"))
-        self.assertLess(events.index(("config", "model", "current-B")), events.index("proof"))
+        self.assertIn(("load-meta", {"claudeCode": {"options": {"model": "current-B"}}}), events)
+        self.assertNotIn(("config", "model", "current-B"), events)
         self.assertLess(events.index(("config", "effort", "high")), events.index("proof"))
         self.assertLess(events.index("proof"), events.index("prompt"))
         self.assertIn(("session-close", CLOSE_TIMEOUT_SECONDS), events)
@@ -466,6 +472,29 @@ class AcpRouterTests(unittest.TestCase):
         self.assertEqual(
             "RuntimeError:close frame failed", result.cleanup_diagnostics
         )
+
+    def test_start_bindings_need_their_form_and_are_not_session_bindings(self):
+        from provider_transport.provider_catalog import provider_spec
+
+        document = json.loads(CATALOG_PATH.read_text())
+        claude = document["providers"]["claude"]
+        spec = provider_spec(document, "claude")
+        self.assertEqual(frozenset({"model"}), spec.start_bindings)
+        self.assertEqual(frozenset({"effort"}), spec.session_bindings)
+        for name in ("codex", "pi"):
+            self.assertEqual(frozenset(), provider_spec(document, name).start_bindings)
+        for bindings, form, error in (
+            ({"session": ["model", "effort"], "start": ["model"]}, "claude-code-options", "malformed-acp-provider-bindings"),
+            ({"session": ["effort"], "start": ["model"]}, None, "malformed-provider-start-form"),
+            ({"session": ["effort"], "start": ["model"]}, "unknown-form", "malformed-provider-start-form"),
+            ({"session": ["model", "effort"]}, "claude-code-options", "malformed-provider-start-form"),
+        ):
+            changed = {**claude, "bindings": bindings}
+            changed.pop("start_form", None)
+            if form is not None:
+                changed["start_form"] = form
+            with self.subTest(bindings=bindings, form=form), self.assertRaisesRegex(ValueError, error):
+                provider_spec({**document, "providers": {**document["providers"], "claude": changed}}, "claude")
 
     def test_catalog_declares_the_three_providers(self):
         document = json.loads(CATALOG_PATH.read_text())
