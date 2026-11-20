@@ -198,6 +198,13 @@ class TransportAgents:
             self.ledger.terminate_owned()  # the last resort for a process that did not end
         except Exception:
             pass
+        # Release the directory the agents start in and the process cell: on Windows the authority
+        # holds the origin open without delete sharing, so until it closes nothing can remove it.
+        for owned in (self.authority, self.membership):
+            try:
+                owned.close()
+            except Exception:
+                pass
 
 
 def refused_count(actions):
