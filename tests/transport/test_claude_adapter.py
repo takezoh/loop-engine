@@ -277,13 +277,20 @@ class DecisionsFromValuesTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
-    def launch(self, environ, *, windows=False, verify=None, node_files=()):
+    def launch(self, environ, *, windows=False, verify=None, node_files=(), arguments=("ok",)):
         """Run the Claude launcher's main in this process; returns (exit status, the argv it started)."""
         started = []
+        self.environments = []
 
-        def execv(path, argv):
+        def execve(path, argv, env):
             started.append(list(argv))
+            self.environments.append(dict(env))
             raise SystemExit(0)
+
+        def run(argv, check, env):
+            started.append(list(argv))
+            self.environments.append(dict(env))
+            return subprocess.CompletedProcess(argv, 0)
 
         search = search_values(
             environ, windows=windows, runnable=set(node_files).__contains__)
@@ -291,12 +298,10 @@ class LauncherTests(unittest.TestCase):
                 patch.object(launcher, "is_windows", return_value=windows), \
                 patch.object(launcher, "host_command_search", return_value=search), \
                 patch.object(claude_adapter, "verify", side_effect=verify) as verified, \
-                patch.object(launcher.os, "execv", side_effect=execv), \
-                patch.object(launcher.subprocess, "run",
-                             side_effect=lambda argv, check: started.append(list(argv)) or
-                             subprocess.CompletedProcess(argv, 0)):
+                patch.object(launcher.os, "execve", side_effect=execve), \
+                patch.object(launcher.subprocess, "run", side_effect=run):
             try:
-                status = launcher.main(["ok"])
+                status = launcher.main(list(arguments))
             except SystemExit as exit:
                 status = exit.code
         self.verified = [call.args[0] for call in verified.call_args_list]
@@ -313,6 +318,32 @@ class LauncherTests(unittest.TestCase):
             "ok",
         ]], started)
         self.assertEqual([runtime], self.verified)
+
+    def test_bundled_launcher_offers_the_bound_model_as_the_custom_option(self):
+        for windows, environ, node in (
+            (False, {"HOME": "/home/test", "PATH": "/opt/node/bin"}, "/opt/node/bin/node"),
+            (True, {"LOCALAPPDATA": r"C:\Users\Test\AppData\Local", "Path": r"C:\node"}, r"C:\node\node.exe"),
+        ):
+            with self.subTest(windows=windows):
+                status, started = self.launch(environ, windows=windows, node_files={node},
+                                              arguments=("--model", "claude-opus-5-5", "ok"))
+                self.assertEqual(0, status)
+                self.assertEqual(["ok"], started[0][2:])
+                self.assertEqual("claude-opus-5-5", self.environments[0]["ANTHROPIC_CUSTOM_MODEL_OPTION"])
+
+    def test_bundled_launcher_without_a_model_leaves_the_environment_as_it_is(self):
+        status, _ = self.launch({"HOME": "/home/test", "PATH": "/opt/node/bin"},
+                                node_files={"/opt/node/bin/node"})
+        self.assertEqual(0, status)
+        self.assertNotIn("ANTHROPIC_CUSTOM_MODEL_OPTION", self.environments[0])
+
+    def test_bundled_launcher_refuses_a_malformed_model_before_starting(self):
+        for arguments in (("--model",), ("--model", " "), ("--model", "a", "--model", "b")):
+            with self.subTest(arguments=arguments):
+                status, started = self.launch({"HOME": "/home/test", "PATH": "/opt/node/bin"},
+                                              node_files={"/opt/node/bin/node"}, arguments=arguments)
+                self.assertEqual(2, status)
+                self.assertEqual([], started)
 
     def test_bundled_launcher_uses_install_time_runtime_override(self):
         status, started = self.launch(
@@ -337,10 +368,10 @@ class LauncherTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOOP_ENGINE_RUNTIME_DIR": data, "PATH": "/opt/node/bin"}, clear=True), \
                     patch.object(launcher, "is_windows", return_value=False), \
                     patch.object(launcher, "host_command_search", return_value=search), \
-                    patch.object(launcher.os, "execv") as execv, \
+                    patch.object(launcher.os, "execve") as execve, \
                     patch.object(launcher.subprocess, "run") as run:
                 self.assertEqual(127, launcher.main(["ok"]))
-            execv.assert_not_called()
+            execve.assert_not_called()
             run.assert_not_called()
 
     def test_bundled_launcher_on_windows_starts_node_exe_and_refuses_a_node_shim(self):

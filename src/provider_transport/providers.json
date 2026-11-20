@@ -14,7 +14,7 @@
       "transport": "acp-v1",
       "command_prefix": ["launchers/claude_agent_acp.py"],
       "command_base": "subsession-python",
-      "bindings": {"session": ["model", "effort"], "required": ["model"]},
+      "bindings": {"session": ["model", "effort"], "required": ["model"], "launch": ["model"]},
       "skill_exclusion": "claude-disallowed-skills",
       "conformance": {
         "generation": "claude-agent-acp:0.62.0:finite-consumer-join-v1:be4d60cd62ba"

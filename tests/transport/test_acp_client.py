@@ -66,7 +66,7 @@ class AcpSessionClientTests(unittest.TestCase):
             client.set_config_option(binding, config_id=key, value=value)
             self.assertEqual({"sessionId": binding.session_id, "configId": key, "value": value}, rpc.requests[-1][1])
             rpc.results["session/set_config_option"] = {"configOptions": [{"id": key, "currentValue": "wrong"}]}
-            with self.assertRaisesRegex(RuntimeError, "readback-mismatch"):
+            with self.assertRaisesRegex(RuntimeError, f"readback-mismatch:{key}:requested='{value}':bound='wrong'"):
                 client.set_config_option(binding, config_id=key, value=value)
 
     def test_session_meta_is_sent_on_new_and_load(self):

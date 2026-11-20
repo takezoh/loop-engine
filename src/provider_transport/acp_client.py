@@ -444,14 +444,17 @@ class AcpSessionClient:
         options = result.get("configOptions")
         if not isinstance(options, Sequence) or isinstance(options, (str, bytes)):
             raise RuntimeError("acp-config-readback-missing")
-        for option in options:
-            if (
-                isinstance(option, Mapping)
-                and option.get("id") == wire_id
-                and option.get("currentValue") == wire_value
-            ):
-                return
-        raise RuntimeError(f"acp-config-readback-mismatch:{config_id}")
+        observed = [
+            option.get("currentValue") for option in options
+            if isinstance(option, Mapping) and option.get("id") == wire_id
+        ]
+        if wire_value in observed:
+            return
+        # Name what the provider bound, so a refused binding says which value it fell back to.
+        bound = observed[0] if observed else None
+        raise RuntimeError(
+            f"acp-config-readback-mismatch:{config_id}:requested={wire_value!r}:bound={bound!r}"
+        )
 
     def cancel(self, binding: AcpBinding) -> None:
         self._require_binding(binding)
