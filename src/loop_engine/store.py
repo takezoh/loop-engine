@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 from threading import Lock
 
 from .facts import ID_RE
@@ -293,26 +294,33 @@ def publish_check_program(published, source):
     Publishing is idempotent and safe against a concurrent engine: the content is written under a
     temporary name in the same directory and given the final name in a way that never replaces a file
     already there (`Platform.place_new`). A file already there must hold the same content; it is never
-    overwritten.
+    overwritten. Engines publish one at a time, holding `<published>/check/.lock`: Windows refuses to open
+    a file until the rename that names it has returned, so no engine reads the path while another names it.
     """
     with open(source, "rb") as handle:
         data = handle.read()
     path = check_program_path(published, hashlib.sha256(data).hexdigest())
     directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o755, exist_ok=True)
-    if not os.path.lexists(path):
-        handle, temporary = tempfile.mkstemp(prefix=".publishing-", dir=directory)
-        try:
-            with os.fdopen(handle, "wb") as written:
-                written.write(data)
-                written.flush()
-                os.fsync(written.fileno())
-            os.chmod(temporary, 0o444)
-        except BaseException:
-            os.unlink(temporary)
-            raise
-        CURRENT.place_new(temporary, path)  # when another engine published it first, its content is checked below
-    return verified_check_program(path)
+    lock = ProcessLock(os.path.join(published, "check", ".lock"))
+    while not lock.acquire():
+        time.sleep(0.01)  # another engine is publishing
+    try:
+        if not os.path.lexists(path):
+            handle, temporary = tempfile.mkstemp(prefix=".publishing-", dir=directory)
+            try:
+                with os.fdopen(handle, "wb") as written:
+                    written.write(data)
+                    written.flush()
+                    os.fsync(written.fileno())
+                os.chmod(temporary, 0o444)
+            except BaseException:
+                os.unlink(temporary)
+                raise
+            CURRENT.place_new(temporary, path)
+        return verified_check_program(path)
+    finally:
+        lock.release()
 
 
 # -- requests: entries drop a request file, the engine answers with a response file --
@@ -395,7 +403,7 @@ def lock_contended(error, held):
 
 
 class ProcessLock:
-    """An exclusive lock on a file, held for as long as the owning process lives."""
+    """An exclusive lock on a file, held until `release` or for as long as the owning process lives."""
 
     def __init__(self, path):
         self.path, self._handle = path, None

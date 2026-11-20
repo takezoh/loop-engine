@@ -1,4 +1,5 @@
 """The check program agents run is the engine's copy under its state home, named by its content."""
+import dataclasses
 import hashlib
 import os
 import subprocess
@@ -8,7 +9,7 @@ import threading
 import unittest
 import unittest.mock
 
-from engine_support import RUNNER, SRC, EngineCase, approve, produced, published_runner
+from engine_support import RUNNER, SRC, EngineCase, approve, file_link, produced, published_runner
 
 from loop_engine import store
 from loop_engine.store import CheckProgramChanged
@@ -35,6 +36,26 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(path, store.publish_check_program(self.root, RUNNER))  # once per engine, every engine
         self.assertEqual(["check_runner.py"], os.listdir(os.path.dirname(path)))
 
+    def test_no_engine_reads_the_program_until_the_engine_naming_it_has_returned(self):
+        """Windows refuses to open a file until the rename that names it has returned."""
+        other_engine, read_too_early = [], []
+
+        def place_new(temporary, path):
+            store_platform.place_new(temporary, path)
+            # the name is given, but its call has not returned: a second engine publishing now must wait
+            other_engine.append(threading.Thread(target=store.publish_check_program, args=(self.root, RUNNER)))
+            other_engine[0].start()
+            other_engine[0].join(0.5)
+            read_too_early.append(not other_engine[0].is_alive())
+
+        store_platform = store.CURRENT
+        with unittest.mock.patch.object(store, "CURRENT", dataclasses.replace(store_platform, place_new=place_new)):
+            path = store.publish_check_program(self.root, RUNNER)
+        other_engine[0].join(30)
+        self.assertEqual([False], read_too_early)
+        self.assertFalse(other_engine[0].is_alive())
+        self.assertEqual(CONTENT, self.read(path))
+
     def test_a_file_that_is_not_the_content_its_directory_names_is_neither_used_nor_overwritten(self):
         path = store.check_program_path(self.root, DIGEST)
         os.makedirs(os.path.dirname(path))
@@ -44,10 +65,10 @@ class PublishTest(unittest.TestCase):
             store.publish_check_program(self.root, RUNNER)
         self.assertIn(b"exit=0", self.read(path))
         os.unlink(path)
-        os.symlink(RUNNER, path)  # the right content, reached through a link the engine did not make
-        with self.assertRaises(CheckProgramChanged):
-            store.publish_check_program(self.root, RUNNER)
-        self.assertTrue(os.path.islink(path))
+        if file_link(RUNNER, path):  # the right content, reached through a link the engine did not make
+            with self.assertRaises(CheckProgramChanged):
+                store.publish_check_program(self.root, RUNNER)
+            self.assertTrue(os.path.islink(path))
 
     def test_a_program_put_in_place_of_the_one_checked_is_refused(self):
         path = store.publish_check_program(self.root, RUNNER)
