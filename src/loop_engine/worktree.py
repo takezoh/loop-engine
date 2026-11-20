@@ -11,6 +11,8 @@ import stat
 
 # the engine and the check program read a tree, and tell the environment's entries, the same way
 from .check_runner import Unreadable, environment_entry, read_blocks, refuse, tree_digest, tree_files
+from .facts import inside
+from .platform_facts import CURRENT
 
 AGENT_CONFIG_DIRS = (".claude", ".codex", ".pi", ".agents")
 AGENT_CONFIG_FILES = (".mcp.json",)
@@ -173,7 +175,7 @@ def read_text(worktree, relative):
         return None
     root = os.path.realpath(worktree)
     path = os.path.realpath(os.path.join(root, relative))
-    if os.path.commonpath([root, path]) != root or not os.path.isfile(path):
+    if not inside(path, root, CURRENT.path_style) or not os.path.isfile(path):
         return None
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:

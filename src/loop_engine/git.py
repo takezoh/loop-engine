@@ -3,6 +3,7 @@ runs another program (hooks, filters, external diff, fsmonitor, pagers) turned o
 import os
 import subprocess
 
+from .facts import inside
 from .platform_facts import CURRENT
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -27,7 +28,7 @@ def resolve_executable(name, path_variable, outside=(), suffixes=("",)):
             candidate = os.path.realpath(os.path.join(directory, name + suffix))
             if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
                 continue
-            if any(os.path.commonpath([candidate, os.path.realpath(root)]) == os.path.realpath(root) for root in outside):
+            if any(inside(candidate, os.path.realpath(root), CURRENT.path_style) for root in outside):
                 continue
             return candidate
     return None

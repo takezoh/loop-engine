@@ -122,7 +122,7 @@ class Engine:
         except (GitError, OSError) as error:
             raise Rejected(f"repository cannot be read: {error}") from None
         real = os.path.realpath(repository)
-        if any(os.path.commonpath([os.path.realpath(code), real]) == real for code in self.own_code):
+        if any(facts.inside(os.path.realpath(code), real, self.platform.path_style) for code in self.own_code):
             raise Rejected("the engine does not drive the repository its own code runs from")
         checks = {"checks": {}, "ignore": []}
         if names:

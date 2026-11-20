@@ -73,6 +73,17 @@ class StructureTest(unittest.TestCase):
             if name != "composition.py":
                 self.assertNotIn("provider_transport", source(name), name)
 
+    def test_containment_of_paths_is_decided_by_facts_inside_alone(self):
+        # commonpath raises for paths on two Windows drives; facts.inside answers for every platform
+        for directory, _directories, files in os.walk(PACKAGE):
+            for name in (name for name in files if name.endswith(".py")):
+                with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                    tree = ast.parse(handle.read())
+                named = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+                named |= {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+                named |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for alias in node.names}
+                self.assertNotIn("commonpath", named, os.path.join(directory, name))
+
     def test_git_arguments_always_carry_the_safe_prefix(self):
         for needle in (f"core.hooksPath={CURRENT.null_device}", "core.fsmonitor=false", "diff.external=",
                        f"core.attributesFile={CURRENT.null_device}", f"--attr-source={engine_git.EMPTY_TREE}"):

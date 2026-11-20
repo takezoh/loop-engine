@@ -113,6 +113,17 @@ def repository_path(path, path_style):
             and all(_name(part, path_style) for part in path.split("/")))
 
 
+def inside(path, root, path_style):
+    """Whether `path` is `root` or lies below it. Both are resolved absolute paths of `path_style`.
+
+    A path on another drive or share is not inside, as a path under another directory is not on
+    POSIX. On Windows names compare without regard to case."""
+    separator = "/" if path_style == "posix" else "\\"
+    if path_style == "windows":
+        path, root = path.lower(), root.lower()
+    return path == root or path.startswith(root.rstrip(separator) + separator)
+
+
 def check_structure(facts, executions):
     """Pure: the facts of a unit and the executions that can establish them, without what a run adds
     (`FACT_RUN_KEYS`, `EXECUTION_RUN_KEYS`), or raise `InvalidContract` naming the fact or execution.

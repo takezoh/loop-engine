@@ -585,6 +585,27 @@ class PlatformFactsTest(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(InvalidContract):
                 facts.checks_config(bad, ["unit"], ["unit"], "windows")
 
+    def test_a_path_on_another_drive_or_share_is_not_inside_a_root(self):
+        for path, root in (("D:\\dev\\game", "D:\\dev\\game"), ("D:\\dev\\game\\tools\\engine", "D:\\dev\\game"),
+                           ("d:\\Dev\\Game\\src", "D:\\dev\\game"), ("C:\\", "C:\\"), ("C:\\x", "C:\\"),
+                           ("\\\\server\\share\\repo\\src", "\\\\server\\share\\repo"),
+                           ("\\\\server\\share\\repo", "\\\\server\\share")):
+            with self.subTest(path=path, root=root):
+                self.assertTrue(facts.inside(path, root, "windows"))
+        for path, root in (("C:\\Users\\me\\engine", "D:\\dev\\game"), ("D:\\dev\\gameplay", "D:\\dev\\game"),
+                           ("D:\\dev", "D:\\dev\\game"), ("D:\\other\\game", "D:\\dev\\game"),
+                           ("\\\\server\\share\\repo", "D:\\repo"), ("\\\\other\\share\\repo", "\\\\server\\share\\repo"),
+                           ("\\\\server\\other\\repo", "\\\\server\\share\\repo")):
+            with self.subTest(path=path, root=root):
+                self.assertFalse(facts.inside(path, root, "windows"))
+        for path, root in (("/srv/repo", "/srv/repo"), ("/srv/repo/packages", "/srv/repo"), ("/", "/"),
+                           ("/srv/repo", "/")):
+            with self.subTest(path=path, root=root):
+                self.assertTrue(facts.inside(path, root, "posix"))
+        for path in ("/srv/repository", "/srv", "/opt/repo", "/SRV/repo/packages"):
+            with self.subTest(path=path):
+                self.assertFalse(facts.inside(path, "/srv/repo", "posix"))
+
 
 class TrailingNewlineTest(unittest.TestCase):
     """An identifier is the whole value: one that ends with a newline is refused."""
