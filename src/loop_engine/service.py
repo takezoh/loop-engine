@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 
 from . import facts
@@ -136,10 +137,13 @@ class Engine:
         if store.exists():
             if store.contract() != contract:
                 raise Rejected("a different unit already has this unit_id")
+            if store.status() is None:  # an earlier start ended between creating the unit and recording it
+                store.write_status({"state": "running", "revision": 0, "updated_at": self.clock()})
         else:
             store.create(contract, {"base": base, "head": head, **checks})
             store.write_status({"state": "running", "revision": 0, "updated_at": self.clock()})
-            self._launch(contract["unit_id"])
+        if (store.status() or {}).get("state") == "running":
+            self._launch(contract["unit_id"])  # nothing when the unit is already being driven
         return store.status()
 
     def _stopped_for(self, store, reason):
@@ -149,7 +153,11 @@ class Engine:
         return status
 
     def _continue(self, store, event, state):
-        """Record the request, save the state it leads to, and drive the unit again."""
+        """Record the request, save the state it leads to, and drive the unit again.
+
+        The unit is recorded as running first: if a later step fails, the unit is driven from the state
+        it has, and a state that still holds the earlier stop reaches that stop again."""
+        store.write_status({"state": "running", "revision": len(store.events()), "updated_at": self.clock()})
         store.append(dict(event, at=self.clock()))
         if state is not None:
             store.write_json("state.json", state)
@@ -223,6 +231,10 @@ class Engine:
                 raise Rejected("unknown request")
         except (Rejected, InvalidContract) as error:
             return {"ok": False, "error": str(error)}
+        except Exception as error:  # a defect in handling: answer it, and drive what is recorded as running
+            traceback.print_exc()
+            self.resume()
+            return {"ok": False, "error": f"engine error: {type(error).__name__}: {error}"[:1000]}
         return {"ok": True, "result": result}
 
     # -- process --

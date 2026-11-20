@@ -65,6 +65,100 @@ class AdmissionTest(EngineCase):
         other = engine.handle({"request": "start", "contract": different})
         self.assertIn("different unit", other["error"])
 
+    def test_an_error_in_a_request_is_answered_and_the_engine_keeps_answering(self):
+        engine = self.engine(finishing)
+        def broken(_raw):
+            raise ValueError("Paths don't have the same drive")
+        engine.start = broken
+        with redirect_stderr(io.StringIO()) as errors:
+            response = engine.handle({"request": "start", "contract": self.contract()})
+        self.assertEqual({"ok": False, "error": "engine error: ValueError: Paths don't have the same drive"}, response)
+        self.assertIn("Traceback", errors.getvalue())
+        self.assertEqual({"ok": True, "result": {"engine": "running"}}, engine.handle({"request": "ping"}))
+
+    def test_a_start_that_failed_after_creating_the_unit_still_drives_it(self):
+        engine = self.engine(finishing)
+        launch, calls = engine._launch, []
+        def failing_once(unit_id):
+            calls.append(unit_id)
+            if len(calls) == 1:
+                raise RuntimeError("cannot start a thread")
+            launch(unit_id)
+        engine._launch = failing_once
+        with redirect_stderr(io.StringIO()):
+            response = engine.handle({"request": "start", "contract": self.contract()})
+        self.assertIn("engine error: RuntimeError", response["error"])
+        self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
+        self.assertTrue(engine.handle({"request": "start", "contract": self.contract()})["ok"])
+
+    def test_a_start_that_failed_before_recording_the_unit_is_completed_when_sent_again(self):
+        engine = self.engine(finishing)
+        unit_store = engine._store("u1")
+        write_status, failed = unit_store.write_status, []
+        def failing_once(status):
+            if not failed:
+                failed.append(status)
+                raise OSError("disk full")
+            write_status(status)
+        unit_store.write_status = failing_once
+        start = {"request": "start", "contract": self.contract()}
+        with redirect_stderr(io.StringIO()):
+            self.assertIn("engine error: OSError: disk full", engine.handle(start)["error"])
+        self.assertTrue(engine.handle(start)["ok"])
+        self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
+
+    def test_an_answer_that_failed_before_its_state_was_saved_can_be_sent_again(self):
+        def script(request, commands, cancelled):
+            if request.role == "reviewer":
+                return approve(request)
+            if self.agents.nth["producer"] == 1:
+                return TurnOutcome(True, '{"question": "tabs or spaces?", "id": "q-style"}', None)
+            return produced(request, commands)
+        engine = self.engine(script)
+        engine.handle({"request": "start", "contract": self.contract()})
+        self.assertEqual("waiting_for_answer", self.run_to_stop(engine)["stop_reason"])
+        unit_store = engine._store("u1")
+        write_json, failed = unit_store.write_json, []
+        def failing_once(name, value):
+            if name == "state.json" and not failed:
+                failed.append(name)
+                raise OSError("disk full")
+            write_json(name, value)
+        unit_store.write_json = failing_once
+        answer = {"request": "answer", "unit_id": "u1", "question_id": "q-style", "answer": "spaces"}
+        with redirect_stderr(io.StringIO()):
+            self.assertIn("engine error: OSError: disk full", engine.handle(answer)["error"])
+        self.assertEqual("waiting_for_answer", self.run_to_stop(engine)["stop_reason"])
+        self.assertTrue(engine.handle(answer)["ok"])
+        self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
+
+    def test_an_answer_that_failed_after_its_state_was_saved_is_still_carried_out(self):
+        def script(request, commands, cancelled):
+            if request.role == "reviewer":
+                return approve(request)
+            if self.agents.nth["producer"] == 1:
+                return TurnOutcome(True, '{"question": "tabs or spaces?", "id": "q-style"}', None)
+            return produced(request, commands)
+        engine = self.engine(script)
+        engine.handle({"request": "start", "contract": self.contract()})
+        self.assertEqual("waiting_for_answer", self.run_to_stop(engine)["stop_reason"])
+        unit_store = engine._store("u1")
+        write_json, write_status, saved, failed = unit_store.write_json, unit_store.write_status, [], []
+        def saving(name, value):
+            write_json(name, value)
+            saved.append(name)
+        def failing_after_the_state(status):  # the first status written once the answer's state is saved
+            if "state.json" in saved and not failed:
+                failed.append(status)
+                raise OSError("disk full")
+            write_status(status)
+        unit_store.write_json, unit_store.write_status = saving, failing_after_the_state
+        answer = {"request": "answer", "unit_id": "u1", "question_id": "q-style", "answer": "spaces"}
+        with redirect_stderr(io.StringIO()):
+            self.assertIn("engine error: OSError: disk full", engine.handle(answer)["error"])
+        self.assertEqual("done", self.run_to_stop(engine)["stop_reason"])
+        self.assertIn("Answer: spaces", self.agents.requests[-2].prompt)
+
     def test_unknown_and_malformed_requests_are_refused(self):
         engine = self.engine(finishing)
         for payload in (None, [], {"request": "exec", "argv": ["sh"]}, {"request": "start"},

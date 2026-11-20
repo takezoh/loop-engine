@@ -102,6 +102,8 @@ The engine makes one directory per unit in the records root (`records/` under `L
 
 The records root also holds requests and responses (`inbox/`, `outbox/`), `engine.lock` and the transport's state (`agents/`).
 
+A request the engine refuses is answered with its reason and changes nothing. An unexpected error while handling a request is answered with `engine error: <type>: <message>`; the engine writes the traceback to its error output, keeps serving, and drives every unit recorded as running. A request that continues a unit (`answer`, `retry`) records that the unit runs before it records the event and the new state, so a unit whose request failed part way is driven from the state it has. A `start` sent again for a unit that exists with the same contract completes what an earlier one left undone.
+
 What agents read goes to the published root (`published/` under `LOOP_ENGINE_HOME`).
 
 | File | Content |
