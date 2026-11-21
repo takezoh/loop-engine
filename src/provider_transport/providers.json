@@ -4,7 +4,7 @@
   "providers": {
     "codex": {
       "transport": "codex-app-server",
-      "command_prefix": ["codex", "app-server"],
+      "command_prefix": ["codex", "app-server", "-c", "thread_unload_delay_secs=0"],
       "command_base": "path",
       "bindings": {"session": ["model", "effort"], "required": []},
       "skill_exclusion": "codex-skills-config",

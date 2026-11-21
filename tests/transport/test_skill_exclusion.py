@@ -36,7 +36,8 @@ class CatalogExclusionTests(unittest.TestCase):
 
     def test_each_provider_excludes_only_the_named_skills_in_its_own_form(self):
         codex = load_provider("codex", exclude=EXCLUDE)
-        self.assertEqual(("codex", "app-server", "-c", f"skills.config=[{CODEX_ENTRIES}]"),
+        self.assertEqual(("codex", "app-server", "-c", "thread_unload_delay_secs=0",
+                          "-c", f"skills.config=[{CODEX_ENTRIES}]"),
                          codex.argv(subsession_dir=CATALOG_PATH.parent, model="m", effort="low"))
         self.assertIsNone(codex.isolation_session_meta)
         claude = load_provider("claude", exclude=EXCLUDE)
@@ -142,8 +143,8 @@ class AdapterContractTests(unittest.TestCase):
                     self.assertEqual("rpc", adapter.driver.launch_host(admission, "cell"))
                 command = launch.call_args.kwargs["command"]
                 self.assertEqual(load_provider("codex", exclude=exclude).command, command)
-                self.assertEqual(exclude is not None, "-c" in command)
-                self.assertEqual(exclude is not None, f"skills.config=[{CODEX_ENTRIES}]" in command)
+                exclusion = ("-c", f"skills.config=[{CODEX_ENTRIES}]") if exclude is not None else ()
+                self.assertEqual(("codex", "app-server", "-c", "thread_unload_delay_secs=0", *exclusion), tuple(command))
                 self.assertIs(admission, launch.call_args.kwargs["spawn_admission"])
 
     def open_acp_session(self, **options):
