@@ -11,6 +11,7 @@ import time
 from typing import IO, Any
 
 from .admitted_process import launch_admitted, reap, release
+from .bounded_wait import ended_within
 from .cwd_authority import SpawnAdmission, SpawnReceipt
 
 from .turn_result import (
@@ -286,9 +287,9 @@ class JsonlRpcClient:
                 close_stderr = getattr(self.stderr, "close", None)
                 if callable(close_stderr):
                     close_stderr()
-            self._reader.join(timeout=1.0)
+            ended_within(self._reader, 1.0)
             if self._stderr_reader is not None:
-                self._stderr_reader.join(timeout=1.0)
+                ended_within(self._stderr_reader, 1.0)
 
     def stderr_text(self) -> str:
         with self._stderr_lock:

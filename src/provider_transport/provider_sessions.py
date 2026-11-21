@@ -14,6 +14,7 @@ from threading import Event, RLock, Thread
 from time import monotonic
 from typing import Hashable, Mapping
 
+from .bounded_wait import ended_within, set_within
 from .cwd_authority import SpawnAdmission
 from .provider_request import ActionRequest
 from .provider_lifecycle import (
@@ -146,7 +147,7 @@ class ProviderSessions:
     def wait_turn(self, execution_id: str, timeout: float) -> bool:
         """Block until the execution's current turn ends; True when none is running."""
         turn = self._turn(execution_id)
-        return turn is None or turn.done.wait(timeout)
+        return turn is None or set_within(turn.done, timeout)
 
     def wait_release(self, execution_id: str) -> Mapping[str, object]:
         """Block, within the driver's unload bound, until the session of the execution's ended turn is released.
@@ -164,7 +165,7 @@ class ProviderSessions:
             with self._lock:
                 event = self._unloads.get(turn.session.session_id)
             if event is not None:
-                event.wait(self.driver.traits.unload_timeout)
+                set_within(event, self.driver.traits.unload_timeout)
         with self._lock:
             event = self._unloads.get(session_id) if session_id is not None else None
             error = self._unload_errors.get(session_id) if session_id is not None else None
@@ -254,7 +255,7 @@ class ProviderSessions:
             unloads = tuple(self._unloads.values())
         deadline = monotonic() + self.driver.traits.unload_timeout
         for unloading in unloads:
-            unloading.wait(max(0.0, deadline - monotonic()))
+            set_within(unloading, deadline - monotonic())
         with self._lock:
             hosts = (*self._hosts.values(), *self._orphaned)
             self._hosts.clear()
@@ -333,11 +334,11 @@ class ProviderSessions:
             target=work, name=f"{self.driver.transport}-turn-{turn.operation_id}", daemon=True
         )
         turn.thread.start()
-        turn.started.wait(self.driver.traits.startup_timeout)
+        set_within(turn.started, self.driver.traits.startup_timeout)
         if turn.session is None:
             self._startup_failed(turn)
         grace = self.driver.traits.startup_grace
-        if grace > 0 and turn.done.wait(grace):
+        if grace > 0 and set_within(turn.done, grace):
             return self._terminal(turn)
         assert turn.session is not None
         return running_receipt(turn.session)
@@ -374,7 +375,7 @@ class ProviderSessions:
             unloading = self._unloads.get(session_id) if session_id is not None else None
         unload = "none"
         if unloading is not None:
-            unload = "completed" if unloading.wait(self.driver.traits.unload_timeout) else "pending"
+            unload = "completed" if set_within(unloading, self.driver.traits.unload_timeout) else "pending"
         with self._lock:
             unload_error = self._unload_errors.get(session_id) if session_id is not None else None
             quarantined = execution_id in self._quarantined
@@ -517,12 +518,10 @@ class ProviderSessions:
             failure = self._cancel(turn)
             if failure is not None:
                 diagnostics.append(f"turn.cancel:{failure_reason(failure)}")
-        if not turn.done.wait(self.TERMINATION_JOIN_TIMEOUT):
+        if not set_within(turn.done, self.TERMINATION_JOIN_TIMEOUT):
             diagnostics.append("turn-worker-timeout")
-        if turn.thread is not None:
-            turn.thread.join(timeout=self.TERMINATION_JOIN_TIMEOUT)
-            if turn.thread.is_alive():
-                diagnostics.append("turn-worker-alive")
+        if turn.thread is not None and not ended_within(turn.thread, self.TERMINATION_JOIN_TIMEOUT):
+            diagnostics.append("turn-worker-alive")
         return joined_diagnostics(*diagnostics)
 
     def _quarantine(self, turn: _Turn) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import count
 from threading import Event
+import time
 from types import SimpleNamespace
 
 from provider_transport.provider_port import DriverTraits, SessionHandle, TurnEnd
@@ -37,11 +38,13 @@ class FakeHost:
 class TurnScript:
     """How one turn behaves.
 
-    `bind_error` fails before the session binds; `hold` keeps the turn running
-    until `release` is set or the turn is cancelled; `end` is how it ends, and
-    `error` an error raised after binding instead.
+    `bind_delay` is how long binding takes; `bind_error` fails before the
+    session binds; `hold` keeps the turn running until `release` is set or the
+    turn is cancelled; `end` is how it ends, and `error` an error raised after
+    binding instead.
     """
 
+    bind_delay: float = 0.0
     bind_error: BaseException | None = None
     hold: bool = False
     end: TurnEnd = field(default_factory=lambda: TurnEnd(True, "completed", {"turn_identity": "fake"}))
@@ -103,6 +106,7 @@ class FakeDriver:
             raise TimeoutError("never-bound")
         if script.bind_error is not None:
             raise script.bind_error
+        time.sleep(script.bind_delay)
         session_id = turn.durable_id or f"session-{next(self._sessions)}"
         self.turns.append((session_id, turn.durable_id))
         session = SessionHandle(session_id, session_id, {"provider": "fake", "session_id": session_id}, script)

@@ -104,8 +104,7 @@ class Driver:
 
     def release(self, session, timeout):
         self.release_begun.set()
-        if self.release_delay:
-            threading.Event().wait(self.release_delay)
+        time.sleep(self.release_delay)
         if self.release_gate is not None and not self.release_gate.wait(10):
             raise TimeoutError("release-timeout")
         left = os.path.join(self._cwds.get(session.session_id, ""), self.leave or "")

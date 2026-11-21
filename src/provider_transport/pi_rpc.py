@@ -16,6 +16,7 @@ from threading import Lock, Thread
 from typing import IO, Any, Callable, Mapping
 
 from .admitted_process import launch_admitted, reap, release
+from .bounded_wait import ended_within
 from .cwd_authority import SpawnAdmission, SpawnReceipt
 
 
@@ -135,7 +136,7 @@ class PiRpcClient:
             reap(self.process, term_grace=term_grace, kill_reap_timeout=kill_reap_timeout)
             release(self._spawn_admission, self._spawn_receipt, self.process)
             self._spawn_receipt = None
-        self._reader.join(timeout=1.0)
+        ended_within(self._reader, 1.0)
 
     def _send(self, record: Mapping[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"

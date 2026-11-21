@@ -13,6 +13,7 @@
 | Catalog | `providers.json`, `provider_catalog.py`, `provider_drivers.py` | Each provider's command and bindings, the form in which it excludes skills, and the choice of driver per transport |
 | Claude launcher | `launchers/claude_agent_acp.py` | Starting the Claude ACP adapter of the user's environment |
 | Platform | `host_platform.py` | The one selection point of command search and the launcher |
+| Waits | `bounded_wait.py` | Waiting for an event or a thread up to a bound measured on the monotonic clock |
 | Doubles | `testing/` | The fakes of the process cell and of the working-directory authority, for the tests of whoever uses those ports. They run the ports' contract tests |
 
 ## Provider sessions
@@ -28,6 +29,7 @@
 - `cancel` interrupts the turn and does not end the process. `interrupt` also stops only the running turn and returns a receipt. `close` stops the turn and closes the session.
 - The pure functions of `provider_lifecycle.py` decide the views, the evidence and the unload state returned, whether a continue is refused, and whether a spawn admission is needed.
 - The prompt of a model turn has no deadline on the turn's length. Only startup and RPC control operations have bounded timeouts.
+- A bounded wait (for a session to bind, a turn to end, an unload, a worker to stop) ends at its bound on the monotonic clock (`bounded_wait.py`). A step of the wall clock does not end it earlier, even where CPython measures timeouts against the wall clock.
 
 A session is loaded per turn and unloaded at the end of that turn, in the background. A failed unload does not count as a completed one, and a session is not loaded again while its unload is undetermined. A continuation waits up to the driver's unload limit (Codex 65 seconds, ACP 5 seconds, Pi 10 seconds) and then loads the session by the saved durable identity (a Codex thread id, an ACP or Pi session id). When the unload is still undetermined past the limit, it returns `recovery_pending`. An explicit close does not wait for the unload and returns `completed` with the present unload state.
 
@@ -114,6 +116,7 @@ The `claude` provider speaks ACP through the npm package `@agentclientprotocol/c
 
 - `tests/test_port_contracts.py` lists, per port, every adapter and every fake with the contract test class that runs it, and fails when a class anywhere in the source or the tests implements a port without being listed.
 - The tests under `tests/transport/` use fakes of the wire protocols and of the platform APIs. `test_approval_refusal.py` (Codex, Pi) and `test_acp_permission_boundary.py` (ACP, over real stdio) confirm the refusal of approval requests per driver.
+- Bounded waits: `test_bounded_wait.py`, and `WallClockStepTests` in `test_provider_sessions.py` for every wait of the lifecycle, use an event and a thread whose timed waits return at once (`wall_clock_step.py`), as when the wall clock steps during them.
 - Driver contract: `ProtocolDriverContract` in `test_protocol_drivers.py` applies to the three drivers and to `protocol_driver_fake.py`.
 - Process cell contract: `CellMembershipContract` in `test_cell_membership.py` applies to the Linux cell (real processes of this machine), the Windows cell (the fake Win32 API of `windows_api_fake.py`) and the fake in `provider_transport/testing/`. It includes not ending a root whose recorded identity does not match; the Linux tests reproduce a reused pid by placing an ended root's record under the pid of another group leader and confirm that that process stays.
 - Working-directory contract: `CwdAuthorityContract` in `test_cwd_authority.py` applies to the POSIX authority (real directories), the Windows authority (fake Win32 API) and the fake in `provider_transport/testing/`.

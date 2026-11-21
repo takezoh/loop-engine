@@ -1,8 +1,11 @@
 """One provider lifecycle runs turns, sessions and hosts for every protocol through its driver port."""
+from threading import Event, Timer
 from types import SimpleNamespace
 import time
 import unittest
+from unittest import mock
 
+from provider_transport import provider_sessions
 from provider_transport.provider_request import ActionRequest
 from provider_transport.provider_port import (
     ProviderCleanupFailure,
@@ -11,6 +14,7 @@ from provider_transport.provider_port import (
 )
 from provider_transport.provider_sessions import ProviderSessions
 from .protocol_driver_fake import FakeAdmission, FakeDriver
+from .wall_clock_step import SteppedEvent, SteppedThread
 
 
 def start_request(operation="op-start", model="m"):
@@ -290,6 +294,70 @@ class StopTests(Lifecycle):
         self.sessions.shutdown()
         self.assertTrue(all(host.closed for host in self.driver.hosts))
         self.assertFalse(self.sessions.turn_running("exec-1"))
+
+
+class WallClockStepTests(Lifecycle):
+    """Every wait of the lifecycle returns early, as when the wall clock steps during it, and
+    still counts as ended only at its bound."""
+
+    def setUp(self):
+        for name, stepped in (("Event", SteppedEvent), ("Thread", SteppedThread)):
+            patcher = mock.patch.object(provider_sessions, name, stepped)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        super().setUp()
+
+    def later(self, action, seconds=0.1):
+        timer = Timer(seconds, action)
+        timer.start()
+        self.addCleanup(timer.cancel)
+
+    def test_a_session_that_binds_late_starts(self):
+        receipt, _ = self.start(bind_delay=0.1)
+        self.assertEqual(("running", "session-1"), (receipt["outcome"], receipt["session_id"]))
+
+    def test_a_turn_that_ends_late_in_the_startup_grace_answers_at_once(self):
+        self.driver = FakeDriver(startup_grace=5.0)
+        self.sessions = ProviderSessions(self.driver, cell_id="cell")
+        script = self.driver.script(hold=True, end=TurnEnd(False, "incomplete", {"turn_identity": "x"}))
+        self.later(script.release.set)
+        receipt = self.sessions.start(start_request(), FakeAdmission())
+        self.assertEqual(("post_start_failed", "incomplete"), (receipt["outcome"], receipt["provider_status"]))
+
+    def test_a_turn_that_ends_late_ends_within_the_wait(self):
+        self.start(hold=True)
+        self.later(self.sessions._turn("exec-1").session.state.release.set)
+        self.assertTrue(self.sessions.wait_turn("exec-1", 5))
+
+    def test_a_release_that_ends_late_is_completed(self):
+        self.driver.release_gate = Event()
+        self.start()
+        self.assertTrue(self.sessions.wait_turn("exec-1", 5))
+        self.later(self.driver.release_gate.set)
+        self.assertEqual({"session_id": "session-1", "unload_status": "completed"},
+                         self.sessions.wait_release("exec-1"))
+
+    def test_a_continue_waits_for_an_unload_that_ends_late(self):
+        self.driver.release_gate = Event()
+        self.start()
+        self.assertTrue(self.sessions.wait_turn("exec-1", 5))
+        self.later(self.driver.release_gate.set)
+        self.driver.script(hold=True)
+        receipt = self.sessions.action(continue_request("exec-1"), snapshot("exec-1"), FakeAdmission())
+        self.assertEqual(("running", "session-1"), (receipt.get("outcome"), receipt.get("session_id")))
+
+    def test_a_close_proves_the_end_of_a_turn_that_stops_late(self):
+        self.start(hold=True)
+        closed = self.sessions.action(request("close", "exec-1"), snapshot("exec-1"))
+        self.assertEqual(("completed", None), (closed["outcome"], closed.get("cleanup")))
+
+    def test_shutdown_releases_a_session_that_ends_its_release_late_before_it_closes_the_host(self):
+        self.driver.release_gate = Event()
+        self.start()
+        self.assertTrue(self.sessions.wait_turn("exec-1", 5))
+        self.later(self.driver.release_gate.set)
+        self.sessions.shutdown()
+        self.assertEqual([("released", "session-1"), ("closed", 1)], self.driver.log)
 
 
 if __name__ == "__main__":
