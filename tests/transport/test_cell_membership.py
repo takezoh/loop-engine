@@ -2,6 +2,7 @@
 import os
 import errno
 from pathlib import Path
+import signal
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from provider_transport.cwd_authority import (
     SpawnAdmission,
 )
 from provider_transport.directory_authority import create_cwd_authority
+from provider_transport import linux_process
 from provider_transport.linux_process import (
     ProcessObservationUncertain,
     ProcSubreaperCell,
@@ -400,6 +402,32 @@ class LinuxCellTests(unittest.TestCase):
             self.assertTrue(cell.empty)
         finally:
             cell.close()
+
+    def test_the_cell_takes_its_pidfds_from_the_kernel_not_from_python(self):
+        """Standalone Python builds have no pidfd wrappers; the cell starts and ends a group without them."""
+        unwrapped = AssertionError("used a pidfd wrapper of this Python")
+        with patch.object(os, "pidfd_open", side_effect=unwrapped, create=True), \
+                patch.object(signal, "pidfd_send_signal", side_effect=unwrapped, create=True), \
+                TemporaryDirectory() as directory:
+            cell = ProcSubreaperCell()
+            self.addCleanup(cell.close)
+            root, child = self.group_root(cell, directory)
+            self.assertTrue(cell.confirm(root.pid))
+            cell.terminate_roots(((root.pid, cell.process_identity(root.pid)),))
+            root.wait(timeout=5)
+            self.assertTrue(cell.wait_empty(5.0))
+            self.assertIsNone(process_identity(child))
+
+    def test_without_the_kernels_pidfd_calls_there_is_no_cell(self):
+        """A kernel without pidfds, or an architecture whose call numbers differ, makes no cell and no call."""
+        absent = OSError(errno.ENOSYS, os.strerror(errno.ENOSYS))
+        for machine, syscall in (("x86_64", patch.object(linux_process, "_syscall", side_effect=absent)),
+                                 ("mips64", patch.object(linux_process, "_syscall",
+                                                         side_effect=AssertionError("made a call")))):
+            with self.subTest(machine=machine), syscall, \
+                    patch.object(linux_process.platform, "machine", return_value=machine):
+                with self.assertRaisesRegex(RuntimeError, "^subsession-pidfd-unavailable$"):
+                    ProcSubreaperCell()
 
     def test_proc_stat_uncertainty_never_becomes_empty_or_releasable(self):
         cell = ProcSubreaperCell()

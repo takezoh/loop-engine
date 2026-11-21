@@ -1,15 +1,17 @@
 """Linux process cell: this process is the child subreaper of every provider it starts.
 
 Only this module performs Linux process effects for the subsession runtime:
-``prctl``, ``/proc``, process groups and signals.
+``prctl``, ``/proc``, process groups, pidfds and signals.
 """
 
 from __future__ import annotations
 
 import ctypes
 import errno
+import functools
 import os
 from pathlib import Path
+import platform
 import signal
 import subprocess
 from threading import RLock
@@ -19,6 +21,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 PR_SET_CHILD_SUBREAPER = 36
 PR_GET_CHILD_SUBREAPER = 37
+# The kernel's numbers for pidfd_send_signal and pidfd_open. The cell makes these calls itself, so it
+# needs a kernel with them (Linux 5.3), not a Python built with their wrappers. Calls added since
+# Linux 5.1 have these numbers on every architecture but those whose call tables are offset.
+SYS_PIDFD_SEND_SIGNAL = 424
+SYS_PIDFD_OPEN = 434
+OFFSET_CALL_TABLES = ("alpha", "ia64", "mips")
 # pidfd_send_signal flag (Linux 6.9): signal the process group whose ID is the pidfd's process.
 PIDFD_SIGNAL_PROCESS_GROUP = 4
 # Rescans of a group whose members are signalled one by one, for members forked during a scan.
@@ -29,9 +37,16 @@ class ProcessObservationUncertain(RuntimeError):
     """The process cell cannot be proven empty from the current /proc scan."""
 
 
+@functools.cache
+def _libc() -> ctypes.CDLL:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    return libc
+
+
 def enable_subreaper() -> None:
     """Make this process the adoption point for orphaned descendants."""
-    libc = ctypes.CDLL(None, use_errno=True)
+    libc = _libc()
     if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         error = ctypes.get_errno()
         raise RuntimeError("subsession-subreaper-unavailable") from OSError(
@@ -73,7 +88,7 @@ class ProcSubreaperCell:
     def __init__(self, *, root_pid: int | None = None) -> None:
         if not Path("/proc/self/stat").is_file():
             raise RuntimeError("subsession-proc-cell-unavailable")
-        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        if not _pidfd_available():
             raise RuntimeError("subsession-pidfd-unavailable")
         enable_subreaper()
         self.root_pid = os.getpid() if root_pid is None else root_pid
@@ -128,7 +143,7 @@ class ProcSubreaperCell:
             process = subprocess.Popen(command, **launch)
             pidfd = None
             try:
-                pidfd = os.pidfd_open(process.pid)
+                pidfd = _pidfd_open(process.pid)
                 identity = process_identity(process.pid)
                 if identity is None:
                     raise RuntimeError("subsession-root-identity-unavailable")
@@ -406,10 +421,40 @@ class ProcSubreaperCell:
             self._prune_started()
 
 
+def _syscall(number: int, *arguments: int) -> int:
+    """Make a kernel call; a failed call raises the OSError of its errno."""
+    result = _libc().syscall(ctypes.c_long(number), *(ctypes.c_long(argument) for argument in arguments))
+    if result == -1:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return result
+
+
+def _pidfd_open(pid: int) -> int:
+    """A pidfd naming the process ``pid`` names now, closed on exec."""
+    return _syscall(SYS_PIDFD_OPEN, pid, 0)
+
+
+def _pidfd_available() -> bool:
+    """Whether the kernel opens a pidfd of this process and signals through it."""
+    if platform.machine().startswith(OFFSET_CALL_TABLES):
+        return False
+    try:
+        pidfd = _pidfd_open(os.getpid())
+    except OSError:
+        return False
+    try:
+        return _send(pidfd, 0)
+    except OSError:
+        return False
+    finally:
+        os.close(pidfd)
+
+
 def _send(pidfd: int, signal_number: int, flags: int = 0) -> bool:
     """Signal the process (or, with the group flag, the group) a pidfd names; False when it has none."""
     try:
-        signal.pidfd_send_signal(pidfd, signal_number, None, flags)
+        _syscall(SYS_PIDFD_SEND_SIGNAL, pidfd, signal_number, 0, flags)
     except ProcessLookupError:
         return False
     return True
@@ -422,7 +467,7 @@ def _open_in_group(pid: int, group: int) -> tuple[str, int] | None:
     the group read belong to the process the pidfd names.
     """
     try:
-        pidfd = os.pidfd_open(pid)
+        pidfd = _pidfd_open(pid)
     except ProcessLookupError:
         return None
     try:
@@ -445,7 +490,7 @@ def _open_verified(pid: int, identity: str | None) -> int | None:
     if identity is None:
         return None
     try:
-        pidfd = os.pidfd_open(pid)
+        pidfd = _pidfd_open(pid)
     except ProcessLookupError:
         return None
     if process_identity(pid) != identity:
